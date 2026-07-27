@@ -25,6 +25,8 @@ uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
+uniform float uHaloMassFraction;
+uniform float uHaloScaleRadius;
 
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
@@ -86,6 +88,11 @@ void main() {
     if (activeFlags[id] == 0) return;
     vec4 body = bodies[id];
     vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
+    vec2 haloDeltaPhysical = (body.xy - 0.5) * vec2(uDomainAspect, 1.0);
+    float haloRSquared = dot(haloDeltaPhysical, haloDeltaPhysical);
+    vec2 haloPhysicalAcceleration = -uGravity * uHaloMassFraction *
+        haloDeltaPhysical / (haloRSquared + uHaloScaleRadius * uHaloScaleRadius);
+    result += haloPhysicalAcceleration / vec2(uDomainAspect, 1.0);
 
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense

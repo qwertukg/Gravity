@@ -41,6 +41,7 @@ class GravityPipeline(
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
     private val domainAspect = 1f
+    private val galaxyPreset = GalaxyPreset.fittingViewportHeight(viewportAspect)
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
@@ -71,6 +72,7 @@ class GravityPipeline(
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
     private lateinit var massPrefix: DoubleArray
+    private var normalizationMass = 0f
 
     init {
         seedBodies()
@@ -177,7 +179,9 @@ class GravityPipeline(
         bind(8, cellMass)
         bind(9, activeFlags)
         kick.int("uCount", activeBodies)
-        kick.float("uInitialTotalMass", massPrefix.last().toFloat())
+        kick.float("uInitialTotalMass", normalizationMass)
+        kick.float("uHaloMassFraction", galaxyPreset.haloMassFraction)
+        kick.float("uHaloScaleRadius", galaxyPreset.haloScaleRadius)
         kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         kick.int("uMeshWidth", gridWidth)
         kick.int("uPhysicalWidth", physicalGridWidth)
@@ -227,7 +231,7 @@ class GravityPipeline(
         kernelInit.int("uPhysicalHeight", physicalGridHeight)
         kernelInit.float("uDomainAspect", domainAspect)
         kernelInit.float("uGravity", config.gravitationalConstant)
-        kernelInit.float("uInitialTotalMass", massPrefix.last().toFloat())
+        kernelInit.float("uInitialTotalMass", normalizationMass)
         kernelInit.float("uSigmaCells", config.softeningCells)
         dispatch(cells)
         barrier()
@@ -287,9 +291,10 @@ class GravityPipeline(
             count = config.capacity,
             domainAspect = domainAspect,
             gravity = config.gravitationalConstant,
-            preset = GalaxyPreset.fittingViewportHeight(viewportAspect),
+            preset = galaxyPreset,
         )
         massPrefix = initialState.massPrefix
+        normalizationMass = initialState.normalizationMass
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }

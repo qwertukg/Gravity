@@ -16,12 +16,17 @@ data class GalaxyPreset(
     val bulgeScaleRadius: Float = 0.027f,
     val blackHoleMassFraction: Float = 0.015f,
     val bulgeMassFraction: Float = 0.185f,
+    val haloMassFraction: Float = 0.35f,
+    val haloScaleRadius: Float = 0.16f,
     val bulgeBodyFraction: Float = 0.12f,
-    val velocityDispersion: Float = 0.012f,
+    val velocityDispersion: Float = 0.045f,
     val clockwise: Boolean = true,
 ) {
     val diskMassFraction: Float
-        get() = 1f - blackHoleMassFraction - bulgeMassFraction
+        get() = 1f - blackHoleMassFraction - bulgeMassFraction - haloMassFraction
+
+    val liveMassFraction: Float
+        get() = 1f - haloMassFraction
 
     companion object {
         fun fittingViewportHeight(viewportAspect: Float): GalaxyPreset {
@@ -31,6 +36,7 @@ data class GalaxyPreset(
                 outerRadius = radius,
                 diskScaleRadius = radius * 0.2842f,
                 bulgeScaleRadius = radius * 0.0711f,
+                haloScaleRadius = radius * 0.62f,
             )
         }
     }
@@ -38,6 +44,7 @@ data class GalaxyPreset(
 
 data class GalaxyInitialState(
     val massPrefix: DoubleArray,
+    val normalizationMass: Float,
     val maximumPhysicalRadius: Float,
 )
 
@@ -104,7 +111,7 @@ object GalaxyInitializer {
             prefix[id + 1] = prefix[id] + mass
             maximumRadius = max(maximumRadius, radius)
         }
-        return GalaxyInitialState(prefix, maximumRadius)
+        return GalaxyInitialState(prefix, count.toFloat(), maximumRadius)
     }
 
     private fun sampleDiskRadius(random: Random, preset: GalaxyPreset): Float {
@@ -131,7 +138,9 @@ object GalaxyInitializer {
         val outerX = preset.outerRadius / preset.diskScaleRadius
         val diskNormalization = 1f - exp(-outerX) * (1f + outerX)
         val disk = preset.diskMassFraction * (1f - exp(-x) * (1f + x)) / diskNormalization
-        return preset.blackHoleMassFraction + bulge + disk
+        val halo = preset.haloMassFraction * radius * radius /
+            (radius * radius + preset.haloScaleRadius * preset.haloScaleRadius)
+        return preset.blackHoleMassFraction + bulge + disk + halo
     }
 
     private fun gaussian(random: Random): Float {

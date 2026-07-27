@@ -35,7 +35,9 @@ class GalaxyInitializerTest {
         )
         val expectedRadius = 0.5f / viewportAspect
         assertTrue(state.maximumPhysicalRadius in expectedRadius * 0.995f..expectedRadius)
-        assertTrue(abs(state.massPrefix.last() - count) / count < 1e-5)
+        val expectedLiveMass = count * preset.liveMassFraction
+        assertTrue(abs(state.massPrefix.last() - expectedLiveMass) / count < 1e-5)
+        assertEquals(count.toFloat(), state.normalizationMass)
         assertEquals(0.5f, bodies[0])
         assertEquals(0.5f, bodies[1])
         assertTrue(masses[0] > 100f * masses[count - 1])
