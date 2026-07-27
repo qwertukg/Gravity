@@ -21,7 +21,7 @@ data class GalaxyPreset(
     val haloScaleRadius: Float = 0.16f,
     val bulgeBodyFraction: Float = 0.12f,
     val velocityDispersion: Float = 0.045f,
-    val verticalDriftSpeed: Float = 0.001f,
+    val verticalDriftSpeed: Float = 0.1f,
     val clockwise: Boolean = true,
 ) {
     val diskMassFraction: Float
@@ -151,9 +151,7 @@ object GalaxyInitializer {
                 count = bodiesPerGalaxy,
                 domainAspect = domainAspect,
                 gravity = gravity * 0.5f,
-                preset = preset.copy(
-                    clockwise = if (galaxy == 0) preset.clockwise else !preset.clockwise,
-                ),
+                preset = preset,
                 seed = seeds[galaxy],
             )
             maximumRadius = max(maximumRadius, localState.maximumPhysicalRadius)

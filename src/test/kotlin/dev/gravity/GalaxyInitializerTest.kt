@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 
 class GalaxyInitializerTest {
     @Test
-    fun `twin disks touch opposite edges and rotate in opposite directions`() {
+    fun `twin disks touch opposite screen edges and rotate clockwise`() {
         val count = 20_000
         val domainAspect = 1f
         val viewportAspect = 3440f / 1440f
@@ -51,7 +51,7 @@ class GalaxyInitializerTest {
         assertEquals(-preset.verticalDriftSpeed, bodies[bodiesPerGalaxy * 4 + 3])
         assertTrue(masses[0] > 100f * masses[count - 1])
 
-        val rotatingWithDisk = IntArray(2)
+        var rotatingWithDisk = 0
         var moving = 0
         var mode2Real = 0.0
         var mode2Imaginary = 0.0
@@ -70,21 +70,14 @@ class GalaxyInitializerTest {
             assertTrue(bodies[offset] in 0f..1f)
             assertTrue(bodies[offset + 1] in 0f..1f)
             assertTrue(hypot(x, y) <= expectedRadius + 1e-5f)
-            val angularMomentum = x * orbitalVy - y * vx
-            if ((galaxy == 0 && angularMomentum < 0f) ||
-                (galaxy == 1 && angularMomentum > 0f)
-            ) {
-                rotatingWithDisk[galaxy]++
-            }
+            if (x * orbitalVy - y * vx < 0f) rotatingWithDisk++
             if (hypot(vx, vy) > 1e-5f) moving++
             val angle = atan2(y, x)
             mode2Real += cos(2f * angle)
             mode2Imaginary += sin(2f * angle)
         }
         val orbitingBodies = count - 2
-        val orbitingBodiesPerGalaxy = bodiesPerGalaxy - 1
-        assertTrue(rotatingWithDisk[0] > orbitingBodiesPerGalaxy * 0.96)
-        assertTrue(rotatingWithDisk[1] > orbitingBodiesPerGalaxy * 0.96)
+        assertTrue(rotatingWithDisk > orbitingBodies * 0.96)
         assertTrue(moving > orbitingBodies * 0.99)
         val mode2Amplitude = hypot(mode2Real, mode2Imaginary) / orbitingBodies
         assertTrue(mode2Amplitude < 0.02, "initial m=2 amplitude was $mode2Amplitude")
