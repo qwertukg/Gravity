@@ -75,6 +75,11 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         var active = config.initialBodies
         val controller = AdaptiveBodyController(active, config.capacity, config.targetGpuMillis)
         simulation.initializeAcceleration(active)
+        activateFullscreenWindow()
+        render(active, 0.0)
+        glfwSwapBuffers(window)
+        glfwPollEvents()
+        activateFullscreenWindow()
         var reportAt = System.nanoTime() + 2_000_000_000L
         var frames = 0
         var totalFrames = 0L
@@ -160,16 +165,24 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glClear(GL_COLOR_BUFFER_BIT)
         glfwSwapBuffers(window)
         glfwPollEvents()
+        var foreground = false
         for (attempt in 0 until 8) {
-            if (glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0) break
-            glfwFocusWindow(window)
+            foreground = activateFullscreenWindow()
+            if (foreground) break
             glfwWaitEventsTimeout(0.01)
         }
-        if (glfwGetWindowAttrib(window, GLFW_FOCUSED) == 0) glfwFocusWindow(window)
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.width()}, " +
-                "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}; Esc exits"
+                "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
+                "foreground=$foreground; Esc exits"
         )
+    }
+
+    private fun activateFullscreenWindow(): Boolean {
+        glfwFocusWindow(window)
+        val foreground = WindowsForegroundActivator.activate(window)
+        glfwPollEvents()
+        return foreground && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0
     }
 
     private fun render(activeBodies: Int, fps: Double) {

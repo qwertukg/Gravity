@@ -1,6 +1,7 @@
 package dev.gravity
 
 import java.nio.FloatBuffer
+import java.security.SecureRandom
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -47,10 +48,11 @@ data class GalaxyInitialState(
     val normalizationMass: Float,
     val maximumPhysicalRadius: Float,
     val centralBodyIds: IntArray = intArrayOf(0),
+    val galaxySeeds: LongArray = longArrayOf(),
 )
 
 object GalaxyInitializer {
-    private const val SEED = 0x47524156495459L
+    private val seedSource = SecureRandom()
 
     fun fill(
         bodies: FloatBuffer,
@@ -59,10 +61,11 @@ object GalaxyInitializer {
         domainAspect: Float,
         gravity: Float,
         preset: GalaxyPreset = GalaxyPreset(),
+        seed: Long = seedSource.nextLong(),
     ): GalaxyInitialState {
         require(count >= 3)
         require(domainAspect >= 1f)
-        val random = Random(SEED)
+        val random = Random(seed)
         val bulgeCount = (count * preset.bulgeBodyFraction).toInt().coerceIn(1, count - 2)
         val diskCount = count - bulgeCount - 1
         val blackHoleWeight = count * preset.blackHoleMassFraction
@@ -112,7 +115,12 @@ object GalaxyInitializer {
             prefix[id + 1] = prefix[id] + mass
             maximumRadius = max(maximumRadius, radius)
         }
-        return GalaxyInitialState(prefix, count.toFloat(), maximumRadius)
+        return GalaxyInitialState(
+            massPrefix = prefix,
+            normalizationMass = count.toFloat(),
+            maximumPhysicalRadius = maximumRadius,
+            galaxySeeds = longArrayOf(seed),
+        )
     }
 
     fun fillTwin(
@@ -122,24 +130,30 @@ object GalaxyInitializer {
         domainAspect: Float,
         gravity: Float,
         preset: GalaxyPreset,
+        seeds: LongArray = distinctSeeds(),
     ): GalaxyInitialState {
         require(count >= 6 && count % 2 == 0) { "Twin disks require an even body count" }
+        require(seeds.size == 2) { "Twin disks require exactly two random seeds" }
+        require(seeds[0] != seeds[1]) { "Each disk must use a different random seed" }
         val bodiesPerGalaxy = count / 2
-        val localBodies = FloatBuffer.allocate(bodiesPerGalaxy * 4)
-        val localMasses = FloatBuffer.allocate(bodiesPerGalaxy)
-        val localState = fill(
-            bodies = localBodies,
-            masses = localMasses,
-            count = bodiesPerGalaxy,
-            domainAspect = domainAspect,
-            gravity = gravity * 0.5f,
-            preset = preset,
-        )
         val leftCenterX = preset.outerRadius
         val rightCenterX = 1f - preset.outerRadius
         val prefix = DoubleArray(count + 1)
+        var maximumRadius = 0f
 
         for (galaxy in 0..1) {
+            val localBodies = FloatBuffer.allocate(bodiesPerGalaxy * 4)
+            val localMasses = FloatBuffer.allocate(bodiesPerGalaxy)
+            val localState = fill(
+                bodies = localBodies,
+                masses = localMasses,
+                count = bodiesPerGalaxy,
+                domainAspect = domainAspect,
+                gravity = gravity * 0.5f,
+                preset = preset,
+                seed = seeds[galaxy],
+            )
+            maximumRadius = max(maximumRadius, localState.maximumPhysicalRadius)
             val centerX = if (galaxy == 0) leftCenterX else rightCenterX
             for (localId in 0 until bodiesPerGalaxy) {
                 val source = localId * 4
@@ -159,9 +173,19 @@ object GalaxyInitializer {
         return GalaxyInitialState(
             massPrefix = prefix,
             normalizationMass = count.toFloat(),
-            maximumPhysicalRadius = localState.maximumPhysicalRadius,
+            maximumPhysicalRadius = maximumRadius,
             centralBodyIds = intArrayOf(0, bodiesPerGalaxy),
+            galaxySeeds = seeds.copyOf(),
         )
+    }
+
+    private fun distinctSeeds(): LongArray {
+        val first = seedSource.nextLong()
+        var second: Long
+        do {
+            second = seedSource.nextLong()
+        } while (second == first)
+        return longArrayOf(first, second)
     }
 
     private fun sampleDiskRadius(random: Random, preset: GalaxyPreset): Float {

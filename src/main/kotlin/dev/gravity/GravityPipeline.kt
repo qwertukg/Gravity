@@ -299,6 +299,10 @@ class GravityPipeline(
         massPrefix = initialState.massPrefix
         centralBodyIds = initialState.centralBodyIds
         normalizationMass = initialState.normalizationMass
+        System.err.println(
+            "Galaxy seeds: " +
+                initialState.galaxySeeds.joinToString { java.lang.Long.toUnsignedString(it) }
+        )
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }

@@ -2,6 +2,7 @@ package dev.gravity
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -32,6 +33,7 @@ class GalaxyInitializerTest {
             domainAspect,
             gravity = 0.035f,
             preset = preset,
+            seeds = longArrayOf(11L, 29L),
         )
         val expectedRadius = 0.5f / viewportAspect
         assertTrue(state.maximumPhysicalRadius in expectedRadius * 0.995f..expectedRadius)
@@ -40,6 +42,7 @@ class GalaxyInitializerTest {
         assertEquals(count.toFloat(), state.normalizationMass)
         val bodiesPerGalaxy = count / 2
         assertTrue(state.centralBodyIds.contentEquals(intArrayOf(0, bodiesPerGalaxy)))
+        assertTrue(state.galaxySeeds.contentEquals(longArrayOf(11L, 29L)))
         assertTrue(abs(expectedRadius - bodies[0]) < 1e-6f)
         assertEquals(0.5f, bodies[1])
         assertTrue(abs(1f - expectedRadius - bodies[bodiesPerGalaxy * 4]) < 1e-6f)
@@ -74,5 +77,35 @@ class GalaxyInitializerTest {
         assertTrue(moving > orbitingBodies * 0.99)
         val mode2Amplitude = hypot(mode2Real, mode2Imaginary) / orbitingBodies
         assertTrue(mode2Amplitude < 0.02, "initial m=2 amplitude was $mode2Amplitude")
+    }
+
+    @Test
+    fun `default twin seeds differ between disks and launches`() {
+        fun generate(): Pair<LongArray, FloatArray> {
+            val count = 100
+            val bodies = FloatBuffer.allocate(count * 4)
+            val masses = FloatBuffer.allocate(count)
+            val state = GalaxyInitializer.fillTwin(
+                bodies = bodies,
+                masses = masses,
+                count = count,
+                domainAspect = 1f,
+                gravity = 0.035f,
+                preset = GalaxyPreset(),
+            )
+            return state.galaxySeeds to floatArrayOf(
+                bodies[4],
+                bodies[5],
+                bodies[(count / 2 + 1) * 4],
+                bodies[(count / 2 + 1) * 4 + 1],
+            )
+        }
+
+        val first = generate()
+        val second = generate()
+        assertTrue(first.first[0] != first.first[1])
+        assertTrue(second.first[0] != second.first[1])
+        assertTrue(!first.first.contentEquals(second.first))
+        assertTrue(!first.second.contentEquals(second.second))
     }
 }
