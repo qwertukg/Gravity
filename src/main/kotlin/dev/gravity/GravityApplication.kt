@@ -3,6 +3,8 @@ package dev.gravity
 import org.lwjgl.glfw.Callbacks.glfwFreeCallbacks
 import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_VERSION_MAJOR
 import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_VERSION_MINOR
+import org.lwjgl.glfw.GLFW.GLFW_FOCUSED
+import org.lwjgl.glfw.GLFW.GLFW_FOCUS_ON_SHOW
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
@@ -12,8 +14,10 @@ import org.lwjgl.glfw.GLFW.GLFW_VISIBLE
 import org.lwjgl.glfw.GLFW.glfwCreateWindow
 import org.lwjgl.glfw.GLFW.glfwDefaultWindowHints
 import org.lwjgl.glfw.GLFW.glfwDestroyWindow
+import org.lwjgl.glfw.GLFW.glfwFocusWindow
 import org.lwjgl.glfw.GLFW.glfwGetPrimaryMonitor
 import org.lwjgl.glfw.GLFW.glfwGetVideoMode
+import org.lwjgl.glfw.GLFW.glfwGetWindowAttrib
 import org.lwjgl.glfw.GLFW.glfwInit
 import org.lwjgl.glfw.GLFW.glfwMakeContextCurrent
 import org.lwjgl.glfw.GLFW.glfwPollEvents
@@ -24,6 +28,7 @@ import org.lwjgl.glfw.GLFW.glfwShowWindow
 import org.lwjgl.glfw.GLFW.glfwSwapBuffers
 import org.lwjgl.glfw.GLFW.glfwSwapInterval
 import org.lwjgl.glfw.GLFW.glfwTerminate
+import org.lwjgl.glfw.GLFW.glfwWaitEventsTimeout
 import org.lwjgl.glfw.GLFW.glfwWindowHint
 import org.lwjgl.glfw.GLFW.glfwWindowShouldClose
 import org.lwjgl.glfw.GLFWErrorCallback
@@ -125,6 +130,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         check(glfwInit()) { "GLFW initialization failed" }
         glfwDefaultWindowHints()
         glfwWindowHint(GLFW_VISIBLE, GL_FALSE)
+        glfwWindowHint(GLFW_FOCUSED, 1)
+        glfwWindowHint(GLFW_FOCUS_ON_SHOW, 1)
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4)
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3)
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
@@ -149,6 +156,16 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glClearColor(0f, 0f, 0f, 1f)
         glPointSize(1f)
         glfwShowWindow(window)
+        glfwFocusWindow(window)
+        glClear(GL_COLOR_BUFFER_BIT)
+        glfwSwapBuffers(window)
+        glfwPollEvents()
+        for (attempt in 0 until 8) {
+            if (glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0) break
+            glfwFocusWindow(window)
+            glfwWaitEventsTimeout(0.01)
+        }
+        if (glfwGetWindowAttrib(window, GLFW_FOCUSED) == 0) glfwFocusWindow(window)
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.width()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}; Esc exits"

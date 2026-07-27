@@ -29,8 +29,6 @@ uniform float uHaloMassFraction;
 uniform float uHaloScaleRadius;
 uniform int uCentralBody0;
 uniform int uCentralBody1;
-uniform float uLeftCenterX;
-uniform float uRightCenterX;
 
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
@@ -101,10 +99,10 @@ void main() {
     vec4 body = bodies[id];
     vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
     if (activeFlags[uCentralBody0] != 0) {
-        result += haloAcceleration(vec2(uLeftCenterX, 0.5), body.xy);
+        result += haloAcceleration(bodies[uCentralBody0].xy, body.xy);
     }
     if (activeFlags[uCentralBody1] != 0) {
-        result += haloAcceleration(vec2(uRightCenterX, 0.5), body.xy);
+        result += haloAcceleration(bodies[uCentralBody1].xy, body.xy);
     }
 
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed

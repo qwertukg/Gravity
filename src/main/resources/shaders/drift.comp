@@ -6,24 +6,12 @@ layout(std430, binding = 1) readonly buffer Accelerations { vec2 acceleration[];
 layout(std430, binding = 2) buffer ActiveFlags { int activeFlags[]; };
 
 uniform int uCount;
-uniform int uCentralBody0;
-uniform int uCentralBody1;
-uniform float uLeftCenterX;
-uniform float uRightCenterX;
 uniform float uDt;
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     if (activeFlags[id] == 0) return;
-    if (int(id) == uCentralBody0) {
-        bodies[id] = vec4(uLeftCenterX, 0.5, 0.0, 0.0);
-        return;
-    }
-    if (int(id) == uCentralBody1) {
-        bodies[id] = vec4(uRightCenterX, 0.5, 0.0, 0.0);
-        return;
-    }
     vec4 body = bodies[id];
     body.zw += acceleration[id] * (0.5 * uDt);
     body.xy += body.zw * uDt;
