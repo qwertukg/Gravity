@@ -3,16 +3,9 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Accelerations { vec2 acceleration[]; };
-layout(std430, binding = 2) buffer CollisionHeads { int collisionHeads[]; };
-layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
-layout(std430, binding = 4) buffer CollisionCellCounts { int collisionCellCounts[]; };
 
 uniform int uCount;
-uniform float uKickDt;
-uniform float uDriftDt;
-uniform int uCollisionWidth;
-uniform int uCollisionHeight;
-uniform int uBuildCollisionGrid;
+uniform float uDt;
 
 float wrapPosition(float position) {
     return position - floor(position);
@@ -22,19 +15,9 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
-    body.zw += acceleration[id] * uKickDt;
-    body.xy += body.zw * uDriftDt;
+    body.zw += acceleration[id] * (0.5 * uDt);
+    body.xy += body.zw * uDt;
     body.x = wrapPosition(body.x);
     body.y = wrapPosition(body.y);
     bodies[id] = body;
-    if (uBuildCollisionGrid != 0) {
-        ivec2 cell = clamp(
-            ivec2(floor(body.xy * vec2(uCollisionWidth, uCollisionHeight))),
-            ivec2(0),
-            ivec2(uCollisionWidth - 1, uCollisionHeight - 1)
-        );
-        int index = cell.x + cell.y * uCollisionWidth;
-        nextBody[id] = atomicExchange(collisionHeads[index], int(id));
-        atomicAdd(collisionCellCounts[index], 1);
-    }
 }

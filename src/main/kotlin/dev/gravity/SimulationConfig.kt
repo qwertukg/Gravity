@@ -11,10 +11,9 @@ data class SimulationConfig(
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
-    val collisionIterations: Int = 1,
-    val collisionSubsteps: Int = 2,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
+    val squareTestPixels: Int? = null,
 ) {
     init {
         require(capacity > 0) { "capacity must be positive" }
@@ -25,16 +24,13 @@ data class SimulationConfig(
         require(gridHeight in 128..2048 && gridHeight.countOneBits() == 1) {
             "grid height must be a power of two in 128..2048"
         }
-        require(gravitationalConstant > 0f)
+        require(gravitationalConstant >= 0f)
         require(softeningCells > 0f)
         require(timeStep > 0f)
-        require(collisionIterations in 0..8) {
-            "collision iterations must be in 0..8"
-        }
-        require(collisionSubsteps in 1..8) {
-            "collision substeps must be in 1..8"
-        }
         require(maxFrames == null || maxFrames > 0)
+        require(squareTestPixels == null || squareTestPixels > 0) {
+            "square test size must be positive"
+        }
     }
 
     companion object {
@@ -83,6 +79,7 @@ data class SimulationConfig(
                 }
             }
             val capacity = intValue("capacity", "GRAVITY_CAPACITY", defaults.capacity)
+            val squareTestPixels = values["square-test"]?.toIntOrNull()
             return SimulationConfig(
                 capacity = capacity,
                 initialBodies = min(
@@ -103,17 +100,8 @@ data class SimulationConfig(
                     defaults.softeningCells,
                 ),
                 timeStep = floatValue("dt", "GRAVITY_DT", defaults.timeStep),
-                collisionIterations = intValue(
-                    "collision-iterations",
-                    "GRAVITY_COLLISION_ITERATIONS",
-                    defaults.collisionIterations,
-                ),
-                collisionSubsteps = intValue(
-                    "collision-substeps",
-                    "GRAVITY_COLLISION_SUBSTEPS",
-                    defaults.collisionSubsteps,
-                ),
                 maxFrames = values["frames"]?.toIntOrNull(),
+                squareTestPixels = squareTestPixels,
             )
         }
     }

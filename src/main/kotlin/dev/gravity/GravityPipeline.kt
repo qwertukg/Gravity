@@ -2,6 +2,7 @@ package dev.gravity
 
 import org.lwjgl.opengl.GL11.GL_FLOAT
 import org.lwjgl.opengl.GL15.GL_DYNAMIC_DRAW
+import org.lwjgl.opengl.GL15.GL_READ_ONLY
 import org.lwjgl.opengl.GL15.GL_WRITE_ONLY
 import org.lwjgl.opengl.GL15.glBindBuffer
 import org.lwjgl.opengl.GL15.glBufferData
@@ -22,7 +23,20 @@ import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
 import java.nio.ByteBuffer
+import java.util.Arrays
 import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.sqrt
+
+data class ClusterStatistics(
+    val centerX: Double,
+    val centerY: Double,
+    val covarianceAreaPixels: Double,
+    val equivalentDiameterPixels: Double,
+    val core90AreaPixels: Double,
+    val core99AreaPixels: Double,
+    val maxSpeedPixelsPerSecond: Double,
+)
 
 class GravityPipeline(
     private val config: SimulationConfig,
@@ -40,9 +54,6 @@ class GravityPipeline(
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
-    private val collisionGridWidth = viewportWidth
-    private val collisionGridHeight = viewportHeight
-    private val collisionCells = Math.multiplyExact(collisionGridWidth, collisionGridHeight)
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
@@ -55,9 +66,6 @@ class GravityPipeline(
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
-    private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
-    private val collisionCellCounts = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
-    private val collisionDeltas = buffer(config.capacity.toLong() * 4 * Int.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
@@ -74,10 +82,6 @@ class GravityPipeline(
     private val convolve = GlProgram.compute("/shaders/convolve.comp")
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
-    private val collisionClear = GlProgram.compute("/shaders/collision_clear.comp")
-    private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
-    private val collisionResolve = GlProgram.compute("/shaders/collision_resolve.comp")
-    private val collisionApply = GlProgram.compute("/shaders/collision_apply.comp")
     private lateinit var massPrefix: DoubleArray
     private var normalizationMass = 0f
     private var initialSeed: Long? = null
@@ -89,7 +93,6 @@ class GravityPipeline(
     }
 
     fun initializeAcceleration(activeBodies: Int) {
-        resolveCollisions(activeBodies)
         buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
     }
@@ -101,36 +104,14 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
-        val collisionEnabled = config.collisionIterations > 0
-        val substeps = if (collisionEnabled) config.collisionSubsteps else 1
-        repeat(substeps) { substep ->
-            if (collisionEnabled) clearCollisionGrid(activeBodies)
-            drift.use()
-            bind(0, bodies)
-            bind(1, acceleration)
-            bind(2, collisionHeads)
-            bind(3, nextBody)
-            bind(4, collisionCellCounts)
-            drift.int("uCount", activeBodies)
-            drift.float("uKickDt", if (substep == 0) 0.5f * config.timeStep else 0f)
-            drift.float("uDriftDt", config.timeStep / substeps)
-            drift.int("uCollisionWidth", collisionGridWidth)
-            drift.int("uCollisionHeight", collisionGridHeight)
-            drift.int("uBuildCollisionGrid", if (collisionEnabled) 1 else 0)
-            dispatchBodies(activeBodies)
-            barrier()
+        drift.use()
+        bind(0, bodies)
+        bind(1, acceleration)
+        drift.int("uCount", activeBodies)
+        drift.float("uDt", config.timeStep)
+        dispatchBodies(activeBodies)
+        barrier()
 
-            if (collisionEnabled) {
-                resolveCollisionPairs(activeBodies)
-                applyCollisionDeltas(activeBodies)
-            }
-            repeat(if (collisionEnabled) config.collisionIterations - 1 else 0) {
-                clearCollisionGrid(activeBodies)
-                buildCollisionGrid(activeBodies)
-                resolveCollisionPairs(activeBodies)
-                applyCollisionDeltas(activeBodies)
-            }
-        }
         buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT or GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT)
@@ -140,65 +121,87 @@ class GravityPipeline(
         bind(0, bodies)
     }
 
-    private fun resolveCollisions(activeBodies: Int) {
-        repeat(config.collisionIterations) {
-            clearCollisionGrid(activeBodies)
-            buildCollisionGrid(activeBodies)
-            resolveCollisionPairs(activeBodies)
-            applyCollisionDeltas(activeBodies)
+    /**
+     * Slow, blocking GPU readback used only by finite diagnostic runs.
+     * For a uniform circle, 4π√det(covariance) is exactly its area.
+     */
+    fun measureCluster(activeBodies: Int): ClusterStatistics {
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
+        val mapped = glMapBuffer(
+            GL_SHADER_STORAGE_BUFFER,
+            GL_READ_ONLY,
+            activeBodies.toLong() * 4 * Float.SIZE_BYTES,
+            null,
+        )?.asFloatBuffer() ?: error("Unable to map particle buffer for diagnostics")
+
+        var meanX = 0.0
+        var meanY = 0.0
+        var maxSpeed = 0.0
+        for (index in 0 until activeBodies) {
+            meanX += mapped[index * 4].toDouble() * viewportWidth
+            meanY += mapped[index * 4 + 1].toDouble() * viewportHeight
+            maxSpeed = max(
+                maxSpeed,
+                kotlin.math.hypot(
+                    mapped[index * 4 + 2].toDouble() * viewportWidth,
+                    mapped[index * 4 + 3].toDouble() * viewportHeight,
+                ),
+            )
         }
-    }
+        meanX /= activeBodies
+        meanY /= activeBodies
 
-    private fun clearCollisionGrid(activeBodies: Int) {
-        collisionClear.use()
-        bind(0, collisionHeads)
-        bind(1, collisionDeltas)
-        bind(2, collisionCellCounts)
-        collisionClear.int("uCells", collisionCells)
-        collisionClear.int("uCount", activeBodies)
-        dispatch(maxOf(collisionCells, activeBodies))
-        barrier()
-    }
+        var xx = 0.0
+        var xy = 0.0
+        var yy = 0.0
+        val xCoordinates = DoubleArray(activeBodies)
+        val yCoordinates = DoubleArray(activeBodies)
+        for (index in 0 until activeBodies) {
+            val absoluteX = mapped[index * 4].toDouble() * viewportWidth
+            val absoluteY = mapped[index * 4 + 1].toDouble() * viewportHeight
+            xCoordinates[index] = absoluteX
+            yCoordinates[index] = absoluteY
+            val x = absoluteX - meanX
+            val y = absoluteY - meanY
+            xx += x * x
+            xy += x * y
+            yy += y * y
+        }
+        xx /= activeBodies
+        xy /= activeBodies
+        yy /= activeBodies
+        check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) {
+            "Particle buffer became corrupt during diagnostics"
+        }
 
-    private fun buildCollisionGrid(activeBodies: Int) {
-        collisionBuild.use()
-        bind(0, bodies)
-        bind(1, collisionHeads)
-        bind(2, nextBody)
-        bind(3, collisionCellCounts)
-        collisionBuild.int("uCount", activeBodies)
-        collisionBuild.int("uGridWidth", collisionGridWidth)
-        collisionBuild.int("uGridHeight", collisionGridHeight)
-        dispatchBodies(activeBodies)
-        barrier()
-    }
-
-    private fun resolveCollisionPairs(activeBodies: Int) {
-        collisionResolve.use()
-        bind(0, bodies)
-        bind(1, collisionHeads)
-        bind(2, nextBody)
-        bind(3, collisionDeltas)
-        bind(4, collisionCellCounts)
-        collisionResolve.int("uCount", activeBodies)
-        collisionResolve.int("uViewportWidth", viewportWidth)
-        collisionResolve.int("uViewportHeight", viewportHeight)
-        collisionResolve.int("uGridWidth", collisionGridWidth)
-        collisionResolve.int("uGridHeight", collisionGridHeight)
-        collisionResolve.int("uCellSizePixels", 1)
-        dispatchBodies(activeBodies)
-        barrier()
-    }
-
-    private fun applyCollisionDeltas(activeBodies: Int) {
-        collisionApply.use()
-        bind(0, bodies)
-        bind(1, collisionDeltas)
-        collisionApply.int("uCount", activeBodies)
-        collisionApply.int("uWidth", viewportWidth)
-        collisionApply.int("uHeight", viewportHeight)
-        dispatchBodies(activeBodies)
-        barrier()
+        val area = 4.0 * Math.PI * sqrt(max(xx * yy - xy * xy, 0.0))
+        val sortedX = xCoordinates.copyOf()
+        val sortedY = yCoordinates.copyOf()
+        Arrays.sort(sortedX)
+        Arrays.sort(sortedY)
+        val medianX = sortedX[activeBodies / 2]
+        val medianY = sortedY[activeBodies / 2]
+        val radiusSquared = DoubleArray(activeBodies)
+        for (index in 0 until activeBodies) {
+            val x = xCoordinates[index] - medianX
+            val y = yCoordinates[index] - medianY
+            radiusSquared[index] = x * x + y * y
+        }
+        Arrays.sort(radiusSquared)
+        fun coreArea(fraction: Double): Double {
+            val index = (fraction * activeBodies).toInt().coerceIn(1, activeBodies) - 1
+            return Math.PI * radiusSquared[index] / fraction
+        }
+        return ClusterStatistics(
+            centerX = medianX,
+            centerY = medianY,
+            covarianceAreaPixels = area,
+            equivalentDiameterPixels = 2.0 * sqrt(area / Math.PI),
+            core90AreaPixels = coreArea(0.90),
+            core99AreaPixels = coreArea(0.99),
+            maxSpeedPixelsPerSecond = maxSpeed,
+        )
     }
 
     private fun buildForce(activeBodies: Int) {
@@ -396,8 +399,18 @@ class GravityPipeline(
             count = config.capacity,
         )
         if (initialSeed == null) initialSeed = initialState.seed
+        config.squareTestPixels?.let { side ->
+            UniformParticleInitializer.placePixelSquare(
+                bodies = mappedBodies,
+                count = config.initialBodies,
+                widthPixels = side,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                seed = initialState.seed,
+            )
+        }
         massPrefix = initialState.massPrefix
-        normalizationMass = initialState.normalizationMass
+        normalizationMass = initialState.massPrefix[config.initialBodies].toFloat()
         System.err.println(
             "Particle seed: ${java.lang.Long.toUnsignedString(initialState.seed)}"
         )
@@ -455,10 +468,6 @@ class GravityPipeline(
             convolve,
             drift,
             kick,
-            collisionClear,
-            collisionBuild,
-            collisionResolve,
-            collisionApply,
         )
             .forEach(GlProgram::close)
         intArrayOf(
@@ -470,9 +479,6 @@ class GravityPipeline(
             cellCounts,
             cellMass,
             nextBody,
-            collisionHeads,
-            collisionCellCounts,
-            collisionDeltas,
             fft,
             scratch,
             forceX,

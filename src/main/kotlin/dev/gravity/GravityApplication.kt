@@ -134,6 +134,20 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 reportAt = now + 2_000_000_000L
             }
             if (config.maxFrames != null && totalFrames >= config.maxFrames) {
+                val cluster = simulation.measureCluster(active)
+                System.err.printf(
+                    Locale.ROOT,
+                    "cluster center=(%.1f, %.1f) covariance-area=%,.0f px^2 " +
+                        "equivalent-diameter=%.1f px core90=%,.0f px^2 " +
+                        "core99=%,.0f px^2 max-speed=%.1f px/s%n",
+                    cluster.centerX,
+                    cluster.centerY,
+                    cluster.covarianceAreaPixels,
+                    cluster.equivalentDiameterPixels,
+                    cluster.core90AreaPixels,
+                    cluster.core99AreaPixels,
+                    cluster.maxSpeedPixelsPerSecond,
+                )
                 glfwSetWindowShouldClose(window, true)
             }
         }
@@ -185,7 +199,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             "Gravity: viewport=${mode.width()}x${mode.height()}, " +
                 "space=${mode.width()}x${mode.height()} torus, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
-                "collisions=${config.collisionIterations}x${config.collisionSubsteps}, " +
+                "squareTest=${config.squareTestPixels ?: "off"}, " +
                 "foreground=$foreground; Esc exits"
         )
     }

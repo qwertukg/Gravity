@@ -53,6 +53,55 @@ class UniformParticleInitializerTest {
     }
 
     @Test
+    fun `diagnostic region confines every particle`() {
+        val count = 40_000
+        val bodies = FloatBuffer.allocate(count * 4)
+        val masses = FloatBuffer.allocate(count)
+        val region = NormalizedRegion(0.4f, 0.3f, 0.6f, 0.7f)
+
+        UniformParticleInitializer.fill(
+            bodies,
+            masses,
+            count,
+            seed = 2026L,
+            region = region,
+        )
+
+        repeat(count) { id ->
+            assertTrue(bodies[id * 4] in region.minX..<region.maxX)
+            assertTrue(bodies[id * 4 + 1] in region.minY..<region.maxY)
+        }
+    }
+
+    @Test
+    fun `pixel square has exactly one body in every pixel`() {
+        val squareWidth = 632
+        val width = 1000
+        val height = 1000
+        val count = 400_000
+        val bodies = FloatBuffer.allocate(count * 4)
+
+        UniformParticleInitializer.placePixelSquare(
+            bodies = bodies,
+            count = count,
+            widthPixels = squareWidth,
+            viewportWidth = width,
+            viewportHeight = height,
+            seed = 17L,
+        )
+
+        val occupied = HashSet<Pair<Int, Int>>(count)
+        repeat(count) { id ->
+            val x = (bodies[id * 4] * width).toInt()
+            val y = (bodies[id * 4 + 1] * height).toInt()
+            assertTrue(occupied.add(x to y))
+        }
+        assertEquals(count, occupied.size)
+        assertEquals(632, occupied.maxOf { it.first } - occupied.minOf { it.first } + 1)
+        assertEquals(633, occupied.maxOf { it.second } - occupied.minOf { it.second } + 1)
+    }
+
+    @Test
     fun `default seed changes between initializations`() {
         val first = UniformParticleInitializer.fill(
             FloatBuffer.allocate(4),
