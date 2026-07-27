@@ -72,6 +72,7 @@ class GravityPipeline(
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
     private lateinit var massPrefix: DoubleArray
+    private lateinit var centralBodyIds: IntArray
     private var normalizationMass = 0f
 
     init {
@@ -182,6 +183,8 @@ class GravityPipeline(
         kick.float("uInitialTotalMass", normalizationMass)
         kick.float("uHaloMassFraction", galaxyPreset.haloMassFraction)
         kick.float("uHaloScaleRadius", galaxyPreset.haloScaleRadius)
+        kick.int("uCentralBody0", centralBodyIds[0])
+        kick.int("uCentralBody1", centralBodyIds[1])
         kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         kick.int("uMeshWidth", gridWidth)
         kick.int("uPhysicalWidth", physicalGridWidth)
@@ -285,7 +288,7 @@ class GravityPipeline(
             config.capacity.toLong() * Float.SIZE_BYTES,
             null,
         )?.asFloatBuffer() ?: error("Unable to map mass buffer")
-        val initialState = GalaxyInitializer.fill(
+        val initialState = GalaxyInitializer.fillTwin(
             bodies = mappedBodies,
             masses = mappedMasses,
             count = config.capacity,
@@ -294,6 +297,7 @@ class GravityPipeline(
             preset = galaxyPreset,
         )
         massPrefix = initialState.massPrefix
+        centralBodyIds = initialState.centralBodyIds
         normalizationMass = initialState.normalizationMass
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)

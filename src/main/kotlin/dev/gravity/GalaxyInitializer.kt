@@ -46,6 +46,7 @@ data class GalaxyInitialState(
     val massPrefix: DoubleArray,
     val normalizationMass: Float,
     val maximumPhysicalRadius: Float,
+    val centralBodyIds: IntArray = intArrayOf(0),
 )
 
 object GalaxyInitializer {
@@ -112,6 +113,57 @@ object GalaxyInitializer {
             maximumRadius = max(maximumRadius, radius)
         }
         return GalaxyInitialState(prefix, count.toFloat(), maximumRadius)
+    }
+
+    fun fillTwin(
+        bodies: FloatBuffer,
+        masses: FloatBuffer,
+        count: Int,
+        domainAspect: Float,
+        gravity: Float,
+        preset: GalaxyPreset,
+    ): GalaxyInitialState {
+        require(count >= 6 && count % 2 == 0) { "Twin disks require an even body count" }
+        val bodiesPerGalaxy = count / 2
+        val localBodies = FloatBuffer.allocate(bodiesPerGalaxy * 4)
+        val localMasses = FloatBuffer.allocate(bodiesPerGalaxy)
+        val localState = fill(
+            bodies = localBodies,
+            masses = localMasses,
+            count = bodiesPerGalaxy,
+            domainAspect = domainAspect,
+            gravity = gravity * 0.5f,
+            preset = preset,
+        )
+        val leftCenterX = preset.outerRadius
+        val rightCenterX = 1f - preset.outerRadius
+        val orbitalSpeed = 0.5f * sqrt(gravity)
+        val prefix = DoubleArray(count + 1)
+
+        for (galaxy in 0..1) {
+            val centerX = if (galaxy == 0) leftCenterX else rightCenterX
+            val bulkVy = if (galaxy == 0) orbitalSpeed else -orbitalSpeed
+            for (localId in 0 until bodiesPerGalaxy) {
+                val source = localId * 4
+                putBody(
+                    bodies,
+                    centerX + localBodies[source] - 0.5f,
+                    localBodies[source + 1],
+                    localBodies[source + 2],
+                    localBodies[source + 3] + bulkVy,
+                )
+                val mass = localMasses[localId]
+                masses.put(mass)
+                val globalId = galaxy * bodiesPerGalaxy + localId
+                prefix[globalId + 1] = prefix[globalId] + mass
+            }
+        }
+        return GalaxyInitialState(
+            massPrefix = prefix,
+            normalizationMass = count.toFloat(),
+            maximumPhysicalRadius = localState.maximumPhysicalRadius,
+            centralBodyIds = intArrayOf(0, bodiesPerGalaxy),
+        )
     }
 
     private fun sampleDiskRadius(random: Random, preset: GalaxyPreset): Float {
