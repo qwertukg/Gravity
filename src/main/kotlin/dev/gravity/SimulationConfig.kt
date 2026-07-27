@@ -3,8 +3,8 @@ package dev.gravity
 import kotlin.math.min
 
 data class SimulationConfig(
-    val capacity: Int = 800_000,
-    val initialBodies: Int = 800_000,
+    val capacity: Int = 400_000,
+    val initialBodies: Int = 400_000,
     val gridWidth: Int = 512,
     val gridHeight: Int = 256,
     val fixedBodyCount: Boolean = true,

@@ -12,6 +12,8 @@ uniform int uCollisionWidth;
 uniform int uCollisionHeight;
 uniform int uBuildCollisionGrid;
 
+const float MAX_COLLISION_DISPLACEMENT_PIXELS = 0.45;
+
 void reflectAxis(inout float position, inout float velocity) {
     float phase = mod(position, 2.0);
     if (phase < 0.0) phase += 2.0;
@@ -29,6 +31,14 @@ void main() {
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
     body.zw += acceleration[id] * (0.5 * uDt);
+    if (uBuildCollisionGrid != 0) {
+        vec2 displacementPixels =
+            body.zw * vec2(uCollisionWidth, uCollisionHeight) * uDt;
+        float displacement = length(displacementPixels);
+        if (displacement > MAX_COLLISION_DISPLACEMENT_PIXELS) {
+            body.zw *= MAX_COLLISION_DISPLACEMENT_PIXELS / displacement;
+        }
+    }
     body.xy += body.zw * uDt;
     reflectAxis(body.x, body.z);
     reflectAxis(body.y, body.w);

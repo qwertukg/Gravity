@@ -1,0 +1,53 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer CollisionHeads { int collisionHeads[]; };
+layout(std430, binding = 2) readonly buffer NextBody { int nextBody[]; };
+layout(std430, binding = 3) buffer CollisionContacts { int collisionContacts[]; };
+
+uniform int uCount;
+uniform int uWidth;
+uniform int uHeight;
+
+const int MAX_CELL_VISITS = 4;
+
+bool inside(ivec2 cell) {
+    return cell.x >= 0 && cell.y >= 0 && cell.x < uWidth && cell.y < uHeight;
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+
+    vec2 resolution = vec2(uWidth, uHeight);
+    vec2 positionPixels = bodies[id].xy * resolution;
+    ivec2 home = clamp(
+        ivec2(floor(positionPixels)),
+        ivec2(0),
+        ivec2(uWidth - 1, uHeight - 1)
+    );
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 cell = home + ivec2(dx, dy);
+            if (!inside(cell)) continue;
+
+            int other = collisionHeads[cell.x + cell.y * uWidth];
+            int visited = 0;
+            while (other >= 0 && visited < MAX_CELL_VISITS) {
+                uint otherId = uint(other);
+                if (otherId > id) {
+                    vec2 separation =
+                        bodies[otherId].xy * resolution - positionPixels;
+                    if (dot(separation, separation) < 1.0) {
+                        atomicAdd(collisionContacts[id], 1);
+                        atomicAdd(collisionContacts[otherId], 1);
+                    }
+                }
+                other = nextBody[otherId];
+                visited++;
+            }
+        }
+    }
+}

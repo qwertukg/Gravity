@@ -5,6 +5,7 @@ layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer CollisionHeads { int collisionHeads[]; };
 layout(std430, binding = 2) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 3) buffer CollisionDeltas { ivec4 collisionDeltas[]; };
+layout(std430, binding = 4) readonly buffer CollisionContacts { int collisionContacts[]; };
 
 uniform int uCount;
 uniform int uViewportWidth;
@@ -14,8 +15,10 @@ uniform int uGridHeight;
 uniform int uCellSizePixels;
 
 const float DIAMETER_PIXELS = 1.0;
+const float RESTITUTION = 0.0;
 const float VELOCITY_FIXED_SCALE = 4096.0;
 const float POSITION_FIXED_SCALE = 65536.0;
+const int MAX_CELL_VISITS = 4;
 
 bool inside(ivec2 cell) {
     return cell.x >= 0 && cell.y >= 0 &&
@@ -55,13 +58,18 @@ void main() {
             if (!inside(cell)) continue;
 
             int other = collisionHeads[cell.x + cell.y * uGridWidth];
-            while (other >= 0) {
+            int visited = 0;
+            while (other >= 0 && visited < MAX_CELL_VISITS) {
                 uint otherId = uint(other);
                 if (otherId > id) {
                     vec4 otherBody = bodies[otherId];
                     vec2 separation = otherBody.xy * resolution - positionPixels;
                     float distanceSquared = dot(separation, separation);
                     if (distanceSquared < DIAMETER_PIXELS * DIAMETER_PIXELS) {
+                        float contactWeight = 1.0 / float(max(
+                            collisionContacts[id],
+                            collisionContacts[otherId]
+                        ));
                         float distance = sqrt(max(distanceSquared, 1e-12));
                         vec2 normal = distanceSquared > 1e-12
                             ? separation / distance
@@ -73,7 +81,8 @@ void main() {
                         );
 
                         vec2 velocityDelta = relativeNormal < 0.0
-                            ? relativeNormal * normal
+                            ? 0.5 * (1.0 + RESTITUTION) *
+                                contactWeight * relativeNormal * normal
                             : vec2(0.0);
                         vec2 positionDelta =
                             -0.5 * (DIAMETER_PIXELS - distance) * normal;
@@ -82,6 +91,7 @@ void main() {
                     }
                 }
                 other = nextBody[otherId];
+                visited++;
             }
         }
     }
