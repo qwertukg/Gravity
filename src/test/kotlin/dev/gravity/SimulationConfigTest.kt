@@ -13,6 +13,7 @@ class SimulationConfigTest {
         assertEquals(1024, config.gridWidth)
         assertEquals(1024, config.gridHeight)
         assertEquals(true, config.fixedBodyCount)
+        assertEquals(100f, config.pointMassMultiplier)
     }
 
     @Test
@@ -35,6 +36,21 @@ class SimulationConfigTest {
             emptyMap(),
         )
         assertEquals(500, config.initialBodies)
+    }
+
+    @Test
+    fun `mouse mass multiplier can be configured`() {
+        val commandLine = SimulationConfig.parse(
+            arrayOf("--mouse-mass=250"),
+            mapOf("GRAVITY_MOUSE_MASS" to "75"),
+        )
+        val environment = SimulationConfig.parse(
+            emptyArray(),
+            mapOf("GRAVITY_MOUSE_MASS" to "75"),
+        )
+
+        assertEquals(250f, commandLine.pointMassMultiplier)
+        assertEquals(75f, environment.pointMassMultiplier)
     }
 
     @Test

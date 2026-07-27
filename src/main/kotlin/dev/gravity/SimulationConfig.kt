@@ -11,6 +11,7 @@ data class SimulationConfig(
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
+    val pointMassMultiplier: Float = 100f,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
 ) {
@@ -26,6 +27,7 @@ data class SimulationConfig(
         require(gravitationalConstant > 0f)
         require(softeningCells > 0f)
         require(timeStep > 0f)
+        require(pointMassMultiplier > 0f)
         require(maxFrames == null || maxFrames > 0)
     }
 
@@ -82,6 +84,11 @@ data class SimulationConfig(
                 gravitationalConstant = floatValue("gravity", "GRAVITY_G", 0.035f),
                 softeningCells = floatValue("softening", "GRAVITY_SOFTENING", 0.85f),
                 timeStep = floatValue("dt", "GRAVITY_DT", 1f / 120f),
+                pointMassMultiplier = floatValue(
+                    "mouse-mass",
+                    "GRAVITY_MOUSE_MASS",
+                    100f,
+                ),
                 maxFrames = values["frames"]?.toIntOrNull(),
             )
         }

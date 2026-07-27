@@ -126,7 +126,7 @@ class GravityPipeline(
 
     private fun buildForce(activeBodies: Int) {
         val totalMass = massPrefix[activeBodies].toFloat()
-        val massScale = massScaleFor(totalMass)
+        val massScale = massScaleFor(totalMass + activePointMass())
         clear.use()
         bind(0, density)
         bind(1, cellHeads)
@@ -155,7 +155,7 @@ class GravityPipeline(
         build.vec2("uPointMassPosition", pointMassX, pointMassY)
         build.float(
             "uPointMass",
-            normalizationMass * 0.5f * galaxyPreset.blackHoleMassFraction,
+            pointMass(),
         )
         dispatchBodies(activeBodies)
         barrier()
@@ -209,10 +209,10 @@ class GravityPipeline(
         kick.float("uHaloScaleRadius", galaxyPreset.haloScaleRadius)
         kick.int("uPointMassActive", if (pointMassActive) 1 else 0)
         kick.vec2("uPointMassPosition", pointMassX, pointMassY)
-        kick.float("uPointMassFraction", 0.5f * galaxyPreset.blackHoleMassFraction)
+        kick.float("uPointMassFraction", pointMassFraction())
         kick.int("uCentralBody0", centralBodyIds[0])
         kick.int("uCentralBody1", centralBodyIds[1])
-        kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
+        kick.float("uInverseMassScale", 1f / massScaleFor(totalMass + activePointMass()))
         kick.int("uMeshWidth", gridWidth)
         kick.int("uPhysicalWidth", physicalGridWidth)
         kick.int("uPhysicalHeight", physicalGridHeight)
@@ -382,6 +382,13 @@ class GravityPipeline(
 
     private fun massScaleFor(totalMass: Float): Int =
         (4_000_000_000.0 / totalMass).toLong().coerceIn(1L, 65_536L).toInt()
+
+    private fun pointMassFraction(): Float =
+        0.5f * galaxyPreset.blackHoleMassFraction * config.pointMassMultiplier
+
+    private fun pointMass(): Float = normalizationMass * pointMassFraction()
+
+    private fun activePointMass(): Float = if (pointMassActive) pointMass() else 0f
 
     private fun other(current: Int, first: Int, second: Int): Int =
         if (current == first) second else first
