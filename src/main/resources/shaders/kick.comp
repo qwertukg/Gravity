@@ -10,7 +10,6 @@ layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 6) readonly buffer Masses { float masses[]; };
 layout(std430, binding = 7) readonly buffer CellCounts { int cellCounts[]; };
 layout(std430, binding = 8) readonly buffer CellMass { uint cellMass[]; };
-layout(std430, binding = 9) readonly buffer ActiveFlags { int activeFlags[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -25,10 +24,6 @@ uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
-uniform float uHaloMassFraction;
-uniform float uHaloScaleRadius;
-uniform int uCentralBody0;
-uniform int uCentralBody1;
 
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
@@ -62,14 +57,6 @@ vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMas
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
 }
 
-vec2 haloAcceleration(vec2 center, vec2 targetPosition) {
-    vec2 deltaPhysical = (targetPosition - center) * vec2(uDomainAspect, 1.0);
-    float rSquared = dot(deltaPhysical, deltaPhysical);
-    vec2 physicalAcceleration = -uGravity * (0.5 * uHaloMassFraction) *
-        deltaPhysical / (rSquared + uHaloScaleRadius * uHaloScaleRadius);
-    return physicalAcceleration / vec2(uDomainAspect, 1.0);
-}
-
 float interpolateX(vec2 position) {
     vec2 gridPosition = position * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
@@ -95,33 +82,12 @@ float interpolateY(vec2 position) {
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
-    if (activeFlags[id] == 0) return;
     vec4 body = bodies[id];
     vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
-    if (activeFlags[uCentralBody0] != 0) {
-        result += haloAcceleration(bodies[uCentralBody0].xy, body.xy);
-    }
-    if (activeFlags[uCentralBody1] != 0) {
-        result += haloAcceleration(bodies[uCentralBody1].xy, body.xy);
-    }
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense
     // cells use a Barnes-Hut-style cell monopole to bound frame time.
     ivec2 home = ivec2(floor(body.xy * vec2(uPhysicalWidth, uPhysicalHeight)));
-    if (int(id) != uCentralBody0 && activeFlags[uCentralBody0] != 0) {
-        result += localAcceleration(
-            bodies[uCentralBody0].xy,
-            body.xy,
-            masses[uCentralBody0]
-        );
-    }
-    if (int(id) != uCentralBody1 && activeFlags[uCentralBody1] != 0) {
-        result += localAcceleration(
-            bodies[uCentralBody1].xy,
-            body.xy,
-            masses[uCentralBody1]
-        );
-    }
     for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
         for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
             ivec2 neighborCell = home + ivec2(dx, dy);
@@ -139,7 +105,7 @@ void main() {
                 int visited = 0;
                 int limit = homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
                 while (other >= 0 && visited < limit) {
-                    if (uint(other) != id && other != uCentralBody0 && other != uCentralBody1) {
+                    if (uint(other) != id) {
                         result += localAcceleration(bodies[other].xy, body.xy, masses[other]);
                     }
                     other = nextBody[other];

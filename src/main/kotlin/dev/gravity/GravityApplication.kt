@@ -181,7 +181,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             glfwWaitEventsTimeout(0.01)
         }
         System.err.println(
-            "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.width()}, " +
+            "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.height()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
                 "foreground=$foreground; Esc exits"
         )
@@ -197,7 +197,6 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private fun render(activeBodies: Int, fps: Double) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
-        renderProgram!!.float("uViewportAspect", viewportWidth.toFloat() / viewportHeight)
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)

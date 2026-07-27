@@ -8,7 +8,6 @@ layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
 layout(std430, binding = 4) readonly buffer Masses { float masses[]; };
 layout(std430, binding = 5) buffer CellCounts { int cellCounts[]; };
 layout(std430, binding = 6) buffer CellMass { uint cellMass[]; };
-layout(std430, binding = 7) readonly buffer ActiveFlags { int activeFlags[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -29,7 +28,6 @@ uint cellIndex(ivec2 cell) {
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
-    if (activeFlags[id] == 0) return;
 
     vec2 p = bodies[id].xy;
     vec2 gridPosition = p * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;

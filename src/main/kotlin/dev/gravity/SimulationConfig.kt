@@ -5,8 +5,8 @@ import kotlin.math.min
 data class SimulationConfig(
     val capacity: Int = 500_000,
     val initialBodies: Int = 500_000,
-    val gridWidth: Int = 1024,
-    val gridHeight: Int = 1024,
+    val gridWidth: Int = 512,
+    val gridHeight: Int = 256,
     val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
@@ -57,7 +57,7 @@ data class SimulationConfig(
 
             val grid = values["grid"] ?: env["GRAVITY_GRID"]
             val (gridWidth, gridHeight) = when {
-                grid == null -> 1024 to 1024
+                grid == null -> 512 to 256
                 'x' in grid.lowercase() -> {
                     val parts = grid.lowercase().split('x', limit = 2)
                     val width = parts[0].toIntOrNull()

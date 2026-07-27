@@ -10,8 +10,8 @@ class SimulationConfigTest {
         val config = SimulationConfig.parse(emptyArray(), emptyMap())
         assertEquals(500_000, config.initialBodies)
         assertEquals(500_000, config.capacity)
-        assertEquals(1024, config.gridWidth)
-        assertEquals(1024, config.gridHeight)
+        assertEquals(512, config.gridWidth)
+        assertEquals(256, config.gridHeight)
         assertEquals(true, config.fixedBodyCount)
     }
 

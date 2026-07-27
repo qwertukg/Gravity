@@ -1,10 +1,7 @@
 package dev.gravity
 
 import org.lwjgl.opengl.GL11.GL_FLOAT
-import org.lwjgl.opengl.GL11.GL_UNSIGNED_INT
-import org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER
 import org.lwjgl.opengl.GL15.GL_DYNAMIC_DRAW
-import org.lwjgl.opengl.GL15.GL_READ_ONLY
 import org.lwjgl.opengl.GL15.GL_WRITE_ONLY
 import org.lwjgl.opengl.GL15.glBindBuffer
 import org.lwjgl.opengl.GL15.glBufferData
@@ -12,7 +9,6 @@ import org.lwjgl.opengl.GL15.glDeleteBuffers
 import org.lwjgl.opengl.GL15.glGenBuffers
 import org.lwjgl.opengl.GL15.glMapBuffer
 import org.lwjgl.opengl.GL15.glUnmapBuffer
-import org.lwjgl.opengl.GL20.glUseProgram
 import org.lwjgl.opengl.GL30.glBindBufferBase
 import org.lwjgl.opengl.GL30.GL_R32F
 import org.lwjgl.opengl.GL31.GL_COPY_READ_BUFFER
@@ -40,15 +36,13 @@ class GravityPipeline(
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
-    private val domainAspect = 1f
-    private val galaxyPreset = GalaxyPreset.fittingViewportHeight(viewportAspect)
+    private val domainAspect = viewportAspect
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
 
     private val bodies = buffer(bodyBytes)
     private val masses = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
-    private val activeFlags = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val acceleration = buffer(accelerationBytes)
     private val density = buffer(cells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
@@ -72,9 +66,8 @@ class GravityPipeline(
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
     private lateinit var massPrefix: DoubleArray
-    private lateinit var centralBodyIds: IntArray
     private var normalizationMass = 0f
-    private var initialSeeds: LongArray? = null
+    private var initialSeed: Long? = null
 
     init {
         seedBodies()
@@ -97,7 +90,6 @@ class GravityPipeline(
         drift.use()
         bind(0, bodies)
         bind(1, acceleration)
-        bind(2, activeFlags)
         drift.int("uCount", activeBodies)
         drift.float("uDt", config.timeStep)
         dispatchBodies(activeBodies)
@@ -110,7 +102,6 @@ class GravityPipeline(
 
     fun bindBodiesForRender() {
         bind(0, bodies)
-        bind(1, activeFlags)
     }
 
     private fun buildForce(activeBodies: Int) {
@@ -134,7 +125,6 @@ class GravityPipeline(
         bind(4, masses)
         bind(5, cellCounts)
         bind(6, cellMass)
-        bind(7, activeFlags)
         build.int("uCount", activeBodies)
         build.int("uMeshWidth", gridWidth)
         build.int("uPhysicalWidth", physicalGridWidth)
@@ -185,13 +175,8 @@ class GravityPipeline(
         bind(6, masses)
         bind(7, cellCounts)
         bind(8, cellMass)
-        bind(9, activeFlags)
         kick.int("uCount", activeBodies)
         kick.float("uInitialTotalMass", normalizationMass)
-        kick.float("uHaloMassFraction", galaxyPreset.haloMassFraction)
-        kick.float("uHaloScaleRadius", galaxyPreset.haloScaleRadius)
-        kick.int("uCentralBody0", centralBodyIds[0])
-        kick.int("uCentralBody1", centralBodyIds[1])
         kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         kick.int("uMeshWidth", gridWidth)
         kick.int("uPhysicalWidth", physicalGridWidth)
@@ -295,46 +280,29 @@ class GravityPipeline(
             config.capacity.toLong() * Float.SIZE_BYTES,
             null,
         )?.asFloatBuffer() ?: error("Unable to map mass buffer")
-        val initialState = initialSeeds?.let { seeds ->
-            GalaxyInitializer.fillTwin(
+        val initialState = initialSeed?.let { seed ->
+            UniformParticleInitializer.fill(
                 bodies = mappedBodies,
                 masses = mappedMasses,
                 count = config.capacity,
-                domainAspect = domainAspect,
-                gravity = config.gravitationalConstant,
-                preset = galaxyPreset,
-                seeds = seeds,
+                seed = seed,
             )
-        } ?: GalaxyInitializer.fillTwin(
+        } ?: UniformParticleInitializer.fill(
             bodies = mappedBodies,
             masses = mappedMasses,
             count = config.capacity,
-            domainAspect = domainAspect,
-            gravity = config.gravitationalConstant,
-            preset = galaxyPreset,
         )
-        if (initialSeeds == null) initialSeeds = initialState.galaxySeeds.copyOf()
+        if (initialSeed == null) initialSeed = initialState.seed
         massPrefix = initialState.massPrefix
-        centralBodyIds = initialState.centralBodyIds
         normalizationMass = initialState.normalizationMass
         System.err.println(
-            "Galaxy seeds: " +
-                initialState.galaxySeeds.joinToString { java.lang.Long.toUnsignedString(it) }
+            "Particle seed: ${java.lang.Long.toUnsignedString(initialState.seed)}"
         )
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, masses)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Mass buffer became corrupt while seeding" }
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, activeFlags)
-        val mappedFlags = glMapBuffer(
-            GL_SHADER_STORAGE_BUFFER,
-            GL_WRITE_ONLY,
-            config.capacity.toLong() * Int.SIZE_BYTES,
-            null,
-        )?.asIntBuffer() ?: error("Unable to map activity buffer")
-        repeat(config.capacity) { mappedFlags.put(1) }
-        check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Activity buffer became corrupt while seeding" }
     }
 
     private fun clearFloatBuffer(buffer: Int) {
@@ -379,7 +347,6 @@ class GravityPipeline(
         intArrayOf(
             bodies,
             masses,
-            activeFlags,
             acceleration,
             density,
             cellHeads,
