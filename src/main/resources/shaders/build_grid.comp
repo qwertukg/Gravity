@@ -8,30 +8,31 @@ layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
 layout(std430, binding = 4) readonly buffer Masses { float masses[]; };
 layout(std430, binding = 5) buffer CellCounts { int cellCounts[]; };
 layout(std430, binding = 6) buffer CellMass { uint cellMass[]; };
+layout(std430, binding = 7) readonly buffer ActiveFlags { int activeFlags[]; };
 
 uniform int uCount;
-uniform int uGridWidth;
-uniform int uGridHeight;
+uniform int uMeshWidth;
+uniform int uPhysicalWidth;
+uniform int uPhysicalHeight;
 uniform int uMassScale;
 
-int wrapX(int value) {
-    return (value + uGridWidth) & (uGridWidth - 1);
-}
-
-int wrapY(int value) {
-    return (value + uGridHeight) & (uGridHeight - 1);
+uint densityIndex(ivec2 physicalCell) {
+    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
+    ivec2 meshCell = physicalCell + offset;
+    return uint(meshCell.x + meshCell.y * uMeshWidth);
 }
 
 uint cellIndex(ivec2 cell) {
-    return uint(wrapX(cell.x) + wrapY(cell.y) * uGridWidth);
+    return uint(cell.x + cell.y * uPhysicalWidth);
 }
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
+    if (activeFlags[id] == 0) return;
 
     vec2 p = bodies[id].xy;
-    vec2 gridPosition = p * vec2(uGridWidth, uGridHeight) - 0.5;
+    vec2 gridPosition = p * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 fraction = fract(gridPosition);
     vec4 weights = vec4(
@@ -41,12 +42,12 @@ void main() {
         fraction.x * fraction.y
     );
     float scale = float(uMassScale) * masses[id];
-    atomicAdd(density[cellIndex(base)], uint(round(weights.x * scale)));
-    atomicAdd(density[cellIndex(base + ivec2(1, 0))], uint(round(weights.y * scale)));
-    atomicAdd(density[cellIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
-    atomicAdd(density[cellIndex(base + ivec2(1, 1))], uint(round(weights.w * scale)));
+    atomicAdd(density[densityIndex(base)], uint(round(weights.x * scale)));
+    atomicAdd(density[densityIndex(base + ivec2(1, 0))], uint(round(weights.y * scale)));
+    atomicAdd(density[densityIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
+    atomicAdd(density[densityIndex(base + ivec2(1, 1))], uint(round(weights.w * scale)));
 
-    ivec2 home = ivec2(floor(p * vec2(uGridWidth, uGridHeight)));
+    ivec2 home = ivec2(floor(p * vec2(uPhysicalWidth, uPhysicalHeight)));
     uint homeIndex = cellIndex(home);
     nextBody[id] = atomicExchange(heads[homeIndex], int(id));
     atomicAdd(cellCounts[homeIndex], 1);

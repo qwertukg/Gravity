@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 
 class GalaxyInitializerTest {
     @Test
-    fun `galaxy keeps a periodic safety margin and rotates clockwise`() {
+    fun `galaxy keeps a screen-edge safety margin and rotates clockwise`() {
         val count = 20_000
         val aspect = 3440f / 1440f
         val bodies = ByteBuffer.allocateDirect(count * 4 * Float.SIZE_BYTES)
