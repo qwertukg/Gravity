@@ -57,7 +57,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
 
     fun run() {
         initWindow()
-        val simulation = GravityPipeline(config, viewportWidth, viewportHeight)
+        val simulation = GravityPipeline(config)
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
         vao = glGenVertexArrays()
@@ -147,7 +147,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glPointSize(1f)
         glfwShowWindow(window)
         System.err.println(
-            "Gravity: ${mode.width()}x${mode.height()}, capacity=${config.capacity}, " +
+            "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.width()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}; Esc exits"
         )
     }
@@ -155,6 +155,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private fun render(activeBodies: Int, fps: Double) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
+        renderProgram!!.float("uViewportAspect", viewportWidth.toFloat() / viewportHeight)
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)

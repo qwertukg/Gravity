@@ -30,8 +30,6 @@ import kotlin.math.ceil
 
 class GravityPipeline(
     private val config: SimulationConfig,
-    viewportWidth: Int,
-    viewportHeight: Int,
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
@@ -41,7 +39,7 @@ class GravityPipeline(
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
-    private val domainAspect = viewportWidth.toFloat() / viewportHeight.toFloat()
+    private val domainAspect = 1f
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES

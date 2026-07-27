@@ -11,7 +11,7 @@ class SimulationConfigTest {
         assertEquals(350_000, config.initialBodies)
         assertEquals(350_000, config.capacity)
         assertEquals(1024, config.gridWidth)
-        assertEquals(512, config.gridHeight)
+        assertEquals(1024, config.gridHeight)
         assertEquals(true, config.fixedBodyCount)
     }
 

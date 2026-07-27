@@ -6,7 +6,7 @@ data class SimulationConfig(
     val capacity: Int = 350_000,
     val initialBodies: Int = 350_000,
     val gridWidth: Int = 1024,
-    val gridHeight: Int = 512,
+    val gridHeight: Int = 1024,
     val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
@@ -57,7 +57,7 @@ data class SimulationConfig(
 
             val grid = values["grid"] ?: env["GRAVITY_GRID"]
             val (gridWidth, gridHeight) = when {
-                grid == null -> 1024 to 512
+                grid == null -> 1024 to 1024
                 'x' in grid.lowercase() -> {
                     val parts = grid.lowercase().split('x', limit = 2)
                     val width = parts[0].toIntOrNull()
