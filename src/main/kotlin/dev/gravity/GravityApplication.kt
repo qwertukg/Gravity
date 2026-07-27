@@ -197,7 +197,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         }
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, " +
-                "space=${mode.width()}x${mode.height()} torus, " +
+                "space=${mode.width()}x${mode.height()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
                 "foreground=$foreground; Esc exits"

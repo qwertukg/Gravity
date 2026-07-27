@@ -13,21 +13,16 @@ uniform int uCount;
 uniform int uMeshWidth;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
-uniform int uParticleWidth;
-uniform int uParticleHeight;
 uniform int uMassScale;
 
 uint densityIndex(ivec2 physicalCell) {
-    ivec2 wrapped = physicalCell;
-    if (wrapped.x < 0) wrapped.x += uPhysicalWidth;
-    else if (wrapped.x >= uPhysicalWidth) wrapped.x -= uPhysicalWidth;
-    if (wrapped.y < 0) wrapped.y += uPhysicalHeight;
-    else if (wrapped.y >= uPhysicalHeight) wrapped.y -= uPhysicalHeight;
-    return uint(wrapped.x + wrapped.y * uMeshWidth);
+    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
+    ivec2 meshCell = physicalCell + offset;
+    return uint(meshCell.x + meshCell.y * uMeshWidth);
 }
 
 uint cellIndex(ivec2 cell) {
-    return uint(cell.x + cell.y * uParticleWidth);
+    return uint(cell.x + cell.y * uPhysicalWidth);
 }
 
 void main() {
@@ -50,7 +45,7 @@ void main() {
     atomicAdd(density[densityIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
     atomicAdd(density[densityIndex(base + ivec2(1, 1))], uint(round(weights.w * scale)));
 
-    ivec2 home = ivec2(floor(p * vec2(uParticleWidth, uParticleHeight)));
+    ivec2 home = ivec2(floor(p * vec2(uPhysicalWidth, uPhysicalHeight)));
     uint homeIndex = cellIndex(home);
     nextBody[id] = atomicExchange(heads[homeIndex], int(id));
     atomicAdd(cellCounts[homeIndex], 1);

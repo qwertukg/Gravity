@@ -15,8 +15,6 @@ uniform int uCount;
 uniform int uMeshWidth;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
-uniform int uParticleWidth;
-uniform int uParticleHeight;
 uniform int uInitial;
 uniform int uNeighborRadiusX;
 uniform int uNeighborRadiusY;
@@ -30,31 +28,23 @@ uniform float uInverseMassScale;
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
 
-ivec2 wrappedCell(ivec2 cell) {
-    if (cell.x < 0) cell.x += uParticleWidth;
-    else if (cell.x >= uParticleWidth) cell.x -= uParticleWidth;
-    if (cell.y < 0) cell.y += uParticleHeight;
-    else if (cell.y >= uParticleHeight) cell.y -= uParticleHeight;
-    return cell;
+bool insideGrid(ivec2 cell) {
+    return cell.x >= 0 && cell.y >= 0 &&
+        cell.x < uPhysicalWidth && cell.y < uPhysicalHeight;
 }
 
 int cellIndex(ivec2 cell) {
-    ivec2 wrapped = wrappedCell(cell);
-    return wrapped.x + wrapped.y * uParticleWidth;
+    return cell.x + cell.y * uPhysicalWidth;
 }
 
 int forceIndex(ivec2 physicalCell) {
-    ivec2 wrapped = physicalCell;
-    if (wrapped.x < 0) wrapped.x += uPhysicalWidth;
-    else if (wrapped.x >= uPhysicalWidth) wrapped.x -= uPhysicalWidth;
-    if (wrapped.y < 0) wrapped.y += uPhysicalHeight;
-    else if (wrapped.y >= uPhysicalHeight) wrapped.y -= uPhysicalHeight;
-    return wrapped.x + wrapped.y * uMeshWidth;
+    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
+    ivec2 meshCell = physicalCell + offset;
+    return meshCell.x + meshCell.y * uMeshWidth;
 }
 
 vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMass) {
     vec2 deltaNormalized = sourcePosition - targetPosition;
-    deltaNormalized -= round(deltaNormalized);
     vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
     float rSquared = dot(deltaPhysical, deltaPhysical);
     float sigma = uSigmaCells / float(uPhysicalHeight);
@@ -97,18 +87,17 @@ void main() {
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense
     // cells use a Barnes-Hut-style cell monopole to bound frame time.
-    ivec2 home = ivec2(floor(body.xy * vec2(uParticleWidth, uParticleHeight)));
+    ivec2 home = ivec2(floor(body.xy * vec2(uPhysicalWidth, uPhysicalHeight)));
     for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
         for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
             ivec2 neighborCell = home + ivec2(dx, dy);
-            ivec2 wrappedNeighbor = wrappedCell(neighborCell);
-            int index = wrappedNeighbor.x +
-                wrappedNeighbor.y * uParticleWidth;
+            if (!insideGrid(neighborCell)) continue;
+            int index = cellIndex(neighborCell);
             int count = cellCounts[index];
             bool homeCell = dx == 0 && dy == 0;
             if (!homeCell && count > EXACT_CELL_THRESHOLD) {
-                vec2 center = (vec2(wrappedNeighbor) + 0.5) /
-                    vec2(uParticleWidth, uParticleHeight);
+                vec2 center = (vec2(neighborCell) + 0.5) /
+                    vec2(uPhysicalWidth, uPhysicalHeight);
                 float aggregateMass = float(cellMass[index]) * uInverseMassScale;
                 result += localAcceleration(center, body.xy, aggregateMass);
             } else {
