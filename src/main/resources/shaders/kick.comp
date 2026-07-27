@@ -27,9 +27,6 @@ uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
 uniform float uHaloMassFraction;
 uniform float uHaloScaleRadius;
-uniform int uPointMassActive;
-uniform vec2 uPointMassPosition;
-uniform float uPointMassFraction;
 uniform int uCentralBody0;
 uniform int uCentralBody1;
 
@@ -107,14 +104,6 @@ void main() {
     if (activeFlags[uCentralBody1] != 0) {
         result += haloAcceleration(bodies[uCentralBody1].xy, body.xy);
     }
-    if (uPointMassActive != 0) {
-        result += localAcceleration(
-            uPointMassPosition,
-            body.xy,
-            uPointMassFraction * uInitialTotalMass
-        );
-    }
-
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense
     // cells use a Barnes-Hut-style cell monopole to bound frame time.

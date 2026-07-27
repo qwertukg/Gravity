@@ -7,7 +7,6 @@ import org.lwjgl.glfw.GLFW.GLFW_FOCUSED
 import org.lwjgl.glfw.GLFW.GLFW_FOCUS_ON_SHOW
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
-import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_PROFILE
@@ -18,8 +17,6 @@ import org.lwjgl.glfw.GLFW.glfwDefaultWindowHints
 import org.lwjgl.glfw.GLFW.glfwDestroyWindow
 import org.lwjgl.glfw.GLFW.glfwFocusWindow
 import org.lwjgl.glfw.GLFW.glfwGetPrimaryMonitor
-import org.lwjgl.glfw.GLFW.glfwGetCursorPos
-import org.lwjgl.glfw.GLFW.glfwGetMouseButton
 import org.lwjgl.glfw.GLFW.glfwGetVideoMode
 import org.lwjgl.glfw.GLFW.glfwGetWindowAttrib
 import org.lwjgl.glfw.GLFW.glfwInit
@@ -52,7 +49,6 @@ import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.opengl.GL43
-import org.lwjgl.system.MemoryStack
 import java.util.Locale
 
 class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
@@ -95,7 +91,6 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         var displayedFps = 0.0
 
         while (!glfwWindowShouldClose(window)) {
-            updatePointMass(simulation)
             if (resetRequested) {
                 active = config.initialBodies
                 controller = AdaptiveBodyController(active, config.capacity, config.targetGpuMillis)
@@ -197,20 +192,6 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         val foreground = WindowsForegroundActivator.activate(window)
         glfwPollEvents()
         return foreground && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0
-    }
-
-    private fun updatePointMass(simulation: GravityPipeline) {
-        val active = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS
-        MemoryStack.stackPush().use { stack ->
-            val cursorX = stack.mallocDouble(1)
-            val cursorY = stack.mallocDouble(1)
-            glfwGetCursorPos(window, cursorX, cursorY)
-            simulation.setPointMass(
-                active = active,
-                x = ViewportMapping.domainX(cursorX[0], viewportWidth),
-                y = ViewportMapping.domainY(cursorY[0], viewportWidth, viewportHeight),
-            )
-        }
     }
 
     private fun render(activeBodies: Int, fps: Double) {
