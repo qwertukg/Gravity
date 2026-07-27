@@ -150,7 +150,9 @@ object GalaxyInitializer {
                 count = bodiesPerGalaxy,
                 domainAspect = domainAspect,
                 gravity = gravity * 0.5f,
-                preset = preset,
+                preset = preset.copy(
+                    clockwise = if (galaxy == 0) preset.clockwise else !preset.clockwise,
+                ),
                 seed = seeds[galaxy],
             )
             maximumRadius = max(maximumRadius, localState.maximumPhysicalRadius)
