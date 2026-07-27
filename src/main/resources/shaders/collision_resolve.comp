@@ -5,7 +5,9 @@ layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer CollisionHeads { int collisionHeads[]; };
 layout(std430, binding = 2) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 3) buffer CollisionDeltas { ivec4 collisionDeltas[]; };
-layout(std430, binding = 4) buffer CollisionContacts { int collisionContacts[]; };
+layout(std430, binding = 4) readonly buffer CollisionCellCounts {
+    int collisionCellCounts[];
+};
 
 uniform int uCount;
 uniform int uViewportWidth;
@@ -16,6 +18,7 @@ uniform int uCellSizePixels;
 
 const float DIAMETER_PIXELS = 1.0;
 const float RESTITUTION = 0.0;
+const float POSITION_RELAXATION = 0.5;
 const float VELOCITY_FIXED_SCALE = 4096.0;
 const float POSITION_FIXED_SCALE = 65536.0;
 const int MAX_CELL_VISITS = 4;
@@ -23,6 +26,21 @@ const int MAX_CELL_VISITS = 4;
 bool inside(ivec2 cell) {
     return cell.x >= 0 && cell.y >= 0 &&
         cell.x < uGridWidth && cell.y < uGridHeight;
+}
+
+int neighborCount(ivec2 home) {
+    int population = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 cell = home + ivec2(dx, dy);
+            if (inside(cell)) {
+                population += collisionCellCounts[
+                    cell.x + cell.y * uGridWidth
+                ];
+            }
+        }
+    }
+    return max(population - 1, 1);
 }
 
 vec2 coincidentNormal(uint first, uint second) {
@@ -51,6 +69,7 @@ void main() {
         ivec2(0),
         ivec2(uGridWidth - 1, uGridHeight - 1)
     );
+    int firstNeighborCount = neighborCount(home);
 
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
@@ -66,8 +85,16 @@ void main() {
                     vec2 separation = otherBody.xy * resolution - positionPixels;
                     float distanceSquared = dot(separation, separation);
                     if (distanceSquared < DIAMETER_PIXELS * DIAMETER_PIXELS) {
-                        atomicAdd(collisionContacts[id], 1);
-                        atomicAdd(collisionContacts[otherId], 1);
+                        ivec2 otherHome = clamp(
+                            ivec2(floor(otherBody.xy * resolution /
+                                float(uCellSizePixels))),
+                            ivec2(0),
+                            ivec2(uGridWidth - 1, uGridHeight - 1)
+                        );
+                        float contactWeight = 1.0 / float(max(
+                            firstNeighborCount,
+                            neighborCount(otherHome)
+                        ));
                         float distance = sqrt(max(distanceSquared, 1e-12));
                         vec2 normal = distanceSquared > 1e-12
                             ? separation / distance
@@ -80,10 +107,11 @@ void main() {
 
                         vec2 velocityDelta = relativeNormal < 0.0
                             ? 0.5 * (1.0 + RESTITUTION) *
-                                relativeNormal * normal
+                                contactWeight * relativeNormal * normal
                             : vec2(0.0);
                         vec2 positionDelta =
-                            -0.5 * (DIAMETER_PIXELS - distance) * normal;
+                            -0.5 * POSITION_RELAXATION * contactWeight *
+                            (DIAMETER_PIXELS - distance) * normal;
                         addDelta(id, velocityDelta, positionDelta);
                         addDelta(otherId, -velocityDelta, -positionDelta);
                     }

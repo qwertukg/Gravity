@@ -54,8 +54,8 @@ class GravityPipeline(
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
+    private val collisionCellCounts = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
     private val collisionDeltas = buffer(config.capacity.toLong() * 4 * Int.SIZE_BYTES)
-    private val collisionContacts = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
@@ -108,6 +108,7 @@ class GravityPipeline(
             bind(1, acceleration)
             bind(2, collisionHeads)
             bind(3, nextBody)
+            bind(4, collisionCellCounts)
             drift.int("uCount", activeBodies)
             drift.float("uKickDt", if (substep == 0) 0.5f * config.timeStep else 0f)
             drift.float("uDriftDt", config.timeStep / substeps)
@@ -150,7 +151,7 @@ class GravityPipeline(
         collisionClear.use()
         bind(0, collisionHeads)
         bind(1, collisionDeltas)
-        bind(2, collisionContacts)
+        bind(2, collisionCellCounts)
         collisionClear.int("uCells", collisionCells)
         collisionClear.int("uCount", activeBodies)
         dispatch(maxOf(collisionCells, activeBodies))
@@ -162,6 +163,7 @@ class GravityPipeline(
         bind(0, bodies)
         bind(1, collisionHeads)
         bind(2, nextBody)
+        bind(3, collisionCellCounts)
         collisionBuild.int("uCount", activeBodies)
         collisionBuild.int("uGridWidth", collisionGridWidth)
         collisionBuild.int("uGridHeight", collisionGridHeight)
@@ -175,7 +177,7 @@ class GravityPipeline(
         bind(1, collisionHeads)
         bind(2, nextBody)
         bind(3, collisionDeltas)
-        bind(4, collisionContacts)
+        bind(4, collisionCellCounts)
         collisionResolve.int("uCount", activeBodies)
         collisionResolve.int("uViewportWidth", viewportWidth)
         collisionResolve.int("uViewportHeight", viewportHeight)
@@ -190,7 +192,6 @@ class GravityPipeline(
         collisionApply.use()
         bind(0, bodies)
         bind(1, collisionDeltas)
-        bind(2, collisionContacts)
         collisionApply.int("uCount", activeBodies)
         collisionApply.int("uWidth", viewportWidth)
         collisionApply.int("uHeight", viewportHeight)
@@ -462,8 +463,8 @@ class GravityPipeline(
             cellMass,
             nextBody,
             collisionHeads,
+            collisionCellCounts,
             collisionDeltas,
-            collisionContacts,
             fft,
             scratch,
             forceX,

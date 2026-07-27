@@ -3,7 +3,6 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer CollisionDeltas { ivec4 collisionDeltas[]; };
-layout(std430, binding = 2) readonly buffer CollisionContacts { int collisionContacts[]; };
 
 uniform int uCount;
 uniform int uWidth;
@@ -11,6 +10,7 @@ uniform int uHeight;
 
 const float VELOCITY_FIXED_SCALE = 4096.0;
 const float POSITION_FIXED_SCALE = 65536.0;
+const float MAX_POSITION_CORRECTION_PIXELS = 0.25;
 
 void reflectAxis(inout float position, inout float velocity) {
     float phase = mod(position, 2.0);
@@ -30,11 +30,15 @@ void main() {
 
     vec2 resolution = vec2(uWidth, uHeight);
     ivec4 delta = collisionDeltas[id];
-    float contactScale = 1.0 / float(max(collisionContacts[id], 1));
     vec4 body = bodies[id];
-    body.zw += contactScale * vec2(delta.xy) /
-        (VELOCITY_FIXED_SCALE * resolution);
-    body.xy += vec2(delta.zw) / (POSITION_FIXED_SCALE * resolution);
+    body.zw += vec2(delta.xy) / (VELOCITY_FIXED_SCALE * resolution);
+    vec2 positionDeltaPixels = vec2(delta.zw) / POSITION_FIXED_SCALE;
+    float correctionLength = length(positionDeltaPixels);
+    if (correctionLength > MAX_POSITION_CORRECTION_PIXELS) {
+        positionDeltaPixels *=
+            MAX_POSITION_CORRECTION_PIXELS / correctionLength;
+    }
+    body.xy += positionDeltaPixels / resolution;
     reflectAxis(body.x, body.z);
     reflectAxis(body.y, body.w);
     bodies[id] = body;

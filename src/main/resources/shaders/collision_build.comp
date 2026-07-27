@@ -4,6 +4,7 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) buffer CollisionHeads { int collisionHeads[]; };
 layout(std430, binding = 2) buffer NextBody { int nextBody[]; };
+layout(std430, binding = 3) buffer CollisionCellCounts { int collisionCellCounts[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -20,4 +21,5 @@ void main() {
     );
     int index = cell.x + cell.y * uGridWidth;
     nextBody[id] = atomicExchange(collisionHeads[index], int(id));
+    atomicAdd(collisionCellCounts[index], 1);
 }
