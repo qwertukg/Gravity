@@ -5,7 +5,7 @@ layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer CollisionHeads { int collisionHeads[]; };
 layout(std430, binding = 2) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 3) buffer CollisionDeltas { ivec4 collisionDeltas[]; };
-layout(std430, binding = 4) readonly buffer CollisionContacts { int collisionContacts[]; };
+layout(std430, binding = 4) buffer CollisionContacts { int collisionContacts[]; };
 
 uniform int uCount;
 uniform int uViewportWidth;
@@ -66,10 +66,8 @@ void main() {
                     vec2 separation = otherBody.xy * resolution - positionPixels;
                     float distanceSquared = dot(separation, separation);
                     if (distanceSquared < DIAMETER_PIXELS * DIAMETER_PIXELS) {
-                        float contactWeight = 1.0 / float(max(
-                            collisionContacts[id],
-                            collisionContacts[otherId]
-                        ));
+                        atomicAdd(collisionContacts[id], 1);
+                        atomicAdd(collisionContacts[otherId], 1);
                         float distance = sqrt(max(distanceSquared, 1e-12));
                         vec2 normal = distanceSquared > 1e-12
                             ? separation / distance
@@ -82,7 +80,7 @@ void main() {
 
                         vec2 velocityDelta = relativeNormal < 0.0
                             ? 0.5 * (1.0 + RESTITUTION) *
-                                contactWeight * relativeNormal * normal
+                                relativeNormal * normal
                             : vec2(0.0);
                         vec2 positionDelta =
                             -0.5 * (DIAMETER_PIXELS - distance) * normal;

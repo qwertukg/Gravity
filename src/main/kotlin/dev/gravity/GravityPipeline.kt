@@ -74,7 +74,6 @@ class GravityPipeline(
     private val kick = GlProgram.compute("/shaders/kick.comp")
     private val collisionClear = GlProgram.compute("/shaders/collision_clear.comp")
     private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
-    private val collisionCount = GlProgram.compute("/shaders/collision_count.comp")
     private val collisionResolve = GlProgram.compute("/shaders/collision_resolve.comp")
     private val collisionApply = GlProgram.compute("/shaders/collision_apply.comp")
     private lateinit var massPrefix: DoubleArray
@@ -100,24 +99,29 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
-        if (config.collisionIterations > 0) clearCollisionGrid(activeBodies)
-        drift.use()
-        bind(0, bodies)
-        bind(1, acceleration)
-        bind(2, collisionHeads)
-        bind(3, nextBody)
-        drift.int("uCount", activeBodies)
-        drift.float("uDt", config.timeStep)
-        drift.int("uCollisionWidth", collisionGridWidth)
-        drift.int("uCollisionHeight", collisionGridHeight)
-        drift.int("uBuildCollisionGrid", if (config.collisionIterations > 0) 1 else 0)
-        dispatchBodies(activeBodies)
-        barrier()
+        val collisionEnabled = config.collisionIterations > 0
+        val substeps = if (collisionEnabled) config.collisionSubsteps else 1
+        repeat(substeps) { substep ->
+            if (collisionEnabled) clearCollisionGrid(activeBodies)
+            drift.use()
+            bind(0, bodies)
+            bind(1, acceleration)
+            bind(2, collisionHeads)
+            bind(3, nextBody)
+            drift.int("uCount", activeBodies)
+            drift.float("uKickDt", if (substep == 0) 0.5f * config.timeStep else 0f)
+            drift.float("uDriftDt", config.timeStep / substeps)
+            drift.int("uCollisionWidth", collisionGridWidth)
+            drift.int("uCollisionHeight", collisionGridHeight)
+            drift.int("uBuildCollisionGrid", if (collisionEnabled) 1 else 0)
+            dispatchBodies(activeBodies)
+            barrier()
 
-        if (config.collisionIterations > 0) {
-            resolveCollisionPairs(activeBodies)
-            applyCollisionDeltas(activeBodies)
-            repeat(config.collisionIterations - 1) {
+            if (collisionEnabled) {
+                resolveCollisionPairs(activeBodies)
+                applyCollisionDeltas(activeBodies)
+            }
+            repeat(if (collisionEnabled) config.collisionIterations - 1 else 0) {
                 clearCollisionGrid(activeBodies)
                 buildCollisionGrid(activeBodies)
                 resolveCollisionPairs(activeBodies)
@@ -166,17 +170,6 @@ class GravityPipeline(
     }
 
     private fun resolveCollisionPairs(activeBodies: Int) {
-        collisionCount.use()
-        bind(0, bodies)
-        bind(1, collisionHeads)
-        bind(2, nextBody)
-        bind(3, collisionContacts)
-        collisionCount.int("uCount", activeBodies)
-        collisionCount.int("uWidth", collisionGridWidth)
-        collisionCount.int("uHeight", collisionGridHeight)
-        dispatchBodies(activeBodies)
-        barrier()
-
         collisionResolve.use()
         bind(0, bodies)
         bind(1, collisionHeads)
@@ -197,6 +190,7 @@ class GravityPipeline(
         collisionApply.use()
         bind(0, bodies)
         bind(1, collisionDeltas)
+        bind(2, collisionContacts)
         collisionApply.int("uCount", activeBodies)
         collisionApply.int("uWidth", viewportWidth)
         collisionApply.int("uHeight", viewportHeight)
@@ -454,7 +448,6 @@ class GravityPipeline(
             kick,
             collisionClear,
             collisionBuild,
-            collisionCount,
             collisionResolve,
             collisionApply,
         )

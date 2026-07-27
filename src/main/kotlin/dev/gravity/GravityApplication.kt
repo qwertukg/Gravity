@@ -163,7 +163,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
         }
         glfwMakeContextCurrent(window)
-        glfwSwapInterval(1)
+        glfwSwapInterval(0)
         GL.createCapabilities()
         check(GL.getCapabilities().OpenGL43) { "OpenGL 4.3 compute shaders are required" }
         glDisable(GL_MULTISAMPLE)
@@ -184,7 +184,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.height()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
-                "collisions=${config.collisionIterations}, foreground=$foreground; Esc exits"
+                "collisions=${config.collisionIterations}x${config.collisionSubsteps}, " +
+                "foreground=$foreground; Esc exits"
         )
     }
 

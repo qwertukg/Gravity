@@ -12,6 +12,7 @@ data class SimulationConfig(
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
     val collisionIterations: Int = 1,
+    val collisionSubsteps: Int = 2,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
 ) {
@@ -29,6 +30,9 @@ data class SimulationConfig(
         require(timeStep > 0f)
         require(collisionIterations in 0..8) {
             "collision iterations must be in 0..8"
+        }
+        require(collisionSubsteps in 1..8) {
+            "collision substeps must be in 1..8"
         }
         require(maxFrames == null || maxFrames > 0)
     }
@@ -103,6 +107,11 @@ data class SimulationConfig(
                     "collision-iterations",
                     "GRAVITY_COLLISION_ITERATIONS",
                     defaults.collisionIterations,
+                ),
+                collisionSubsteps = intValue(
+                    "collision-substeps",
+                    "GRAVITY_COLLISION_SUBSTEPS",
+                    defaults.collisionSubsteps,
                 ),
                 maxFrames = values["frames"]?.toIntOrNull(),
             )

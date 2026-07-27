@@ -19,6 +19,7 @@ class SimulationConfigTest {
                 "--capacity=200000",
                 "--grid=1024x512",
                 "--collision-iterations=3",
+                "--collision-substeps=2",
                 "--fixed",
             ),
             mapOf("GRAVITY_BODIES" to "42", "GRAVITY_GRID" to "1024"),
@@ -28,6 +29,7 @@ class SimulationConfigTest {
         assertEquals(1024, config.gridWidth)
         assertEquals(512, config.gridHeight)
         assertEquals(3, config.collisionIterations)
+        assertEquals(2, config.collisionSubsteps)
         assertEquals(true, config.fixedBodyCount)
     }
 
@@ -51,6 +53,13 @@ class SimulationConfigTest {
     fun `collision iteration count is bounded`() {
         assertFailsWith<IllegalArgumentException> {
             SimulationConfig(collisionIterations = 9)
+        }
+    }
+
+    @Test
+    fun `collision substep count is bounded`() {
+        assertFailsWith<IllegalArgumentException> {
+            SimulationConfig(collisionSubsteps = 9)
         }
     }
 }
