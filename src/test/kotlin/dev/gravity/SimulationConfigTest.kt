@@ -6,6 +6,14 @@ import kotlin.test.assertFailsWith
 
 class SimulationConfigTest {
     @Test
+    fun `defaults use exactly 350000 fixed bodies`() {
+        val config = SimulationConfig.parse(emptyArray(), emptyMap())
+        assertEquals(350_000, config.initialBodies)
+        assertEquals(350_000, config.capacity)
+        assertEquals(true, config.fixedBodyCount)
+    }
+
+    @Test
     fun `command line overrides environment`() {
         val config = SimulationConfig.parse(
             arrayOf("--bodies=120000", "--capacity=200000", "--grid=256", "--fixed"),

@@ -3,10 +3,10 @@ package dev.gravity
 import kotlin.math.min
 
 data class SimulationConfig(
-    val capacity: Int = 4_000_000,
-    val initialBodies: Int = 100_000,
+    val capacity: Int = 350_000,
+    val initialBodies: Int = 350_000,
     val gridSize: Int = 512,
-    val fixedBodyCount: Boolean = false,
+    val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
@@ -28,7 +28,7 @@ data class SimulationConfig(
     companion object {
         fun parse(args: Array<String>, env: Map<String, String> = System.getenv()): SimulationConfig {
             val values = mutableMapOf<String, String>()
-            var fixed = env["GRAVITY_FIXED"]?.toBooleanStrictOrNull() ?: false
+            var fixed = env["GRAVITY_FIXED"]?.toBooleanStrictOrNull() ?: true
             args.forEach { argument ->
                 when {
                     argument == "--fixed" -> fixed = true
@@ -51,10 +51,10 @@ data class SimulationConfig(
                     ?: env[environmentKey]?.toFloatOrNull()
                     ?: default
 
-            val capacity = intValue("capacity", "GRAVITY_CAPACITY", 4_000_000)
+            val capacity = intValue("capacity", "GRAVITY_CAPACITY", 350_000)
             return SimulationConfig(
                 capacity = capacity,
-                initialBodies = min(intValue("bodies", "GRAVITY_BODIES", 100_000), capacity),
+                initialBodies = min(intValue("bodies", "GRAVITY_BODIES", 350_000), capacity),
                 gridSize = intValue("grid", "GRAVITY_GRID", 512),
                 fixedBodyCount = fixed,
                 gravitationalConstant = floatValue("gravity", "GRAVITY_G", 0.035f),
