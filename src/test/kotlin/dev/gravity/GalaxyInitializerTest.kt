@@ -3,7 +3,10 @@ package dev.gravity
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -29,6 +32,8 @@ class GalaxyInitializerTest {
 
         var rotatingWithDisk = 0
         var moving = 0
+        var mode2Real = 0.0
+        var mode2Imaginary = 0.0
         for (id in 1 until count) {
             val offset = id * 4
             val x = (bodies[offset] - 0.5f) * aspect
@@ -40,8 +45,13 @@ class GalaxyInitializerTest {
             assertTrue(hypot(x, y) <= 0.38001f)
             if (x * vy - y * vx < 0f) rotatingWithDisk++
             if (hypot(vx, vy) > 1e-5f) moving++
+            val angle = atan2(y, x)
+            mode2Real += cos(2f * angle)
+            mode2Imaginary += sin(2f * angle)
         }
         assertTrue(rotatingWithDisk > count * 0.96)
         assertTrue(moving > count * 0.99)
+        val mode2Amplitude = hypot(mode2Real, mode2Imaginary) / (count - 1)
+        assertTrue(mode2Amplitude < 0.02, "initial m=2 amplitude was $mode2Amplitude")
     }
 }

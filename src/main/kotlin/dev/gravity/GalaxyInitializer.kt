@@ -8,7 +8,6 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
-import kotlin.math.tan
 import kotlin.random.Random
 
 data class GalaxyPreset(
@@ -18,11 +17,7 @@ data class GalaxyPreset(
     val blackHoleMassFraction: Float = 0.015f,
     val bulgeMassFraction: Float = 0.185f,
     val bulgeBodyFraction: Float = 0.12f,
-    val armBodyFraction: Float = 0.78f,
-    val armCount: Int = 2,
-    val pitchAngleDegrees: Float = 19f,
-    val armAngularScatter: Float = 0.105f,
-    val velocityDispersion: Float = 0.025f,
+    val velocityDispersion: Float = 0.012f,
     val clockwise: Boolean = true,
 ) {
     val diskMassFraction: Float
@@ -62,18 +57,14 @@ object GalaxyInitializer {
         var maximumRadius = 0f
         for (id in 1 until count) {
             val isBulge = id <= bulgeCount
-            val radius = when {
-                id >= count - 2 -> preset.outerRadius * 0.999f
-                isBulge -> sampleBulgeRadius(random, preset)
-                else -> sampleDiskRadius(random, preset)
+            val radius = if (isBulge) {
+                sampleBulgeRadius(random, preset)
+            } else {
+                sampleDiskRadius(random, preset)
             }
-            val angle = when {
-                id == count - 2 -> 0f
-                id == count - 1 -> PI.toFloat()
-                isBulge || random.nextFloat() > preset.armBodyFraction ->
-                    random.nextFloat() * (2f * PI.toFloat())
-                else -> spiralAngle(random, radius, preset)
-            }
+            // No imposed arms or azimuthal modes: shot noise in this cold,
+            // self-gravitating disk is the seed for emergent spiral structure.
+            val angle = random.nextFloat() * (2f * PI.toFloat())
             val radialNoise = gaussian(random) * preset.velocityDispersion
             val tangentialNoise = gaussian(random) * preset.velocityDispersion * 0.45f
             val enclosedMass = enclosedMassFraction(radius, preset)
@@ -119,14 +110,6 @@ object GalaxyInitializer {
             val radius = preset.bulgeScaleRadius * root / (1f - root)
             if (radius in 0.001f..preset.outerRadius) return radius
         }
-    }
-
-    private fun spiralAngle(random: Random, radius: Float, preset: GalaxyPreset): Float {
-        val arm = random.nextInt(preset.armCount)
-        val pitch = preset.pitchAngleDegrees * PI.toFloat() / 180f
-        val phase = arm * (2f * PI.toFloat() / preset.armCount)
-        val winding = ln(max(radius, 0.008f) / preset.outerRadius) / tan(pitch)
-        return phase + winding + gaussian(random) * preset.armAngularScatter
     }
 
     private fun enclosedMassFraction(radius: Float, preset: GalaxyPreset): Float {

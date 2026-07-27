@@ -49,6 +49,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var window = 0L
     private var pipeline: GravityPipeline? = null
     private var renderProgram: GlProgram? = null
+    private var fpsOverlay: FpsOverlay? = null
     private var vao = 0
     private var timer: GpuTimer? = null
     private var viewportWidth = 0
@@ -60,6 +61,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
         vao = glGenVertexArrays()
+        fpsOverlay = FpsOverlay(viewportWidth, viewportHeight)
         timer = GpuTimer()
 
         var active = config.initialBodies
@@ -69,11 +71,21 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         var frames = 0
         var totalFrames = 0L
         var reportStart = System.nanoTime()
+        var overlayWindowStart = reportStart
+        var overlayFrames = 0
+        var displayedFps = 0.0
 
         while (!glfwWindowShouldClose(window)) {
             timer!!.begin()
             simulation.step(active)
-            render(active)
+            overlayFrames++
+            val overlayNow = System.nanoTime()
+            if (overlayNow - overlayWindowStart >= 250_000_000L) {
+                displayedFps = overlayFrames * 1e9 / (overlayNow - overlayWindowStart)
+                overlayFrames = 0
+                overlayWindowStart = overlayNow
+            }
+            render(active, displayedFps)
             val gpuMillis = timer!!.end()
             if (gpuMillis != null) {
                 active = controller.record(gpuMillis, allowAdjustment = !config.fixedBodyCount)
@@ -140,7 +152,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         )
     }
 
-    private fun render(activeBodies: Int) {
+    private fun render(activeBodies: Int, fps: Double) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
         pipeline!!.bindBodiesForRender()
@@ -148,11 +160,13 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glDrawArrays(GL_POINTS, 0, activeBodies)
         glBindVertexArray(0)
         glUseProgram(0)
+        fpsOverlay!!.render(fps)
     }
 
     override fun close() {
         timer?.close()
         if (vao != 0) glDeleteVertexArrays(vao)
+        fpsOverlay?.close()
         renderProgram?.close()
         pipeline?.close()
         if (window != 0L) {

@@ -17,6 +17,7 @@ import org.lwjgl.opengl.GL20.glLinkProgram
 import org.lwjgl.opengl.GL20.glShaderSource
 import org.lwjgl.opengl.GL20.glUniform1f
 import org.lwjgl.opengl.GL20.glUniform1i
+import org.lwjgl.opengl.GL20.glUniform2f
 import org.lwjgl.opengl.GL20.glUseProgram
 
 class GlProgram private constructor(private val id: Int) : AutoCloseable {
@@ -28,6 +29,10 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
 
     fun float(name: String, value: Float) {
         glUniform1f(uniform(name), value)
+    }
+
+    fun vec2(name: String, x: Float, y: Float) {
+        glUniform2f(uniform(name), x, y)
     }
 
     private fun uniform(name: String): Int =
