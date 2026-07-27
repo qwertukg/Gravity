@@ -45,8 +45,10 @@ class GalaxyInitializerTest {
         assertTrue(state.galaxySeeds.contentEquals(longArrayOf(11L, 29L)))
         assertTrue(abs(expectedRadius - bodies[0]) < 1e-6f)
         assertEquals(0.5f, bodies[1])
+        assertEquals(preset.verticalDriftSpeed, bodies[3])
         assertTrue(abs(1f - expectedRadius - bodies[bodiesPerGalaxy * 4]) < 1e-6f)
         assertEquals(0.5f, bodies[bodiesPerGalaxy * 4 + 1])
+        assertEquals(-preset.verticalDriftSpeed, bodies[bodiesPerGalaxy * 4 + 3])
         assertTrue(masses[0] > 100f * masses[count - 1])
 
         val rotatingWithDisk = IntArray(2)

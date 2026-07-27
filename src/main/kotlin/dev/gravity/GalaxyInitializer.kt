@@ -21,6 +21,7 @@ data class GalaxyPreset(
     val haloScaleRadius: Float = 0.16f,
     val bulgeBodyFraction: Float = 0.12f,
     val velocityDispersion: Float = 0.045f,
+    val verticalDriftSpeed: Float = 0.001f,
     val clockwise: Boolean = true,
 ) {
     val diskMassFraction: Float
@@ -157,6 +158,11 @@ object GalaxyInitializer {
             )
             maximumRadius = max(maximumRadius, localState.maximumPhysicalRadius)
             val centerX = if (galaxy == 0) leftCenterX else rightCenterX
+            val verticalDrift = if (galaxy == 0) {
+                preset.verticalDriftSpeed
+            } else {
+                -preset.verticalDriftSpeed
+            }
             for (localId in 0 until bodiesPerGalaxy) {
                 val source = localId * 4
                 putBody(
@@ -164,7 +170,7 @@ object GalaxyInitializer {
                     centerX + localBodies[source] - 0.5f,
                     localBodies[source + 1],
                     localBodies[source + 2],
-                    localBodies[source + 3],
+                    localBodies[source + 3] + verticalDrift,
                 )
                 val mass = localMasses[localId]
                 masses.put(mass)
