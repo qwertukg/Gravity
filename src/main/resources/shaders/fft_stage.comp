@@ -1,0 +1,43 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer InputComplex { vec2 inputComplex[]; };
+layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
+
+uniform int uGrid;
+uniform int uStage;
+uniform int uAxis;
+uniform int uInverse;
+
+const float TAU = 6.28318530717958647692;
+
+vec2 multiplyComplex(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    uint grid = uint(uGrid);
+    if (id >= grid * grid) return;
+
+    uint x = id % grid;
+    uint y = id / grid;
+    uint coordinate = uAxis == 0 ? x : y;
+    uint width = 1u << uint(uStage);
+    uint halfWidth = width >> 1u;
+    uint within = coordinate & (width - 1u);
+    uint pairCoordinate = within < halfWidth
+        ? coordinate + halfWidth
+        : coordinate - halfWidth;
+    uint pairId = uAxis == 0 ? pairCoordinate + y * grid : x + pairCoordinate * grid;
+    uint lowerCoordinate = within < halfWidth ? coordinate : pairCoordinate;
+    uint lowerId = uAxis == 0 ? lowerCoordinate + y * grid : x + lowerCoordinate * grid;
+    uint upperId = uAxis == 0 ? lowerCoordinate + halfWidth + y * grid : x + (lowerCoordinate + halfWidth) * grid;
+
+    float sign = uInverse != 0 ? 1.0 : -1.0;
+    float angle = sign * TAU * float(within & (halfWidth - 1u)) / float(width);
+    vec2 twiddle = vec2(cos(angle), sin(angle));
+    vec2 evenValue = inputComplex[lowerId];
+    vec2 oddValue = multiplyComplex(twiddle, inputComplex[upperId]);
+    outputComplex[id] = within < halfWidth ? evenValue + oddValue : evenValue - oddValue;
+}

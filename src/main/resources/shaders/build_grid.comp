@@ -1,0 +1,44 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer Density { uint density[]; };
+layout(std430, binding = 2) buffer Heads { int heads[]; };
+layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
+
+uniform int uCount;
+uniform int uGrid;
+uniform int uMassScale;
+
+int wrapCell(int value) {
+    return (value + uGrid) & (uGrid - 1);
+}
+
+uint cellIndex(ivec2 cell) {
+    return uint(wrapCell(cell.x) + wrapCell(cell.y) * uGrid);
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+
+    vec2 p = bodies[id].xy;
+    vec2 gridPosition = p * float(uGrid) - 0.5;
+    ivec2 base = ivec2(floor(gridPosition));
+    vec2 fraction = fract(gridPosition);
+    vec4 weights = vec4(
+        (1.0 - fraction.x) * (1.0 - fraction.y),
+        fraction.x * (1.0 - fraction.y),
+        (1.0 - fraction.x) * fraction.y,
+        fraction.x * fraction.y
+    );
+    float scale = float(uMassScale);
+    atomicAdd(density[cellIndex(base)], uint(round(weights.x * scale)));
+    atomicAdd(density[cellIndex(base + ivec2(1, 0))], uint(round(weights.y * scale)));
+    atomicAdd(density[cellIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
+    atomicAdd(density[cellIndex(base + ivec2(1, 1))], uint(round(weights.w * scale)));
+
+    ivec2 home = ivec2(floor(p * float(uGrid)));
+    uint homeIndex = cellIndex(home);
+    nextBody[id] = atomicExchange(heads[homeIndex], int(id));
+}

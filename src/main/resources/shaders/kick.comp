@@ -1,0 +1,85 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer Accelerations { vec2 acceleration[]; };
+layout(std430, binding = 2) readonly buffer ForceX { vec2 forceX[]; };
+layout(std430, binding = 3) readonly buffer ForceY { vec2 forceY[]; };
+layout(std430, binding = 4) readonly buffer Heads { int heads[]; };
+layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
+
+uniform int uCount;
+uniform int uGrid;
+uniform int uInitial;
+uniform int uNeighborRadius;
+uniform float uDt;
+uniform float uGravity;
+uniform float uSigmaCells;
+
+const int MAX_LOCAL_INTERACTIONS = 256;
+
+int wrapCell(int value) {
+    return (value + uGrid) & (uGrid - 1);
+}
+
+int cellIndex(ivec2 cell) {
+    return wrapCell(cell.x) + wrapCell(cell.y) * uGrid;
+}
+
+float interpolateX(vec2 position) {
+    vec2 gridPosition = position * float(uGrid) - 0.5;
+    ivec2 base = ivec2(floor(gridPosition));
+    vec2 f = fract(gridPosition);
+    float v00 = forceX[cellIndex(base)].x;
+    float v10 = forceX[cellIndex(base + ivec2(1, 0))].x;
+    float v01 = forceX[cellIndex(base + ivec2(0, 1))].x;
+    float v11 = forceX[cellIndex(base + ivec2(1, 1))].x;
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+}
+
+float interpolateY(vec2 position) {
+    vec2 gridPosition = position * float(uGrid) - 0.5;
+    ivec2 base = ivec2(floor(gridPosition));
+    vec2 f = fract(gridPosition);
+    float v00 = forceY[cellIndex(base)].x;
+    float v10 = forceY[cellIndex(base + ivec2(1, 0))].x;
+    float v01 = forceY[cellIndex(base + ivec2(0, 1))].x;
+    float v11 = forceY[cellIndex(base + ivec2(1, 1))].x;
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 body = bodies[id];
+    vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
+
+    // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
+    // long-range force. This exact local complement restores point-like force.
+    ivec2 home = ivec2(floor(body.xy * float(uGrid)));
+    float sigma = uSigmaCells / float(uGrid);
+    float sigmaSquared2 = 2.0 * sigma * sigma;
+    float minimumRSquared = 0.0025 / float(uGrid * uGrid);
+    int interactions = 0;
+    for (int dy = -uNeighborRadius; dy <= uNeighborRadius; ++dy) {
+        for (int dx = -uNeighborRadius; dx <= uNeighborRadius; ++dx) {
+            int other = heads[cellIndex(home + ivec2(dx, dy))];
+            while (other >= 0 && interactions < MAX_LOCAL_INTERACTIONS) {
+                if (uint(other) != id) {
+                    vec2 delta = bodies[other].xy - body.xy;
+                    delta -= round(delta);
+                    float rSquared = dot(delta, delta);
+                    float localWeight = exp(-rSquared / sigmaSquared2);
+                    result += (uGravity / float(uCount)) * delta * localWeight /
+                        max(rSquared, minimumRSquared);
+                }
+                other = nextBody[other];
+                interactions++;
+            }
+        }
+    }
+
+    if (uInitial == 0) body.zw += result * (0.5 * uDt);
+    acceleration[id] = result;
+    bodies[id] = body;
+}

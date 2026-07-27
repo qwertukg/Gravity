@@ -1,0 +1,25 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer InputComplex { vec2 inputComplex[]; };
+layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
+
+uniform int uGrid;
+uniform int uBits;
+uniform int uAxis;
+
+uint reverseBits(uint value, int bits) {
+    return bitfieldReverse(value) >> (32 - bits);
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    uint grid = uint(uGrid);
+    if (id >= grid * grid) return;
+    uint x = id % grid;
+    uint y = id / grid;
+    uint source = uAxis == 0
+        ? reverseBits(x, uBits) + y * grid
+        : x + reverseBits(y, uBits) * grid;
+    outputComplex[id] = inputComplex[source];
+}
