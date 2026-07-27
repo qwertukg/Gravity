@@ -30,6 +30,7 @@ import kotlin.math.ceil
 
 class GravityPipeline(
     private val config: SimulationConfig,
+    private val viewportAspect: Float,
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
@@ -286,6 +287,7 @@ class GravityPipeline(
             count = config.capacity,
             domainAspect = domainAspect,
             gravity = config.gravitationalConstant,
+            preset = GalaxyPreset.fittingViewportHeight(viewportAspect),
         )
         massPrefix = initialState.massPrefix
 

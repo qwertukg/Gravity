@@ -22,6 +22,18 @@ data class GalaxyPreset(
 ) {
     val diskMassFraction: Float
         get() = 1f - blackHoleMassFraction - bulgeMassFraction
+
+    companion object {
+        fun fittingViewportHeight(viewportAspect: Float): GalaxyPreset {
+            require(viewportAspect >= 1f)
+            val radius = 0.5f / viewportAspect
+            return GalaxyPreset(
+                outerRadius = radius,
+                diskScaleRadius = radius * 0.2842f,
+                bulgeScaleRadius = radius * 0.0711f,
+            )
+        }
+    }
 }
 
 data class GalaxyInitialState(

@@ -57,7 +57,10 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
 
     fun run() {
         initWindow()
-        val simulation = GravityPipeline(config)
+        val simulation = GravityPipeline(
+            config,
+            viewportAspect = viewportWidth.toFloat() / viewportHeight,
+        )
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
         vao = glGenVertexArrays()
