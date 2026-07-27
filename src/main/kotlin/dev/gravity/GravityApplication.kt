@@ -66,7 +66,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         initWindow()
         val simulation = GravityPipeline(
             config,
-            viewportAspect = viewportWidth.toFloat() / viewportHeight,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
         )
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
@@ -183,7 +184,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.height()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
-                "foreground=$foreground; Esc exits"
+                "collisions=${config.collisionIterations}, foreground=$foreground; Esc exits"
         )
     }
 

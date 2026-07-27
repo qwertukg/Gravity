@@ -26,7 +26,8 @@ import kotlin.math.ceil
 
 class GravityPipeline(
     private val config: SimulationConfig,
-    private val viewportAspect: Float,
+    private val viewportWidth: Int,
+    private val viewportHeight: Int,
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
@@ -36,7 +37,10 @@ class GravityPipeline(
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
-    private val domainAspect = viewportAspect
+    private val domainAspect = viewportWidth.toFloat() / viewportHeight
+    private val collisionGridWidth = viewportWidth
+    private val collisionGridHeight = viewportHeight
+    private val collisionCells = Math.multiplyExact(collisionGridWidth, collisionGridHeight)
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
@@ -49,6 +53,8 @@ class GravityPipeline(
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
+    private val collisionDeltas = buffer(config.capacity.toLong() * 4 * Int.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
@@ -65,6 +71,10 @@ class GravityPipeline(
     private val convolve = GlProgram.compute("/shaders/convolve.comp")
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
+    private val collisionClear = GlProgram.compute("/shaders/collision_clear.comp")
+    private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
+    private val collisionResolve = GlProgram.compute("/shaders/collision_resolve.comp")
+    private val collisionApply = GlProgram.compute("/shaders/collision_apply.comp")
     private lateinit var massPrefix: DoubleArray
     private var normalizationMass = 0f
     private var initialSeed: Long? = null
@@ -76,6 +86,7 @@ class GravityPipeline(
     }
 
     fun initializeAcceleration(activeBodies: Int) {
+        resolveCollisions(activeBodies)
         buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
     }
@@ -87,14 +98,30 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
+        if (config.collisionIterations > 0) clearCollisionGrid(activeBodies)
         drift.use()
         bind(0, bodies)
         bind(1, acceleration)
+        bind(2, collisionHeads)
+        bind(3, nextBody)
         drift.int("uCount", activeBodies)
         drift.float("uDt", config.timeStep)
+        drift.int("uCollisionWidth", collisionGridWidth)
+        drift.int("uCollisionHeight", collisionGridHeight)
+        drift.int("uBuildCollisionGrid", if (config.collisionIterations > 0) 1 else 0)
         dispatchBodies(activeBodies)
         barrier()
 
+        if (config.collisionIterations > 0) {
+            resolveCollisionPairs(activeBodies)
+            applyCollisionDeltas(activeBodies)
+            repeat(config.collisionIterations - 1) {
+                clearCollisionGrid(activeBodies)
+                buildCollisionGrid(activeBodies)
+                resolveCollisionPairs(activeBodies)
+                applyCollisionDeltas(activeBodies)
+            }
+        }
         buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT or GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT)
@@ -102,6 +129,64 @@ class GravityPipeline(
 
     fun bindBodiesForRender() {
         bind(0, bodies)
+    }
+
+    private fun resolveCollisions(activeBodies: Int) {
+        repeat(config.collisionIterations) {
+            clearCollisionGrid(activeBodies)
+            buildCollisionGrid(activeBodies)
+            resolveCollisionPairs(activeBodies)
+            applyCollisionDeltas(activeBodies)
+        }
+    }
+
+    private fun clearCollisionGrid(activeBodies: Int) {
+        collisionClear.use()
+        bind(0, collisionHeads)
+        bind(1, collisionDeltas)
+        collisionClear.int("uCells", collisionCells)
+        collisionClear.int("uCount", activeBodies)
+        dispatch(maxOf(collisionCells, activeBodies))
+        barrier()
+    }
+
+    private fun buildCollisionGrid(activeBodies: Int) {
+        collisionBuild.use()
+        bind(0, bodies)
+        bind(1, collisionHeads)
+        bind(2, nextBody)
+        collisionBuild.int("uCount", activeBodies)
+        collisionBuild.int("uGridWidth", collisionGridWidth)
+        collisionBuild.int("uGridHeight", collisionGridHeight)
+        dispatchBodies(activeBodies)
+        barrier()
+    }
+
+    private fun resolveCollisionPairs(activeBodies: Int) {
+        collisionResolve.use()
+        bind(0, bodies)
+        bind(1, collisionHeads)
+        bind(2, nextBody)
+        bind(3, collisionDeltas)
+        collisionResolve.int("uCount", activeBodies)
+        collisionResolve.int("uViewportWidth", viewportWidth)
+        collisionResolve.int("uViewportHeight", viewportHeight)
+        collisionResolve.int("uGridWidth", collisionGridWidth)
+        collisionResolve.int("uGridHeight", collisionGridHeight)
+        collisionResolve.int("uCellSizePixels", 1)
+        dispatchBodies(activeBodies)
+        barrier()
+    }
+
+    private fun applyCollisionDeltas(activeBodies: Int) {
+        collisionApply.use()
+        bind(0, bodies)
+        bind(1, collisionDeltas)
+        collisionApply.int("uCount", activeBodies)
+        collisionApply.int("uWidth", viewportWidth)
+        collisionApply.int("uHeight", viewportHeight)
+        dispatchBodies(activeBodies)
+        barrier()
     }
 
     private fun buildForce(activeBodies: Int) {
@@ -342,7 +427,21 @@ class GravityPipeline(
     }
 
     override fun close() {
-        listOf(clear, build, fftInit, permute, fftStage, kernelInit, convolve, drift, kick)
+        listOf(
+            clear,
+            build,
+            fftInit,
+            permute,
+            fftStage,
+            kernelInit,
+            convolve,
+            drift,
+            kick,
+            collisionClear,
+            collisionBuild,
+            collisionResolve,
+            collisionApply,
+        )
             .forEach(GlProgram::close)
         intArrayOf(
             bodies,
@@ -353,6 +452,8 @@ class GravityPipeline(
             cellCounts,
             cellMass,
             nextBody,
+            collisionHeads,
+            collisionDeltas,
             fft,
             scratch,
             forceX,

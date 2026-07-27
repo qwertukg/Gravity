@@ -3,9 +3,14 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Accelerations { vec2 acceleration[]; };
+layout(std430, binding = 2) buffer CollisionHeads { int collisionHeads[]; };
+layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
 
 uniform int uCount;
 uniform float uDt;
+uniform int uCollisionWidth;
+uniform int uCollisionHeight;
+uniform int uBuildCollisionGrid;
 
 void reflectAxis(inout float position, inout float velocity) {
     float phase = mod(position, 2.0);
@@ -28,4 +33,13 @@ void main() {
     reflectAxis(body.x, body.z);
     reflectAxis(body.y, body.w);
     bodies[id] = body;
+    if (uBuildCollisionGrid != 0) {
+        ivec2 cell = clamp(
+            ivec2(floor(body.xy * vec2(uCollisionWidth, uCollisionHeight))),
+            ivec2(0),
+            ivec2(uCollisionWidth - 1, uCollisionHeight - 1)
+        );
+        int index = cell.x + cell.y * uCollisionWidth;
+        nextBody[id] = atomicExchange(collisionHeads[index], int(id));
+    }
 }

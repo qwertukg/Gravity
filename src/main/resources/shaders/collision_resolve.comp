@@ -1,0 +1,88 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer CollisionHeads { int collisionHeads[]; };
+layout(std430, binding = 2) readonly buffer NextBody { int nextBody[]; };
+layout(std430, binding = 3) buffer CollisionDeltas { ivec4 collisionDeltas[]; };
+
+uniform int uCount;
+uniform int uViewportWidth;
+uniform int uViewportHeight;
+uniform int uGridWidth;
+uniform int uGridHeight;
+uniform int uCellSizePixels;
+
+const float DIAMETER_PIXELS = 1.0;
+const float VELOCITY_FIXED_SCALE = 4096.0;
+const float POSITION_FIXED_SCALE = 65536.0;
+
+bool inside(ivec2 cell) {
+    return cell.x >= 0 && cell.y >= 0 &&
+        cell.x < uGridWidth && cell.y < uGridHeight;
+}
+
+vec2 coincidentNormal(uint first, uint second) {
+    uint hash = first * 747796405u ^ second * 2891336453u;
+    float angle = float(hash & 65535u) * (6.28318530718 / 65536.0);
+    return vec2(cos(angle), sin(angle));
+}
+
+void addDelta(uint id, vec2 velocityPixels, vec2 positionPixels) {
+    atomicAdd(collisionDeltas[id].x, int(round(velocityPixels.x * VELOCITY_FIXED_SCALE)));
+    atomicAdd(collisionDeltas[id].y, int(round(velocityPixels.y * VELOCITY_FIXED_SCALE)));
+    atomicAdd(collisionDeltas[id].z, int(round(positionPixels.x * POSITION_FIXED_SCALE)));
+    atomicAdd(collisionDeltas[id].w, int(round(positionPixels.y * POSITION_FIXED_SCALE)));
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+
+    vec2 resolution = vec2(uViewportWidth, uViewportHeight);
+    vec4 body = bodies[id];
+    vec2 positionPixels = body.xy * resolution;
+    vec2 velocityPixels = body.zw * resolution;
+    ivec2 home = clamp(
+        ivec2(floor(positionPixels / float(uCellSizePixels))),
+        ivec2(0),
+        ivec2(uGridWidth - 1, uGridHeight - 1)
+    );
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 cell = home + ivec2(dx, dy);
+            if (!inside(cell)) continue;
+
+            int other = collisionHeads[cell.x + cell.y * uGridWidth];
+            while (other >= 0) {
+                uint otherId = uint(other);
+                if (otherId > id) {
+                    vec4 otherBody = bodies[otherId];
+                    vec2 separation = otherBody.xy * resolution - positionPixels;
+                    float distanceSquared = dot(separation, separation);
+                    if (distanceSquared < DIAMETER_PIXELS * DIAMETER_PIXELS) {
+                        float distance = sqrt(max(distanceSquared, 1e-12));
+                        vec2 normal = distanceSquared > 1e-12
+                            ? separation / distance
+                            : coincidentNormal(id, otherId);
+                        vec2 otherVelocityPixels = otherBody.zw * resolution;
+                        float relativeNormal = dot(
+                            otherVelocityPixels - velocityPixels,
+                            normal
+                        );
+
+                        vec2 velocityDelta = relativeNormal < 0.0
+                            ? relativeNormal * normal
+                            : vec2(0.0);
+                        vec2 positionDelta =
+                            -0.5 * (DIAMETER_PIXELS - distance) * normal;
+                        addDelta(id, velocityDelta, positionDelta);
+                        addDelta(otherId, -velocityDelta, -positionDelta);
+                    }
+                }
+                other = nextBody[otherId];
+            }
+        }
+    }
+}

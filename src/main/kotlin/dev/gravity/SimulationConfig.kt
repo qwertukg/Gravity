@@ -3,14 +3,15 @@ package dev.gravity
 import kotlin.math.min
 
 data class SimulationConfig(
-    val capacity: Int = 1000_000,
-    val initialBodies: Int = 1000_000,
+    val capacity: Int = 800_000,
+    val initialBodies: Int = 800_000,
     val gridWidth: Int = 512,
     val gridHeight: Int = 256,
     val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
+    val collisionIterations: Int = 1,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
 ) {
@@ -26,6 +27,9 @@ data class SimulationConfig(
         require(gravitationalConstant > 0f)
         require(softeningCells > 0f)
         require(timeStep > 0f)
+        require(collisionIterations in 0..8) {
+            "collision iterations must be in 0..8"
+        }
         require(maxFrames == null || maxFrames > 0)
     }
 
@@ -95,6 +99,11 @@ data class SimulationConfig(
                     defaults.softeningCells,
                 ),
                 timeStep = floatValue("dt", "GRAVITY_DT", defaults.timeStep),
+                collisionIterations = intValue(
+                    "collision-iterations",
+                    "GRAVITY_COLLISION_ITERATIONS",
+                    defaults.collisionIterations,
+                ),
                 maxFrames = values["frames"]?.toIntOrNull(),
             )
         }
