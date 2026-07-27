@@ -137,12 +137,10 @@ object GalaxyInitializer {
         )
         val leftCenterX = preset.outerRadius
         val rightCenterX = 1f - preset.outerRadius
-        val orbitalSpeed = 0.5f * sqrt(gravity)
         val prefix = DoubleArray(count + 1)
 
         for (galaxy in 0..1) {
             val centerX = if (galaxy == 0) leftCenterX else rightCenterX
-            val bulkVy = if (galaxy == 0) orbitalSpeed else -orbitalSpeed
             for (localId in 0 until bodiesPerGalaxy) {
                 val source = localId * 4
                 putBody(
@@ -150,7 +148,7 @@ object GalaxyInitializer {
                     centerX + localBodies[source] - 0.5f,
                     localBodies[source + 1],
                     localBodies[source + 2],
-                    localBodies[source + 3] + bulkVy,
+                    localBodies[source + 3],
                 )
                 val mass = localMasses[localId]
                 masses.put(mass)

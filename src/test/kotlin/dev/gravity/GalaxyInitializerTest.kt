@@ -50,18 +50,16 @@ class GalaxyInitializerTest {
         var moving = 0
         var mode2Real = 0.0
         var mode2Imaginary = 0.0
-        val orbitalSpeed = 0.5f * kotlin.math.sqrt(0.035f)
         for (id in 0 until count) {
             val localId = id % bodiesPerGalaxy
             if (localId == 0) continue
             val galaxy = id / bodiesPerGalaxy
             val centerX = if (galaxy == 0) expectedRadius else 1f - expectedRadius
-            val bulkVy = if (galaxy == 0) orbitalSpeed else -orbitalSpeed
             val offset = id * 4
             val x = (bodies[offset] - centerX) * domainAspect
             val y = bodies[offset + 1] - 0.5f
             val vx = bodies[offset + 2] * domainAspect
-            val vy = bodies[offset + 3] - bulkVy
+            val vy = bodies[offset + 3]
             assertTrue(bodies[offset] in 0f..1f)
             assertTrue(bodies[offset + 1] in 0f..1f)
             assertTrue(hypot(x, y) <= expectedRadius + 1e-5f)
