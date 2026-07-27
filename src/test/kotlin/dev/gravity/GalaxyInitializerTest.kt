@@ -65,10 +65,12 @@ class GalaxyInitializerTest {
             val y = bodies[offset + 1] - 0.5f
             val vx = bodies[offset + 2] * domainAspect
             val vy = bodies[offset + 3]
+            val orbitalVy = vy -
+                if (galaxy == 0) preset.verticalDriftSpeed else -preset.verticalDriftSpeed
             assertTrue(bodies[offset] in 0f..1f)
             assertTrue(bodies[offset + 1] in 0f..1f)
             assertTrue(hypot(x, y) <= expectedRadius + 1e-5f)
-            val angularMomentum = x * vy - y * vx
+            val angularMomentum = x * orbitalVy - y * vx
             if ((galaxy == 0 && angularMomentum < 0f) ||
                 (galaxy == 1 && angularMomentum > 0f)
             ) {
@@ -116,5 +118,31 @@ class GalaxyInitializerTest {
         assertTrue(second.first[0] != second.first[1])
         assertTrue(!first.first.contentEquals(second.first))
         assertTrue(!first.second.contentEquals(second.second))
+    }
+
+    @Test
+    fun `same twin seeds reproduce exact initial state`() {
+        val count = 200
+        val seeds = longArrayOf(101L, 202L)
+
+        fun generate(): Pair<FloatBuffer, FloatBuffer> {
+            val bodies = FloatBuffer.allocate(count * 4)
+            val masses = FloatBuffer.allocate(count)
+            GalaxyInitializer.fillTwin(
+                bodies = bodies,
+                masses = masses,
+                count = count,
+                domainAspect = 1f,
+                gravity = 0.035f,
+                preset = GalaxyPreset(),
+                seeds = seeds,
+            )
+            return bodies to masses
+        }
+
+        val first = generate()
+        val second = generate()
+        repeat(count * 4) { assertEquals(first.first[it], second.first[it]) }
+        repeat(count) { assertEquals(first.second[it], second.second[it]) }
     }
 }

@@ -15,6 +15,9 @@ uniform int uMeshWidth;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform int uMassScale;
+uniform int uPointMassActive;
+uniform vec2 uPointMassPosition;
+uniform float uPointMass;
 
 uint densityIndex(ivec2 physicalCell) {
     ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
@@ -26,13 +29,8 @@ uint cellIndex(ivec2 cell) {
     return uint(cell.x + cell.y * uPhysicalWidth);
 }
 
-void main() {
-    uint id = gl_GlobalInvocationID.x;
-    if (id >= uint(uCount)) return;
-    if (activeFlags[id] == 0) return;
-
-    vec2 p = bodies[id].xy;
-    vec2 gridPosition = p * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
+void depositDensity(vec2 position, float mass) {
+    vec2 gridPosition = position * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 fraction = fract(gridPosition);
     vec4 weights = vec4(
@@ -41,11 +39,23 @@ void main() {
         (1.0 - fraction.x) * fraction.y,
         fraction.x * fraction.y
     );
-    float scale = float(uMassScale) * masses[id];
+    float scale = float(uMassScale) * mass;
     atomicAdd(density[densityIndex(base)], uint(round(weights.x * scale)));
     atomicAdd(density[densityIndex(base + ivec2(1, 0))], uint(round(weights.y * scale)));
     atomicAdd(density[densityIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
     atomicAdd(density[densityIndex(base + ivec2(1, 1))], uint(round(weights.w * scale)));
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    if (id == 0u && uPointMassActive != 0) {
+        depositDensity(uPointMassPosition, uPointMass);
+    }
+    if (activeFlags[id] == 0) return;
+
+    vec2 p = bodies[id].xy;
+    depositDensity(p, masses[id]);
 
     ivec2 home = ivec2(floor(p * vec2(uPhysicalWidth, uPhysicalHeight)));
     uint homeIndex = cellIndex(home);

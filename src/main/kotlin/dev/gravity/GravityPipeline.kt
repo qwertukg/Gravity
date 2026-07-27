@@ -74,6 +74,10 @@ class GravityPipeline(
     private lateinit var massPrefix: DoubleArray
     private lateinit var centralBodyIds: IntArray
     private var normalizationMass = 0f
+    private var initialSeeds: LongArray? = null
+    private var pointMassActive = false
+    private var pointMassX = 0.5f
+    private var pointMassY = 0.5f
 
     init {
         seedBodies()
@@ -84,6 +88,20 @@ class GravityPipeline(
     fun initializeAcceleration(activeBodies: Int) {
         buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
+    }
+
+    fun setPointMass(active: Boolean, x: Float, y: Float) {
+        pointMassActive = active
+        val halfCellX = 0.5f / physicalGridWidth
+        val halfCellY = 0.5f / physicalGridHeight
+        pointMassX = x.coerceIn(halfCellX, 1f - halfCellX)
+        pointMassY = y.coerceIn(halfCellY, 1f - halfCellY)
+    }
+
+    fun reset(activeBodies: Int) {
+        seedBodies()
+        clearFloatBuffer(acceleration)
+        initializeAcceleration(activeBodies)
     }
 
     fun step(activeBodies: Int) {
@@ -133,6 +151,12 @@ class GravityPipeline(
         build.int("uPhysicalWidth", physicalGridWidth)
         build.int("uPhysicalHeight", physicalGridHeight)
         build.int("uMassScale", massScale)
+        build.int("uPointMassActive", if (pointMassActive) 1 else 0)
+        build.vec2("uPointMassPosition", pointMassX, pointMassY)
+        build.float(
+            "uPointMass",
+            normalizationMass * 0.5f * galaxyPreset.blackHoleMassFraction,
+        )
         dispatchBodies(activeBodies)
         barrier()
 
@@ -183,6 +207,9 @@ class GravityPipeline(
         kick.float("uInitialTotalMass", normalizationMass)
         kick.float("uHaloMassFraction", galaxyPreset.haloMassFraction)
         kick.float("uHaloScaleRadius", galaxyPreset.haloScaleRadius)
+        kick.int("uPointMassActive", if (pointMassActive) 1 else 0)
+        kick.vec2("uPointMassPosition", pointMassX, pointMassY)
+        kick.float("uPointMassFraction", 0.5f * galaxyPreset.blackHoleMassFraction)
         kick.int("uCentralBody0", centralBodyIds[0])
         kick.int("uCentralBody1", centralBodyIds[1])
         kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
@@ -288,7 +315,17 @@ class GravityPipeline(
             config.capacity.toLong() * Float.SIZE_BYTES,
             null,
         )?.asFloatBuffer() ?: error("Unable to map mass buffer")
-        val initialState = GalaxyInitializer.fillTwin(
+        val initialState = initialSeeds?.let { seeds ->
+            GalaxyInitializer.fillTwin(
+                bodies = mappedBodies,
+                masses = mappedMasses,
+                count = config.capacity,
+                domainAspect = domainAspect,
+                gravity = config.gravitationalConstant,
+                preset = galaxyPreset,
+                seeds = seeds,
+            )
+        } ?: GalaxyInitializer.fillTwin(
             bodies = mappedBodies,
             masses = mappedMasses,
             count = config.capacity,
@@ -296,6 +333,7 @@ class GravityPipeline(
             gravity = config.gravitationalConstant,
             preset = galaxyPreset,
         )
+        if (initialSeeds == null) initialSeeds = initialState.galaxySeeds.copyOf()
         massPrefix = initialState.massPrefix
         centralBodyIds = initialState.centralBodyIds
         normalizationMass = initialState.normalizationMass
