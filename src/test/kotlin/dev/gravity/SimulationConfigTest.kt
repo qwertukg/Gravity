@@ -6,13 +6,9 @@ import kotlin.test.assertFailsWith
 
 class SimulationConfigTest {
     @Test
-    fun `defaults use exactly 500000 fixed bodies`() {
+    fun `parser uses constructor defaults`() {
         val config = SimulationConfig.parse(emptyArray(), emptyMap())
-        assertEquals(500_000, config.initialBodies)
-        assertEquals(500_000, config.capacity)
-        assertEquals(512, config.gridWidth)
-        assertEquals(256, config.gridHeight)
-        assertEquals(true, config.fixedBodyCount)
+        assertEquals(SimulationConfig(), config)
     }
 
     @Test

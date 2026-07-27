@@ -3,8 +3,8 @@ package dev.gravity
 import kotlin.math.min
 
 data class SimulationConfig(
-    val capacity: Int = 500_000,
-    val initialBodies: Int = 500_000,
+    val capacity: Int = 1000_000,
+    val initialBodies: Int = 1000_000,
     val gridWidth: Int = 512,
     val gridHeight: Int = 256,
     val fixedBodyCount: Boolean = true,
@@ -31,8 +31,10 @@ data class SimulationConfig(
 
     companion object {
         fun parse(args: Array<String>, env: Map<String, String> = System.getenv()): SimulationConfig {
+            val defaults = SimulationConfig()
             val values = mutableMapOf<String, String>()
-            var fixed = env["GRAVITY_FIXED"]?.toBooleanStrictOrNull() ?: true
+            var fixed = env["GRAVITY_FIXED"]?.toBooleanStrictOrNull()
+                ?: defaults.fixedBodyCount
             args.forEach { argument ->
                 when {
                     argument == "--fixed" -> fixed = true
@@ -57,7 +59,7 @@ data class SimulationConfig(
 
             val grid = values["grid"] ?: env["GRAVITY_GRID"]
             val (gridWidth, gridHeight) = when {
-                grid == null -> 512 to 256
+                grid == null -> defaults.gridWidth to defaults.gridHeight
                 'x' in grid.lowercase() -> {
                     val parts = grid.lowercase().split('x', limit = 2)
                     val width = parts[0].toIntOrNull()
@@ -72,16 +74,27 @@ data class SimulationConfig(
                     side to side
                 }
             }
-            val capacity = intValue("capacity", "GRAVITY_CAPACITY", 500_000)
+            val capacity = intValue("capacity", "GRAVITY_CAPACITY", defaults.capacity)
             return SimulationConfig(
                 capacity = capacity,
-                initialBodies = min(intValue("bodies", "GRAVITY_BODIES", 500_000), capacity),
+                initialBodies = min(
+                    intValue("bodies", "GRAVITY_BODIES", defaults.initialBodies),
+                    capacity,
+                ),
                 gridWidth = gridWidth,
                 gridHeight = gridHeight,
                 fixedBodyCount = fixed,
-                gravitationalConstant = floatValue("gravity", "GRAVITY_G", 0.035f),
-                softeningCells = floatValue("softening", "GRAVITY_SOFTENING", 0.85f),
-                timeStep = floatValue("dt", "GRAVITY_DT", 1f / 120f),
+                gravitationalConstant = floatValue(
+                    "gravity",
+                    "GRAVITY_G",
+                    defaults.gravitationalConstant,
+                ),
+                softeningCells = floatValue(
+                    "softening",
+                    "GRAVITY_SOFTENING",
+                    defaults.softeningCells,
+                ),
+                timeStep = floatValue("dt", "GRAVITY_DT", defaults.timeStep),
                 maxFrames = values["frames"]?.toIntOrNull(),
             )
         }
