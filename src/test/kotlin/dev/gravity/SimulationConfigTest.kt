@@ -10,18 +10,21 @@ class SimulationConfigTest {
         val config = SimulationConfig.parse(emptyArray(), emptyMap())
         assertEquals(350_000, config.initialBodies)
         assertEquals(350_000, config.capacity)
+        assertEquals(1024, config.gridWidth)
+        assertEquals(512, config.gridHeight)
         assertEquals(true, config.fixedBodyCount)
     }
 
     @Test
     fun `command line overrides environment`() {
         val config = SimulationConfig.parse(
-            arrayOf("--bodies=120000", "--capacity=200000", "--grid=256", "--fixed"),
+            arrayOf("--bodies=120000", "--capacity=200000", "--grid=1024x512", "--fixed"),
             mapOf("GRAVITY_BODIES" to "42", "GRAVITY_GRID" to "1024"),
         )
         assertEquals(120_000, config.initialBodies)
         assertEquals(200_000, config.capacity)
-        assertEquals(256, config.gridSize)
+        assertEquals(1024, config.gridWidth)
+        assertEquals(512, config.gridHeight)
         assertEquals(true, config.fixedBodyCount)
     }
 
@@ -37,7 +40,7 @@ class SimulationConfigTest {
     @Test
     fun `non power of two grid is rejected`() {
         assertFailsWith<IllegalArgumentException> {
-            SimulationConfig(gridSize = 300)
+            SimulationConfig(gridWidth = 300)
         }
     }
 }

@@ -16,46 +16,49 @@ import kotlin.test.assertTrue
 class Radix2FftLayoutTest {
     @Test
     fun `shader layout agrees with JTransforms`() {
-        val size = 16
+        val width = 32
+        val height = 16
         val random = Random(73)
-        val expected = DoubleArray(size * size * 2)
-        repeat(size * size) { expected[it * 2] = random.nextDouble(-1.0, 1.0) }
+        val expected = DoubleArray(width * height * 2)
+        repeat(width * height) { expected[it * 2] = random.nextDouble(-1.0, 1.0) }
         val actual = expected.copyOf()
 
-        DoubleFFT_2D(size.toLong(), size.toLong()).complexForward(expected)
-        fft2d(actual, size, inverse = false)
+        DoubleFFT_2D(height.toLong(), width.toLong()).complexForward(expected)
+        fft2d(actual, width, height, inverse = false)
 
         val maximumError = expected.indices.maxOf { abs(expected[it] - actual[it]) }
         assertTrue(maximumError < 1e-9, "maximum complex-bin error was $maximumError")
     }
 
-    private fun fft2d(values: DoubleArray, size: Int, inverse: Boolean) {
+    private fun fft2d(values: DoubleArray, width: Int, height: Int, inverse: Boolean) {
         for (axis in 0..1) {
             val permuted = DoubleArray(values.size)
-            val bits = size.countTrailingZeroBits()
-            repeat(size * size) { id ->
-                val x = id % size
-                val y = id / size
+            val axisSize = if (axis == 0) width else height
+            val bits = axisSize.countTrailingZeroBits()
+            repeat(width * height) { id ->
+                val x = id % width
+                val y = id / width
                 val sx = if (axis == 0) Integer.reverse(x) ushr (32 - bits) else x
                 val sy = if (axis == 1) Integer.reverse(y) ushr (32 - bits) else y
-                permuted[id * 2] = values[(sx + sy * size) * 2]
-                permuted[id * 2 + 1] = values[(sx + sy * size) * 2 + 1]
+                permuted[id * 2] = values[(sx + sy * width) * 2]
+                permuted[id * 2 + 1] = values[(sx + sy * width) * 2 + 1]
             }
             var source = permuted
             var destination = DoubleArray(values.size)
             repeat(bits) { stage ->
-                val width = 1 shl (stage + 1)
-                val half = width / 2
-                repeat(size * size) { id ->
-                    val x = id % size
-                    val y = id / size
+                val stageWidth = 1 shl (stage + 1)
+                val half = stageWidth / 2
+                repeat(width * height) { id ->
+                    val x = id % width
+                    val y = id / width
                     val coordinate = if (axis == 0) x else y
-                    val within = coordinate and (width - 1)
+                    val within = coordinate and (stageWidth - 1)
                     val lower = coordinate - (within and half)
                     val upper = lower + half
-                    val lowerId = if (axis == 0) lower + y * size else x + lower * size
-                    val upperId = if (axis == 0) upper + y * size else x + upper * size
-                    val angle = (if (inverse) 2.0 else -2.0) * PI * (within and (half - 1)) / width
+                    val lowerId = if (axis == 0) lower + y * width else x + lower * width
+                    val upperId = if (axis == 0) upper + y * width else x + upper * width
+                    val angle = (if (inverse) 2.0 else -2.0) * PI *
+                        (within and (half - 1)) / stageWidth
                     val wr = cos(angle)
                     val wi = sin(angle)
                     val ar = source[lowerId * 2]

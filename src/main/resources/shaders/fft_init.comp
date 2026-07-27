@@ -4,7 +4,8 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer Density { uint density[]; };
 layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
 
-uniform int uGrid;
+uniform int uGridWidth;
+uniform int uGridHeight;
 uniform int uBits;
 uniform float uInverseMassScale;
 
@@ -14,10 +15,11 @@ uint reverseBits(uint value, int bits) {
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
-    uint cells = uint(uGrid * uGrid);
+    uint width = uint(uGridWidth);
+    uint cells = width * uint(uGridHeight);
     if (id >= cells) return;
-    uint x = id % uint(uGrid);
-    uint y = id / uint(uGrid);
-    uint source = reverseBits(x, uBits) + y * uint(uGrid);
+    uint x = id % width;
+    uint y = id / width;
+    uint source = reverseBits(x, uBits) + y * width;
     outputComplex[id] = vec2(float(density[source]) * uInverseMassScale, 0.0);
 }

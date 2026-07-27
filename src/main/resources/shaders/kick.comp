@@ -9,25 +9,32 @@ layout(std430, binding = 4) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
 
 uniform int uCount;
-uniform int uGrid;
+uniform int uGridWidth;
+uniform int uGridHeight;
 uniform int uInitial;
-uniform int uNeighborRadius;
+uniform int uNeighborRadiusX;
+uniform int uNeighborRadiusY;
 uniform float uDt;
 uniform float uGravity;
 uniform float uSigmaCells;
+uniform float uDomainAspect;
 
 const int MAX_LOCAL_INTERACTIONS = 256;
 
-int wrapCell(int value) {
-    return (value + uGrid) & (uGrid - 1);
+int wrapX(int value) {
+    return (value + uGridWidth) & (uGridWidth - 1);
+}
+
+int wrapY(int value) {
+    return (value + uGridHeight) & (uGridHeight - 1);
 }
 
 int cellIndex(ivec2 cell) {
-    return wrapCell(cell.x) + wrapCell(cell.y) * uGrid;
+    return wrapX(cell.x) + wrapY(cell.y) * uGridWidth;
 }
 
 float interpolateX(vec2 position) {
-    vec2 gridPosition = position * float(uGrid) - 0.5;
+    vec2 gridPosition = position * vec2(uGridWidth, uGridHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 f = fract(gridPosition);
     float v00 = forceX[cellIndex(base)].x;
@@ -38,7 +45,7 @@ float interpolateX(vec2 position) {
 }
 
 float interpolateY(vec2 position) {
-    vec2 gridPosition = position * float(uGrid) - 0.5;
+    vec2 gridPosition = position * vec2(uGridWidth, uGridHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 f = fract(gridPosition);
     float v00 = forceY[cellIndex(base)].x;
@@ -56,22 +63,27 @@ void main() {
 
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. This exact local complement restores point-like force.
-    ivec2 home = ivec2(floor(body.xy * float(uGrid)));
-    float sigma = uSigmaCells / float(uGrid);
+    ivec2 home = ivec2(floor(body.xy * vec2(uGridWidth, uGridHeight)));
+    float sigma = uSigmaCells / float(uGridHeight);
     float sigmaSquared2 = 2.0 * sigma * sigma;
-    float minimumRSquared = 0.0025 / float(uGrid * uGrid);
+    float cellWidth = uDomainAspect / float(uGridWidth);
+    float cellHeight = 1.0 / float(uGridHeight);
+    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
+    float minimumRSquared = minimumDistance * minimumDistance;
     int interactions = 0;
-    for (int dy = -uNeighborRadius; dy <= uNeighborRadius; ++dy) {
-        for (int dx = -uNeighborRadius; dx <= uNeighborRadius; ++dx) {
+    for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
+        for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
             int other = heads[cellIndex(home + ivec2(dx, dy))];
             while (other >= 0 && interactions < MAX_LOCAL_INTERACTIONS) {
                 if (uint(other) != id) {
-                    vec2 delta = bodies[other].xy - body.xy;
-                    delta -= round(delta);
-                    float rSquared = dot(delta, delta);
+                    vec2 deltaNormalized = bodies[other].xy - body.xy;
+                    deltaNormalized -= round(deltaNormalized);
+                    vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
+                    float rSquared = dot(deltaPhysical, deltaPhysical);
                     float localWeight = exp(-rSquared / sigmaSquared2);
-                    result += (uGravity / float(uCount)) * delta * localWeight /
-                        max(rSquared, minimumRSquared);
+                    vec2 physicalAcceleration = (uGravity / float(uCount)) *
+                        deltaPhysical * localWeight / max(rSquared, minimumRSquared);
+                    result += physicalAcceleration / vec2(uDomainAspect, 1.0);
                 }
                 other = nextBody[other];
                 interactions++;

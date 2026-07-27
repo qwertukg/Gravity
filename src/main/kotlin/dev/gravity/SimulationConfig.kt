@@ -5,7 +5,8 @@ import kotlin.math.min
 data class SimulationConfig(
     val capacity: Int = 350_000,
     val initialBodies: Int = 350_000,
-    val gridSize: Int = 512,
+    val gridWidth: Int = 1024,
+    val gridHeight: Int = 512,
     val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
@@ -16,8 +17,11 @@ data class SimulationConfig(
     init {
         require(capacity > 0) { "capacity must be positive" }
         require(initialBodies in 1..capacity) { "bodies must be in 1..capacity" }
-        require(gridSize in 128..2048 && gridSize.countOneBits() == 1) {
-            "grid must be a power of two in 128..2048"
+        require(gridWidth in 128..2048 && gridWidth.countOneBits() == 1) {
+            "grid width must be a power of two in 128..2048"
+        }
+        require(gridHeight in 128..2048 && gridHeight.countOneBits() == 1) {
+            "grid height must be a power of two in 128..2048"
         }
         require(gravitationalConstant > 0f)
         require(softeningCells > 0f)
@@ -51,11 +55,29 @@ data class SimulationConfig(
                     ?: env[environmentKey]?.toFloatOrNull()
                     ?: default
 
+            val grid = values["grid"] ?: env["GRAVITY_GRID"]
+            val (gridWidth, gridHeight) = when {
+                grid == null -> 1024 to 512
+                'x' in grid.lowercase() -> {
+                    val parts = grid.lowercase().split('x', limit = 2)
+                    val width = parts[0].toIntOrNull()
+                        ?: throw IllegalArgumentException("Invalid grid width: ${parts[0]}")
+                    val height = parts[1].toIntOrNull()
+                        ?: throw IllegalArgumentException("Invalid grid height: ${parts[1]}")
+                    width to height
+                }
+                else -> {
+                    val side = grid.toIntOrNull()
+                        ?: throw IllegalArgumentException("Invalid grid: $grid")
+                    side to side
+                }
+            }
             val capacity = intValue("capacity", "GRAVITY_CAPACITY", 350_000)
             return SimulationConfig(
                 capacity = capacity,
                 initialBodies = min(intValue("bodies", "GRAVITY_BODIES", 350_000), capacity),
-                gridSize = intValue("grid", "GRAVITY_GRID", 512),
+                gridWidth = gridWidth,
+                gridHeight = gridHeight,
                 fixedBodyCount = fixed,
                 gravitationalConstant = floatValue("gravity", "GRAVITY_G", 0.035f),
                 softeningCells = floatValue("softening", "GRAVITY_SOFTENING", 0.85f),

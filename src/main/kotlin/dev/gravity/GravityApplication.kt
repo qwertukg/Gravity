@@ -51,10 +51,12 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var renderProgram: GlProgram? = null
     private var vao = 0
     private var timer: GpuTimer? = null
+    private var viewportWidth = 0
+    private var viewportHeight = 0
 
     fun run() {
         initWindow()
-        val simulation = GravityPipeline(config)
+        val simulation = GravityPipeline(config, viewportWidth, viewportHeight)
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
         vao = glGenVertexArrays()
@@ -86,11 +88,12 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 val fps = frames * 1e9 / (now - reportStart)
                 System.err.printf(
                     Locale.ROOT,
-                    "bodies=%,d  fps=%.1f  gpu=%.2f ms  grid=%d%n",
+                    "bodies=%,d  fps=%.1f  gpu=%.2f ms  grid=%dx%d%n",
                     active,
                     fps,
                     controller.smoothedGpuMillis(),
-                    config.gridSize,
+                    config.gridWidth,
+                    config.gridHeight,
                 )
                 frames = 0
                 reportStart = now
@@ -115,6 +118,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         val monitor = glfwGetPrimaryMonitor()
         check(monitor != 0L) { "No primary monitor" }
         val mode = checkNotNull(glfwGetVideoMode(monitor)) { "No video mode" }
+        viewportWidth = mode.width()
+        viewportHeight = mode.height()
         window = glfwCreateWindow(mode.width(), mode.height(), "Gravity", monitor, 0L)
         check(window != 0L) { "Fullscreen OpenGL window creation failed" }
         glfwSetKeyCallback(window) { target, key, _, action, _ ->
@@ -131,7 +136,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glfwShowWindow(window)
         System.err.println(
             "Gravity: ${mode.width()}x${mode.height()}, capacity=${config.capacity}, " +
-                "initial=${config.initialBodies}, grid=${config.gridSize}; Esc exits"
+                "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}; Esc exits"
         )
     }
 

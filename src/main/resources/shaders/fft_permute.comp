@@ -4,7 +4,8 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer InputComplex { vec2 inputComplex[]; };
 layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
 
-uniform int uGrid;
+uniform int uGridWidth;
+uniform int uGridHeight;
 uniform int uBits;
 uniform int uAxis;
 
@@ -14,12 +15,13 @@ uint reverseBits(uint value, int bits) {
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
-    uint grid = uint(uGrid);
-    if (id >= grid * grid) return;
-    uint x = id % grid;
-    uint y = id / grid;
+    uint width = uint(uGridWidth);
+    uint height = uint(uGridHeight);
+    if (id >= width * height) return;
+    uint x = id % width;
+    uint y = id / width;
     uint source = uAxis == 0
-        ? reverseBits(x, uBits) + y * grid
-        : x + reverseBits(y, uBits) * grid;
+        ? reverseBits(x, uBits) + y * width
+        : x + reverseBits(y, uBits) * width;
     outputComplex[id] = inputComplex[source];
 }

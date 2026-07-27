@@ -5,10 +5,12 @@ layout(std430, binding = 0) readonly buffer DensitySpectrum { vec2 densitySpectr
 layout(std430, binding = 1) writeonly buffer ForceXSpectrum { vec2 forceXSpectrum[]; };
 layout(std430, binding = 2) writeonly buffer ForceYSpectrum { vec2 forceYSpectrum[]; };
 
-uniform int uGrid;
+uniform int uGridWidth;
+uniform int uGridHeight;
 uniform int uCount;
 uniform float uGravity;
 uniform float uSigmaCells;
+uniform float uDomainAspect;
 
 const float PI = 3.14159265358979323846;
 const float TAU = 6.28318530717958647692;
@@ -23,12 +25,13 @@ vec2 multiplyByI(vec2 value, float scale) {
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
-    uint grid = uint(uGrid);
-    if (id >= grid * grid) return;
-    int rawX = int(id % grid);
-    int rawY = int(id / grid);
-    int integerKx = rawX <= uGrid / 2 ? rawX : rawX - uGrid;
-    int integerKy = rawY <= uGrid / 2 ? rawY : rawY - uGrid;
+    uint width = uint(uGridWidth);
+    uint height = uint(uGridHeight);
+    if (id >= width * height) return;
+    int rawX = int(id % width);
+    int rawY = int(id / width);
+    int integerKx = rawX <= uGridWidth / 2 ? rawX : rawX - uGridWidth;
+    int integerKy = rawY <= uGridHeight / 2 ? rawY : rawY - uGridHeight;
 
     if (integerKx == 0 && integerKy == 0) {
         forceXSpectrum[id] = vec2(0.0);
@@ -36,26 +39,26 @@ void main() {
         return;
     }
 
-    float kx = TAU * float(integerKx);
+    float kx = TAU * float(integerKx) / uDomainAspect;
     float ky = TAU * float(integerKy);
     float kSquared = kx * kx + ky * ky;
-    float sigma = uSigmaCells / float(uGrid);
+    float sigma = uSigmaCells / float(uGridHeight);
     float gaussian = exp(-0.5 * sigma * sigma * kSquared);
 
     // CIC is used both for assignment and interpolation. Remove its combined
     // transfer function before applying the requested Gaussian split.
-    float sx = sinc(PI * float(integerKx) / float(uGrid));
-    float sy = sinc(PI * float(integerKy) / float(uGrid));
+    float sx = sinc(PI * float(integerKx) / float(uGridWidth));
+    float sy = sinc(PI * float(integerKy) / float(uGridHeight));
     float assignmentWindow = sx * sx * sy * sy;
     float deconvolution = 1.0 / max(assignmentWindow * assignmentWindow, 0.04);
     float poisson = TAU * uGravity * gaussian * deconvolution /
-        (float(uCount) * kSquared);
+        (float(uCount) * uDomainAspect * kSquared);
 
     vec2 rho = densitySpectrum[id];
     // A Nyquist bin is its own conjugate, so its spectral derivative must be
     // zero to keep the inverse transform strictly real.
-    float derivativeKx = abs(integerKx) == uGrid / 2 ? 0.0 : kx;
-    float derivativeKy = abs(integerKy) == uGrid / 2 ? 0.0 : ky;
-    forceXSpectrum[id] = multiplyByI(rho, poisson * derivativeKx);
+    float derivativeKx = abs(integerKx) == uGridWidth / 2 ? 0.0 : kx;
+    float derivativeKy = abs(integerKy) == uGridHeight / 2 ? 0.0 : ky;
+    forceXSpectrum[id] = multiplyByI(rho, poisson * derivativeKx / uDomainAspect);
     forceYSpectrum[id] = multiplyByI(rho, poisson * derivativeKy);
 }

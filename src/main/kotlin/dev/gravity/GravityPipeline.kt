@@ -27,12 +27,19 @@ import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
 import java.nio.ByteBuffer
 import kotlin.math.ceil
-import kotlin.math.ln
 import kotlin.random.Random
 
-class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
-    private val cells = config.gridSize * config.gridSize
-    private val logGrid = (ln(config.gridSize.toDouble()) / ln(2.0)).toInt()
+class GravityPipeline(
+    private val config: SimulationConfig,
+    viewportWidth: Int,
+    viewportHeight: Int,
+) : AutoCloseable {
+    private val gridWidth = config.gridWidth
+    private val gridHeight = config.gridHeight
+    private val cells = gridWidth * gridHeight
+    private val logGridWidth = gridWidth.countTrailingZeroBits()
+    private val logGridHeight = gridHeight.countTrailingZeroBits()
+    private val domainAspect = viewportWidth.toFloat() / viewportHeight.toFloat()
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
@@ -97,7 +104,8 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
         bind(2, cellHeads)
         bind(3, nextBody)
         build.int("uCount", activeBodies)
-        build.int("uGrid", config.gridSize)
+        build.int("uGridWidth", gridWidth)
+        build.int("uGridHeight", gridHeight)
         build.int("uMassScale", massScale)
         dispatchBodies(activeBodies)
         barrier()
@@ -105,8 +113,9 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
         fftInit.use()
         bind(0, density)
         bind(1, fft)
-        fftInit.int("uGrid", config.gridSize)
-        fftInit.int("uBits", logGrid)
+        fftInit.int("uGridWidth", gridWidth)
+        fftInit.int("uGridHeight", gridHeight)
+        fftInit.int("uBits", logGridWidth)
         fftInit.float("uInverseMassScale", 1f / massScale)
         dispatch(cells)
         barrier()
@@ -120,10 +129,12 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
         bind(0, fft)
         bind(1, forceX)
         bind(2, forceY)
-        spectrum.int("uGrid", config.gridSize)
+        spectrum.int("uGridWidth", gridWidth)
+        spectrum.int("uGridHeight", gridHeight)
         spectrum.int("uCount", activeBodies)
         spectrum.float("uGravity", config.gravitationalConstant)
         spectrum.float("uSigmaCells", config.softeningCells)
+        spectrum.float("uDomainAspect", domainAspect)
         dispatch(cells)
         barrier()
 
@@ -140,12 +151,22 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
         bind(4, cellHeads)
         bind(5, nextBody)
         kick.int("uCount", activeBodies)
-        kick.int("uGrid", config.gridSize)
+        kick.int("uGridWidth", gridWidth)
+        kick.int("uGridHeight", gridHeight)
         kick.int("uInitial", if (initial) 1 else 0)
-        kick.int("uNeighborRadius", ceil(config.softeningCells * 3f).toInt().coerceIn(1, 4))
+        kick.int(
+            "uNeighborRadiusX",
+            ceil(3f * config.softeningCells * gridWidth / (gridHeight * domainAspect))
+                .toInt().coerceIn(1, 6),
+        )
+        kick.int(
+            "uNeighborRadiusY",
+            ceil(config.softeningCells * 3f).toInt().coerceIn(1, 6),
+        )
         kick.float("uDt", config.timeStep)
         kick.float("uGravity", config.gravitationalConstant)
         kick.float("uSigmaCells", config.softeningCells)
+        kick.float("uDomainAspect", domainAspect)
         dispatchBodies(activeBodies)
         barrier()
     }
@@ -161,11 +182,13 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
     private fun fftStages(input: Int, output: Int, axis: Int, inverse: Boolean): Int {
         var source = input
         var destination = output
-        repeat(logGrid) { stage ->
+        val stages = if (axis == 0) logGridWidth else logGridHeight
+        repeat(stages) { stage ->
             fftStage.use()
             bind(0, source)
             bind(1, destination)
-            fftStage.int("uGrid", config.gridSize)
+            fftStage.int("uGridWidth", gridWidth)
+            fftStage.int("uGridHeight", gridHeight)
             fftStage.int("uStage", stage + 1)
             fftStage.int("uAxis", axis)
             fftStage.int("uInverse", if (inverse) 1 else 0)
@@ -182,8 +205,9 @@ class GravityPipeline(private val config: SimulationConfig) : AutoCloseable {
         permute.use()
         bind(0, input)
         bind(1, output)
-        permute.int("uGrid", config.gridSize)
-        permute.int("uBits", logGrid)
+        permute.int("uGridWidth", gridWidth)
+        permute.int("uGridHeight", gridHeight)
+        permute.int("uBits", if (axis == 0) logGridWidth else logGridHeight)
         permute.int("uAxis", axis)
         dispatch(cells)
         barrier()

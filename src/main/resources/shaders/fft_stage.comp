@@ -4,7 +4,8 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer InputComplex { vec2 inputComplex[]; };
 layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
 
-uniform int uGrid;
+uniform int uGridWidth;
+uniform int uGridHeight;
 uniform int uStage;
 uniform int uAxis;
 uniform int uInverse;
@@ -17,11 +18,12 @@ vec2 multiplyComplex(vec2 a, vec2 b) {
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
-    uint grid = uint(uGrid);
-    if (id >= grid * grid) return;
+    uint widthInCells = uint(uGridWidth);
+    uint heightInCells = uint(uGridHeight);
+    if (id >= widthInCells * heightInCells) return;
 
-    uint x = id % grid;
-    uint y = id / grid;
+    uint x = id % widthInCells;
+    uint y = id / widthInCells;
     uint coordinate = uAxis == 0 ? x : y;
     uint width = 1u << uint(uStage);
     uint halfWidth = width >> 1u;
@@ -29,10 +31,13 @@ void main() {
     uint pairCoordinate = within < halfWidth
         ? coordinate + halfWidth
         : coordinate - halfWidth;
-    uint pairId = uAxis == 0 ? pairCoordinate + y * grid : x + pairCoordinate * grid;
     uint lowerCoordinate = within < halfWidth ? coordinate : pairCoordinate;
-    uint lowerId = uAxis == 0 ? lowerCoordinate + y * grid : x + lowerCoordinate * grid;
-    uint upperId = uAxis == 0 ? lowerCoordinate + halfWidth + y * grid : x + (lowerCoordinate + halfWidth) * grid;
+    uint lowerId = uAxis == 0
+        ? lowerCoordinate + y * widthInCells
+        : x + lowerCoordinate * widthInCells;
+    uint upperId = uAxis == 0
+        ? lowerCoordinate + halfWidth + y * widthInCells
+        : x + (lowerCoordinate + halfWidth) * widthInCells;
 
     float sign = uInverse != 0 ? 1.0 : -1.0;
     float angle = sign * TAU * float(within & (halfWidth - 1u)) / float(width);
