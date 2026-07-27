@@ -12,16 +12,8 @@ const float VELOCITY_FIXED_SCALE = 4096.0;
 const float POSITION_FIXED_SCALE = 65536.0;
 const float MAX_POSITION_CORRECTION_PIXELS = 0.25;
 
-void reflectAxis(inout float position, inout float velocity) {
-    float phase = mod(position, 2.0);
-    if (phase < 0.0) phase += 2.0;
-    if (phase >= 1.0) {
-        position = 2.0 - phase;
-        velocity = -velocity;
-    } else {
-        position = phase;
-    }
-    position = min(position, 0.99999994);
+float wrapPosition(float position) {
+    return position - floor(position);
 }
 
 void main() {
@@ -39,7 +31,7 @@ void main() {
             MAX_POSITION_CORRECTION_PIXELS / correctionLength;
     }
     body.xy += positionDeltaPixels / resolution;
-    reflectAxis(body.x, body.z);
-    reflectAxis(body.y, body.w);
+    body.x = wrapPosition(body.x);
+    body.y = wrapPosition(body.y);
     bodies[id] = body;
 }

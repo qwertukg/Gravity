@@ -14,16 +14,8 @@ uniform int uCollisionWidth;
 uniform int uCollisionHeight;
 uniform int uBuildCollisionGrid;
 
-void reflectAxis(inout float position, inout float velocity) {
-    float phase = mod(position, 2.0);
-    if (phase < 0.0) phase += 2.0;
-    if (phase >= 1.0) {
-        position = 2.0 - phase;
-        velocity = -velocity;
-    } else {
-        position = phase;
-    }
-    position = min(position, 0.99999994);
+float wrapPosition(float position) {
+    return position - floor(position);
 }
 
 void main() {
@@ -32,8 +24,8 @@ void main() {
     vec4 body = bodies[id];
     body.zw += acceleration[id] * uKickDt;
     body.xy += body.zw * uDriftDt;
-    reflectAxis(body.x, body.z);
-    reflectAxis(body.y, body.w);
+    body.x = wrapPosition(body.x);
+    body.y = wrapPosition(body.y);
     bodies[id] = body;
     if (uBuildCollisionGrid != 0) {
         ivec2 cell = clamp(

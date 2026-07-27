@@ -182,7 +182,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             glfwWaitEventsTimeout(0.01)
         }
         System.err.println(
-            "Gravity: viewport=${mode.width()}x${mode.height()}, space=${mode.width()}x${mode.height()}, " +
+            "Gravity: viewport=${mode.width()}x${mode.height()}, " +
+                "space=${mode.width()}x${mode.height()} torus, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
                 "collisions=${config.collisionIterations}x${config.collisionSubsteps}, " +
                 "foreground=$foreground; Esc exits"

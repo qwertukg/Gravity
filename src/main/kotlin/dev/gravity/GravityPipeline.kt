@@ -31,10 +31,12 @@ class GravityPipeline(
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
-    private val physicalGridWidth = gridWidth / 2
-    private val physicalGridHeight = gridHeight / 2
+    private val physicalGridWidth = gridWidth
+    private val physicalGridHeight = gridHeight
+    private val particleGridWidth = gridWidth / 2
+    private val particleGridHeight = gridHeight / 2
     private val cells = gridWidth * gridHeight
-    private val physicalCells = physicalGridWidth * physicalGridHeight
+    private val physicalCells = particleGridWidth * particleGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
@@ -224,6 +226,8 @@ class GravityPipeline(
         build.int("uMeshWidth", gridWidth)
         build.int("uPhysicalWidth", physicalGridWidth)
         build.int("uPhysicalHeight", physicalGridHeight)
+        build.int("uParticleWidth", particleGridWidth)
+        build.int("uParticleHeight", particleGridHeight)
         build.int("uMassScale", massScale)
         dispatchBodies(activeBodies)
         barrier()
@@ -276,16 +280,20 @@ class GravityPipeline(
         kick.int("uMeshWidth", gridWidth)
         kick.int("uPhysicalWidth", physicalGridWidth)
         kick.int("uPhysicalHeight", physicalGridHeight)
+        kick.int("uParticleWidth", particleGridWidth)
+        kick.int("uParticleHeight", particleGridHeight)
         kick.int("uInitial", if (initial) 1 else 0)
         kick.int(
             "uNeighborRadiusX",
-            ceil(3f * config.softeningCells * physicalGridWidth /
+            ceil(3f * config.softeningCells * particleGridWidth /
                 (physicalGridHeight * domainAspect))
                 .toInt().coerceIn(1, 6),
         )
         kick.int(
             "uNeighborRadiusY",
-            ceil(config.softeningCells * 3f).toInt().coerceIn(1, 6),
+            ceil(3f * config.softeningCells * particleGridHeight /
+                physicalGridHeight)
+                .toInt().coerceIn(1, 6),
         )
         kick.float("uDt", config.timeStep)
         kick.float("uGravity", config.gravitationalConstant)

@@ -23,9 +23,12 @@ const float VELOCITY_FIXED_SCALE = 4096.0;
 const float POSITION_FIXED_SCALE = 65536.0;
 const int MAX_CELL_VISITS = 4;
 
-bool inside(ivec2 cell) {
-    return cell.x >= 0 && cell.y >= 0 &&
-        cell.x < uGridWidth && cell.y < uGridHeight;
+ivec2 wrappedCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uGridWidth;
+    else if (cell.x >= uGridWidth) cell.x -= uGridWidth;
+    if (cell.y < 0) cell.y += uGridHeight;
+    else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
+    return cell;
 }
 
 int neighborCount(ivec2 home) {
@@ -33,11 +36,10 @@ int neighborCount(ivec2 home) {
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
             ivec2 cell = home + ivec2(dx, dy);
-            if (inside(cell)) {
-                population += collisionCellCounts[
-                    cell.x + cell.y * uGridWidth
-                ];
-            }
+            ivec2 wrapped = wrappedCell(cell);
+            population += collisionCellCounts[
+                wrapped.x + wrapped.y * uGridWidth
+            ];
         }
     }
     return max(population - 1, 1);
@@ -74,15 +76,17 @@ void main() {
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
             ivec2 cell = home + ivec2(dx, dy);
-            if (!inside(cell)) continue;
+            ivec2 wrapped = wrappedCell(cell);
 
-            int other = collisionHeads[cell.x + cell.y * uGridWidth];
+            int other = collisionHeads[wrapped.x + wrapped.y * uGridWidth];
             int visited = 0;
             while (other >= 0 && visited < MAX_CELL_VISITS) {
                 uint otherId = uint(other);
                 if (otherId > id) {
                     vec4 otherBody = bodies[otherId];
-                    vec2 separation = otherBody.xy * resolution - positionPixels;
+                    vec2 separationNormalized = otherBody.xy - body.xy;
+                    separationNormalized -= round(separationNormalized);
+                    vec2 separation = separationNormalized * resolution;
                     float distanceSquared = dot(separation, separation);
                     if (distanceSquared < DIAMETER_PIXELS * DIAMETER_PIXELS) {
                         ivec2 otherHome = clamp(
