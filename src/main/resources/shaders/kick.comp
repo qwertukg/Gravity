@@ -7,6 +7,9 @@ layout(std430, binding = 2) readonly buffer ForceX { vec2 forceX[]; };
 layout(std430, binding = 3) readonly buffer ForceY { vec2 forceY[]; };
 layout(std430, binding = 4) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
+layout(std430, binding = 6) readonly buffer Masses { float masses[]; };
+layout(std430, binding = 7) readonly buffer CellCounts { int cellCounts[]; };
+layout(std430, binding = 8) readonly buffer CellMass { uint cellMass[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -18,8 +21,11 @@ uniform float uDt;
 uniform float uGravity;
 uniform float uSigmaCells;
 uniform float uDomainAspect;
+uniform float uTotalMass;
+uniform float uInverseMassScale;
 
-const int MAX_LOCAL_INTERACTIONS = 256;
+const int EXACT_CELL_THRESHOLD = 2;
+const int MAX_HOME_INTERACTIONS = 8;
 
 int wrapX(int value) {
     return (value + uGridWidth) & (uGridWidth - 1);
@@ -31,6 +37,21 @@ int wrapY(int value) {
 
 int cellIndex(ivec2 cell) {
     return wrapX(cell.x) + wrapY(cell.y) * uGridWidth;
+}
+
+vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMass) {
+    vec2 deltaNormalized = sourcePosition - targetPosition;
+    deltaNormalized -= round(deltaNormalized);
+    vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
+    float rSquared = dot(deltaPhysical, deltaPhysical);
+    float sigma = uSigmaCells / float(uGridHeight);
+    float localWeight = exp(-rSquared / (2.0 * sigma * sigma));
+    float cellWidth = uDomainAspect / float(uGridWidth);
+    float cellHeight = 1.0 / float(uGridHeight);
+    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
+    float physicalScale = uGravity * sourceMass * localWeight /
+        (uTotalMass * max(rSquared, minimumDistance * minimumDistance));
+    return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
 }
 
 float interpolateX(vec2 position) {
@@ -62,31 +83,34 @@ void main() {
     vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
 
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
-    // long-range force. This exact local complement restores point-like force.
+    // long-range force. Sparse cells use the exact local complement; dense
+    // cells use a Barnes-Hut-style cell monopole to bound frame time.
     ivec2 home = ivec2(floor(body.xy * vec2(uGridWidth, uGridHeight)));
-    float sigma = uSigmaCells / float(uGridHeight);
-    float sigmaSquared2 = 2.0 * sigma * sigma;
-    float cellWidth = uDomainAspect / float(uGridWidth);
-    float cellHeight = 1.0 / float(uGridHeight);
-    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
-    float minimumRSquared = minimumDistance * minimumDistance;
-    int interactions = 0;
+    if (id != 0u) {
+        result += localAcceleration(bodies[0].xy, body.xy, masses[0]);
+    }
     for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
         for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
-            int other = heads[cellIndex(home + ivec2(dx, dy))];
-            while (other >= 0 && interactions < MAX_LOCAL_INTERACTIONS) {
-                if (uint(other) != id) {
-                    vec2 deltaNormalized = bodies[other].xy - body.xy;
-                    deltaNormalized -= round(deltaNormalized);
-                    vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
-                    float rSquared = dot(deltaPhysical, deltaPhysical);
-                    float localWeight = exp(-rSquared / sigmaSquared2);
-                    vec2 physicalAcceleration = (uGravity / float(uCount)) *
-                        deltaPhysical * localWeight / max(rSquared, minimumRSquared);
-                    result += physicalAcceleration / vec2(uDomainAspect, 1.0);
+            ivec2 neighborCell = home + ivec2(dx, dy);
+            int index = cellIndex(neighborCell);
+            int count = cellCounts[index];
+            bool homeCell = dx == 0 && dy == 0;
+            if (!homeCell && count > EXACT_CELL_THRESHOLD) {
+                vec2 center = (vec2(wrapX(neighborCell.x), wrapY(neighborCell.y)) + 0.5) /
+                    vec2(uGridWidth, uGridHeight);
+                float aggregateMass = float(cellMass[index]) * uInverseMassScale;
+                result += localAcceleration(center, body.xy, aggregateMass);
+            } else {
+                int other = heads[index];
+                int visited = 0;
+                int limit = homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
+                while (other >= 0 && visited < limit) {
+                    if (uint(other) != id && other != 0) {
+                        result += localAcceleration(bodies[other].xy, body.xy, masses[other]);
+                    }
+                    other = nextBody[other];
+                    visited++;
                 }
-                other = nextBody[other];
-                interactions++;
             }
         }
     }

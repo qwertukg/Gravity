@@ -27,7 +27,6 @@ import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
 import java.nio.ByteBuffer
 import kotlin.math.ceil
-import kotlin.random.Random
 
 class GravityPipeline(
     private val config: SimulationConfig,
@@ -45,9 +44,12 @@ class GravityPipeline(
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
 
     private val bodies = buffer(bodyBytes)
+    private val masses = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
     private val acceleration = buffer(accelerationBytes)
     private val density = buffer(cells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(cells.toLong() * Int.SIZE_BYTES)
+    private val cellCounts = buffer(cells.toLong() * Int.SIZE_BYTES)
+    private val cellMass = buffer(cells.toLong() * Int.SIZE_BYTES)
     private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
@@ -62,6 +64,7 @@ class GravityPipeline(
     private val spectrum = GlProgram.compute("/shaders/force_spectrum.comp")
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
+    private lateinit var massPrefix: DoubleArray
 
     init {
         seedBodies()
@@ -90,10 +93,13 @@ class GravityPipeline(
     fun bindBodiesForRender() = bind(0, bodies)
 
     private fun buildForce(activeBodies: Int) {
-        val massScale = (4_000_000_000L / activeBodies).coerceIn(1L, 65_536L).toInt()
+        val totalMass = massPrefix[activeBodies].toFloat()
+        val massScale = massScaleFor(totalMass)
         clear.use()
         bind(0, density)
         bind(1, cellHeads)
+        bind(2, cellCounts)
+        bind(3, cellMass)
         clear.int("uCells", cells)
         dispatch(cells)
         barrier()
@@ -103,6 +109,9 @@ class GravityPipeline(
         bind(1, density)
         bind(2, cellHeads)
         bind(3, nextBody)
+        bind(4, masses)
+        bind(5, cellCounts)
+        bind(6, cellMass)
         build.int("uCount", activeBodies)
         build.int("uGridWidth", gridWidth)
         build.int("uGridHeight", gridHeight)
@@ -131,7 +140,7 @@ class GravityPipeline(
         bind(2, forceY)
         spectrum.int("uGridWidth", gridWidth)
         spectrum.int("uGridHeight", gridHeight)
-        spectrum.int("uCount", activeBodies)
+        spectrum.float("uTotalMass", totalMass)
         spectrum.float("uGravity", config.gravitationalConstant)
         spectrum.float("uSigmaCells", config.softeningCells)
         spectrum.float("uDomainAspect", domainAspect)
@@ -143,6 +152,7 @@ class GravityPipeline(
     }
 
     private fun applyKick(activeBodies: Int, initial: Boolean) {
+        val totalMass = massPrefix[activeBodies].toFloat()
         kick.use()
         bind(0, bodies)
         bind(1, acceleration)
@@ -150,7 +160,12 @@ class GravityPipeline(
         bind(3, forceY)
         bind(4, cellHeads)
         bind(5, nextBody)
+        bind(6, masses)
+        bind(7, cellCounts)
+        bind(8, cellMass)
         kick.int("uCount", activeBodies)
+        kick.float("uTotalMass", totalMass)
+        kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         kick.int("uGridWidth", gridWidth)
         kick.int("uGridHeight", gridHeight)
         kick.int("uInitial", if (initial) 1 else 0)
@@ -216,16 +231,28 @@ class GravityPipeline(
 
     private fun seedBodies() {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
-        val mapped = glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_WRITE_ONLY, bodyBytes, null)
+        val mappedBodies = glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_WRITE_ONLY, bodyBytes, null)
             ?.asFloatBuffer() ?: error("Unable to map particle buffer")
-        val random = Random(0x47524156495459L)
-        repeat(config.capacity) {
-            mapped.put(random.nextFloat())
-            mapped.put(random.nextFloat())
-            mapped.put(0f)
-            mapped.put(0f)
-        }
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, masses)
+        val mappedMasses = glMapBuffer(
+            GL_SHADER_STORAGE_BUFFER,
+            GL_WRITE_ONLY,
+            config.capacity.toLong() * Float.SIZE_BYTES,
+            null,
+        )?.asFloatBuffer() ?: error("Unable to map mass buffer")
+        val initialState = GalaxyInitializer.fill(
+            bodies = mappedBodies,
+            masses = mappedMasses,
+            count = config.capacity,
+            domainAspect = domainAspect,
+            gravity = config.gravitationalConstant,
+        )
+        massPrefix = initialState.massPrefix
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, masses)
+        check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Mass buffer became corrupt while seeding" }
     }
 
     private fun clearFloatBuffer(buffer: Int) {
@@ -251,6 +278,9 @@ class GravityPipeline(
     private fun dispatchBodies(items: Int) = dispatch(items)
     private fun barrier() = glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
+    private fun massScaleFor(totalMass: Float): Int =
+        (4_000_000_000.0 / totalMass).toLong().coerceIn(1L, 65_536L).toInt()
+
     private fun other(current: Int, first: Int, second: Int): Int =
         if (current == first) second else first
 
@@ -263,7 +293,20 @@ class GravityPipeline(
 
     override fun close() {
         listOf(clear, build, fftInit, permute, fftStage, spectrum, drift, kick).forEach(GlProgram::close)
-        intArrayOf(bodies, acceleration, density, cellHeads, nextBody, fft, scratch, forceX, forceY)
+        intArrayOf(
+            bodies,
+            masses,
+            acceleration,
+            density,
+            cellHeads,
+            cellCounts,
+            cellMass,
+            nextBody,
+            fft,
+            scratch,
+            forceX,
+            forceY,
+        )
             .forEach(::glDeleteBuffers)
     }
 }

@@ -7,7 +7,7 @@ layout(std430, binding = 2) writeonly buffer ForceYSpectrum { vec2 forceYSpectru
 
 uniform int uGridWidth;
 uniform int uGridHeight;
-uniform int uCount;
+uniform float uTotalMass;
 uniform float uGravity;
 uniform float uSigmaCells;
 uniform float uDomainAspect;
@@ -52,7 +52,7 @@ void main() {
     float assignmentWindow = sx * sx * sy * sy;
     float deconvolution = 1.0 / max(assignmentWindow * assignmentWindow, 0.04);
     float poisson = TAU * uGravity * gaussian * deconvolution /
-        (float(uCount) * uDomainAspect * kSquared);
+        (uTotalMass * uDomainAspect * kSquared);
 
     vec2 rho = densitySpectrum[id];
     // A Nyquist bin is its own conjugate, so its spectral derivative must be
