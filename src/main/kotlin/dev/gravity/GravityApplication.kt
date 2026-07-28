@@ -29,6 +29,7 @@ import org.lwjgl.glfw.GLFW.glfwSetKeyCallback
 import org.lwjgl.glfw.GLFW.glfwSetCursorPosCallback
 import org.lwjgl.glfw.GLFW.glfwSetErrorCallback
 import org.lwjgl.glfw.GLFW.glfwSetMouseButtonCallback
+import org.lwjgl.glfw.GLFW.glfwSetScrollCallback
 import org.lwjgl.glfw.GLFW.glfwSetWindowShouldClose
 import org.lwjgl.glfw.GLFW.glfwShowWindow
 import org.lwjgl.glfw.GLFW.glfwSwapBuffers
@@ -83,12 +84,13 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var resetRequested = false
     private var stopRequested = false
     private var paused = false
+    private val simulationSpeed = SimulationSpeed()
+    private val trajectoryUpdates = TrajectoryUpdateScheduler()
     private var cursorX = 0.0
     private var cursorY = 0.0
     private var dragOriginX = 0f
     private var dragOriginY = 0f
     private var draggingProjectile = false
-    private var trajectoryFramesUntilUpdate = 0
     private var pendingProjectile: ProjectileGesture? = null
 
     fun run() {
@@ -145,7 +147,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 initializeSimulation(simulation, active)
                 pendingProjectile = null
                 draggingProjectile = false
-                trajectoryFramesUntilUpdate = 0
+                trajectoryUpdates.reset()
                 displayedFps = 0.0
                 overlayFrames = 0
                 val resetTime = System.nanoTime()
@@ -184,7 +186,9 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 stopRequested = false
             }
             timer!!.begin()
-            if (!paused) simulation.step(active)
+            if (simulationSpeed.shouldAdvance(paused)) {
+                simulation.step(active)
+            }
             val trajectory = if (draggingProjectile) {
                 projectileGesture(
                     targetX = cursorX.toFloat(),
@@ -194,8 +198,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 null
             }
             if (trajectory == null) {
-                trajectoryFramesUntilUpdate = 0
-            } else if (trajectoryFramesUntilUpdate == 0) {
+                trajectoryUpdates.reset()
+            } else if (trajectoryUpdates.shouldUpdate(System.nanoTime())) {
                 simulation.updateTrajectory(
                     activeBodies = active,
                     originX = trajectory.originX,
@@ -203,9 +207,6 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                     velocityX = trajectory.velocityX,
                     velocityY = trajectory.velocityY,
                 )
-                trajectoryFramesUntilUpdate = TRAJECTORY_UPDATE_INTERVAL_FRAMES - 1
-            } else {
-                trajectoryFramesUntilUpdate--
             }
             overlayFrames++
             val overlayNow = System.nanoTime()
@@ -300,16 +301,19 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                     dragOriginX = physicsX
                     dragOriginY = physicsY
                     draggingProjectile = true
-                    trajectoryFramesUntilUpdate = 0
+                    trajectoryUpdates.reset()
                 }
                 org.lwjgl.glfw.GLFW.GLFW_RELEASE -> {
                     if (draggingProjectile) {
                         pendingProjectile = projectileGesture(physicsX, physicsY)
                     }
                     draggingProjectile = false
-                    trajectoryFramesUntilUpdate = 0
+                    trajectoryUpdates.reset()
                 }
             }
+        }
+        glfwSetScrollCallback(window) { _, _, yOffset ->
+            simulationSpeed.scroll(yOffset)
         }
         glfwMakeContextCurrent(window)
         glfwSwapInterval(0)
@@ -339,7 +343,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
                 "foreground=$foreground; LMB drag fires a " +
                 "${CircularProjectile.DIAMETER_PIXELS.toInt()}px projectile; " +
-                "P pauses; S stops all bodies; Esc exits"
+                "wheel controls time speed; P pauses; S stops all bodies; Esc exits"
         )
     }
 
@@ -410,9 +414,5 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         }
         glfwTerminate()
         glfwSetErrorCallback(null)?.free()
-    }
-
-    companion object {
-        private const val TRAJECTORY_UPDATE_INTERVAL_FRAMES = 5
     }
 }
