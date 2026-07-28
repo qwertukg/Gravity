@@ -44,6 +44,7 @@ import org.lwjgl.opengl.GL11.glClear
 import org.lwjgl.opengl.GL11.glClearColor
 import org.lwjgl.opengl.GL11.glDisable
 import org.lwjgl.opengl.GL11.glDrawArrays
+import org.lwjgl.opengl.GL11.glFinish
 import org.lwjgl.opengl.GL11.glPointSize
 import org.lwjgl.opengl.GL11.glViewport
 import org.lwjgl.opengl.GL13.GL_MULTISAMPLE
@@ -81,7 +82,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
 
     fun run() {
         initWindow()
-        val simulation = GravityPipeline(
+        var simulation = GravityPipeline(
             config,
             viewportWidth = viewportWidth,
             viewportHeight = viewportHeight,
@@ -111,7 +112,22 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
                 active = config.initialBodies
-                simulation.reset(active)
+                // A reset starts a new GPU session, just like application
+                // startup, instead of retaining resources and timer queries
+                // from the previous simulation.
+                glFinish()
+                timer!!.close()
+                timer = null
+                simulation.close()
+                pipeline = null
+                simulation = GravityPipeline(
+                    config,
+                    viewportWidth = viewportWidth,
+                    viewportHeight = viewportHeight,
+                )
+                pipeline = simulation
+                timer = GpuTimer()
+                simulation.initializeAcceleration(active)
                 pendingProjectile = null
                 draggingProjectile = false
                 displayedFps = 0.0

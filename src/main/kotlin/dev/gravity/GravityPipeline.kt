@@ -115,16 +115,6 @@ class GravityPipeline(
         applyKick(activeBodies, initial = true)
     }
 
-    fun reset(activeBodies: Int) {
-        seedBodies()
-        clearFloatBuffer(acceleration)
-        clearFloatBuffer(pressures)
-        clearUnsignedIntBuffer(collisionHeads)
-        clearUnsignedIntBuffer(collisionNext)
-        clearUnsignedIntBuffer(collisionContactCounts)
-        initializeAcceleration(activeBodies)
-    }
-
     fun step(activeBodies: Int) {
         repeat(config.collisionIterations) { substep ->
             drift.use()
