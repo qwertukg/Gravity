@@ -84,6 +84,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var dragOriginX = 0f
     private var dragOriginY = 0f
     private var draggingProjectile = false
+    private var trajectoryFramesUntilUpdate = 0
     private var pendingProjectile: ProjectileGesture? = null
 
     fun run() {
@@ -140,6 +141,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 initializeSimulation(simulation, active)
                 pendingProjectile = null
                 draggingProjectile = false
+                trajectoryFramesUntilUpdate = 0
                 displayedFps = 0.0
                 overlayFrames = 0
                 val resetTime = System.nanoTime()
@@ -183,14 +185,19 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             } else {
                 null
             }
-            trajectory?.let {
+            if (trajectory == null) {
+                trajectoryFramesUntilUpdate = 0
+            } else if (trajectoryFramesUntilUpdate == 0) {
                 simulation.updateTrajectory(
                     activeBodies = active,
-                    originX = it.originX,
-                    originY = it.originY,
-                    velocityX = it.velocityX,
-                    velocityY = it.velocityY,
+                    originX = trajectory.originX,
+                    originY = trajectory.originY,
+                    velocityX = trajectory.velocityX,
+                    velocityY = trajectory.velocityY,
                 )
+                trajectoryFramesUntilUpdate = TRAJECTORY_UPDATE_INTERVAL_FRAMES - 1
+            } else {
+                trajectoryFramesUntilUpdate--
             }
             overlayFrames++
             val overlayNow = System.nanoTime()
@@ -283,12 +290,14 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                     dragOriginX = physicsX
                     dragOriginY = physicsY
                     draggingProjectile = true
+                    trajectoryFramesUntilUpdate = 0
                 }
                 org.lwjgl.glfw.GLFW.GLFW_RELEASE -> {
                     if (draggingProjectile) {
                         pendingProjectile = projectileGesture(physicsX, physicsY)
                     }
                     draggingProjectile = false
+                    trajectoryFramesUntilUpdate = 0
                 }
             }
         }
@@ -390,5 +399,9 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         }
         glfwTerminate()
         glfwSetErrorCallback(null)?.free()
+    }
+
+    companion object {
+        private const val TRAJECTORY_UPDATE_INTERVAL_FRAMES = 5
     }
 }
