@@ -75,8 +75,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         fpsOverlay = FpsOverlay(viewportWidth, viewportHeight)
         timer = GpuTimer()
 
-        var active = config.initialBodies
-        var controller = AdaptiveBodyController(active, config.capacity, config.targetGpuMillis)
+        val active = config.initialBodies
         simulation.initializeAcceleration(active)
         activateFullscreenWindow()
         render(active, 0.0)
@@ -90,11 +89,10 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         var overlayWindowStart = reportStart
         var overlayFrames = 0
         var displayedFps = 0.0
+        var smoothedGpuMillis = config.targetGpuMillis
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
-                active = config.initialBodies
-                controller = AdaptiveBodyController(active, config.capacity, config.targetGpuMillis)
                 simulation.reset(active)
                 resetRequested = false
             }
@@ -110,7 +108,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             render(active, displayedFps)
             val gpuMillis = timer!!.end()
             if (gpuMillis != null) {
-                active = controller.record(gpuMillis, allowAdjustment = !config.fixedBodyCount)
+                smoothedGpuMillis += 0.08 * (gpuMillis - smoothedGpuMillis)
             }
 
             glfwSwapBuffers(window)
@@ -125,7 +123,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                     "bodies=%,d  fps=%.1f  gpu=%.2f ms  grid=%dx%d%n",
                     active,
                     fps,
-                    controller.smoothedGpuMillis(),
+                    smoothedGpuMillis,
                     config.gridWidth,
                     config.gridHeight,
                 )
@@ -199,6 +197,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             "Gravity: viewport=${mode.width()}x${mode.height()}, " +
                 "space=${mode.width()}x${mode.height()}, " +
                 "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
+                "collisions=${config.collisionIterations}, " +
+                "diameter=${config.contactDiameterPixels}px, " +
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
                 "foreground=$foreground; Esc exits"
         )

@@ -19,7 +19,8 @@ class SimulationConfigTest {
                 "--capacity=200000",
                 "--grid=1024x512",
                 "--square-test=200",
-                "--fixed",
+                "--collisions=6",
+                "--diameter=1.2",
             ),
             mapOf("GRAVITY_BODIES" to "42", "GRAVITY_GRID" to "1024"),
         )
@@ -28,7 +29,8 @@ class SimulationConfigTest {
         assertEquals(1024, config.gridWidth)
         assertEquals(512, config.gridHeight)
         assertEquals(200, config.squareTestPixels)
-        assertEquals(true, config.fixedBodyCount)
+        assertEquals(6, config.collisionIterations)
+        assertEquals(1.2f, config.contactDiameterPixels)
     }
 
     @Test
@@ -44,6 +46,16 @@ class SimulationConfigTest {
     fun `non power of two grid is rejected`() {
         assertFailsWith<IllegalArgumentException> {
             SimulationConfig(gridWidth = 300)
+        }
+    }
+
+    @Test
+    fun `invalid collision configuration is rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            SimulationConfig(collisionIterations = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            SimulationConfig(contactDiameterPixels = 0.25f)
         }
     }
 

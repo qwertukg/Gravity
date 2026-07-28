@@ -4,13 +4,14 @@ import kotlin.math.min
 
 data class SimulationConfig(
     val capacity: Int = 400_000,
-    val initialBodies: Int = 400_000,
+    val initialBodies: Int = 100_000,
     val gridWidth: Int = 512,
     val gridHeight: Int = 256,
-    val fixedBodyCount: Boolean = true,
     val gravitationalConstant: Float = 0.035f,
     val softeningCells: Float = 0.85f,
     val timeStep: Float = 1f / 120f,
+    val collisionIterations: Int = 16,
+    val contactDiameterPixels: Float = 1.12838f,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
     val squareTestPixels: Int? = null,
@@ -27,6 +28,10 @@ data class SimulationConfig(
         require(gravitationalConstant >= 0f)
         require(softeningCells > 0f)
         require(timeStep > 0f)
+        require(collisionIterations in 1..16) { "collision iterations must be in 1..16" }
+        require(contactDiameterPixels in 0.5f..4f) {
+            "contact diameter must be in 0.5..4 pixels"
+        }
         require(maxFrames == null || maxFrames > 0)
         require(squareTestPixels == null || squareTestPixels > 0) {
             "square test size must be positive"
@@ -37,12 +42,8 @@ data class SimulationConfig(
         fun parse(args: Array<String>, env: Map<String, String> = System.getenv()): SimulationConfig {
             val defaults = SimulationConfig()
             val values = mutableMapOf<String, String>()
-            var fixed = env["GRAVITY_FIXED"]?.toBooleanStrictOrNull()
-                ?: defaults.fixedBodyCount
             args.forEach { argument ->
                 when {
-                    argument == "--fixed" -> fixed = true
-                    argument == "--adaptive" -> fixed = false
                     argument.startsWith("--") && '=' in argument -> {
                         val (key, value) = argument.drop(2).split('=', limit = 2)
                         values[key] = value
@@ -88,7 +89,6 @@ data class SimulationConfig(
                 ),
                 gridWidth = gridWidth,
                 gridHeight = gridHeight,
-                fixedBodyCount = fixed,
                 gravitationalConstant = floatValue(
                     "gravity",
                     "GRAVITY_G",
@@ -100,6 +100,16 @@ data class SimulationConfig(
                     defaults.softeningCells,
                 ),
                 timeStep = floatValue("dt", "GRAVITY_DT", defaults.timeStep),
+                collisionIterations = intValue(
+                    "collisions",
+                    "GRAVITY_COLLISIONS",
+                    defaults.collisionIterations,
+                ),
+                contactDiameterPixels = floatValue(
+                    "diameter",
+                    "GRAVITY_DIAMETER",
+                    defaults.contactDiameterPixels,
+                ),
                 maxFrames = values["frames"]?.toIntOrNull(),
                 squareTestPixels = squareTestPixels,
             )

@@ -12,6 +12,8 @@ import org.lwjgl.opengl.GL15.glMapBuffer
 import org.lwjgl.opengl.GL15.glUnmapBuffer
 import org.lwjgl.opengl.GL30.glBindBufferBase
 import org.lwjgl.opengl.GL30.GL_R32F
+import org.lwjgl.opengl.GL30.GL_R32UI
+import org.lwjgl.opengl.GL30.GL_RED_INTEGER
 import org.lwjgl.opengl.GL31.GL_COPY_READ_BUFFER
 import org.lwjgl.opengl.GL31.GL_COPY_WRITE_BUFFER
 import org.lwjgl.opengl.GL31.glCopyBufferSubData
@@ -22,6 +24,7 @@ import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
+import org.lwjgl.opengl.GL11.GL_UNSIGNED_INT
 import java.nio.ByteBuffer
 import java.util.Arrays
 import kotlin.math.ceil
@@ -49,6 +52,11 @@ class GravityPipeline(
     private val physicalGridHeight = gridHeight / 2
     private val cells = gridWidth * gridHeight
     private val physicalCells = physicalGridWidth * physicalGridHeight
+    private val collisionGridWidth =
+        ceil(viewportWidth / config.contactDiameterPixels).toInt()
+    private val collisionGridHeight =
+        ceil(viewportHeight / config.contactDiameterPixels).toInt()
+    private val collisionCells = collisionGridWidth * collisionGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
@@ -56,7 +64,8 @@ class GravityPipeline(
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
 
-    private val bodies = buffer(bodyBytes)
+    private var bodies = buffer(bodyBytes)
+    private var collisionBodies = buffer(bodyBytes)
     private val masses = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
     private val acceleration = buffer(accelerationBytes)
     private val density = buffer(cells.toLong() * Int.SIZE_BYTES)
@@ -64,6 +73,10 @@ class GravityPipeline(
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
+    private val collisionNext = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val collisionContactCounts =
+        buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
@@ -80,6 +93,9 @@ class GravityPipeline(
     private val convolve = GlProgram.compute("/shaders/convolve.comp")
     private val drift = GlProgram.compute("/shaders/drift.comp")
     private val kick = GlProgram.compute("/shaders/kick.comp")
+    private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
+    private val collisionCount = GlProgram.compute("/shaders/collision_count.comp")
+    private val collisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
     private lateinit var massPrefix: DoubleArray
     private var normalizationMass = 0f
     private var initialSeed: Long? = null
@@ -102,16 +118,23 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
-        drift.use()
-        bind(0, bodies)
-        bind(1, acceleration)
-        drift.int("uCount", activeBodies)
-        drift.float("uDt", config.timeStep)
-        dispatchBodies(activeBodies)
-        barrier()
+        repeat(config.collisionIterations) { substep ->
+            drift.use()
+            bind(0, bodies)
+            bind(1, acceleration)
+            drift.int("uCount", activeBodies)
+            drift.float("uKickDt", if (substep == 0) config.timeStep else 0f)
+            drift.float("uDriftDt", config.timeStep / config.collisionIterations)
+            dispatchBodies(activeBodies)
+            barrier()
 
+            resolveCollisions(activeBodies)
+        }
         buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
+        // The final gravity kick can create new inward contact velocity in the
+        // dense core. A zero-drift pass removes it before rendering/next step.
+        resolveCollisions(activeBodies)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT or GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT)
     }
 
@@ -261,6 +284,56 @@ class GravityPipeline(
         inverse(forceY)
     }
 
+    private fun resolveCollisions(activeBodies: Int) {
+        clearUnsignedIntBuffer(collisionHeads)
+
+        collisionBuild.use()
+        bind(0, bodies)
+        bind(1, collisionHeads)
+        bind(2, collisionNext)
+        collisionBuild.int("uCount", activeBodies)
+        collisionBuild.int("uGridWidth", collisionGridWidth)
+        collisionBuild.int("uGridHeight", collisionGridHeight)
+        collisionBuild.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
+        collisionBuild.float("uCellSizePixels", config.contactDiameterPixels)
+        dispatchBodies(activeBodies)
+        barrier()
+
+        collisionCount.use()
+        bind(0, bodies)
+        bind(1, collisionHeads)
+        bind(2, collisionNext)
+        bind(3, collisionContactCounts)
+        collisionCount.int("uCount", activeBodies)
+        collisionCount.int("uGridWidth", collisionGridWidth)
+        collisionCount.int("uGridHeight", collisionGridHeight)
+        collisionCount.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
+        collisionCount.float("uCellSizePixels", config.contactDiameterPixels)
+        collisionCount.float("uDiameterPixels", config.contactDiameterPixels)
+        dispatchBodies(activeBodies)
+        barrier()
+
+        collisionSolve.use()
+        bind(0, bodies)
+        bind(1, collisionBodies)
+        bind(2, collisionHeads)
+        bind(3, collisionNext)
+        bind(4, collisionContactCounts)
+        collisionSolve.int("uCount", activeBodies)
+        collisionSolve.int("uGridWidth", collisionGridWidth)
+        collisionSolve.int("uGridHeight", collisionGridHeight)
+        collisionSolve.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
+        collisionSolve.float("uCellSizePixels", config.contactDiameterPixels)
+        collisionSolve.float("uDiameterPixels", config.contactDiameterPixels)
+        collisionSolve.float("uSubstepDt", config.timeStep / config.collisionIterations)
+        dispatchBodies(activeBodies)
+        barrier()
+
+        val swap = bodies
+        bodies = collisionBodies
+        collisionBodies = swap
+    }
+
     private fun applyKick(activeBodies: Int, initial: Boolean) {
         val totalMass = massPrefix[activeBodies].toFloat()
         kick.use()
@@ -294,6 +367,8 @@ class GravityPipeline(
         kick.float("uGravity", config.gravitationalConstant)
         kick.float("uSigmaCells", config.softeningCells)
         kick.float("uDomainAspect", domainAspect)
+        kick.float("uContactDiameterPixels", config.contactDiameterPixels)
+        kick.float("uViewportHeight", viewportHeight.toFloat())
         dispatchBodies(activeBodies)
         barrier()
     }
@@ -411,6 +486,9 @@ class GravityPipeline(
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, masses)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Mass buffer became corrupt while seeding" }
+        // Keep inactive capacity initialized in both ping-pong buffers so the
+        // adaptive controller can safely activate additional bodies later.
+        copy(bodies, collisionBodies, bodyBytes)
     }
 
     private fun clearFloatBuffer(buffer: Int) {
@@ -422,6 +500,18 @@ class GravityPipeline(
             GL_FLOAT,
             null as ByteBuffer?,
         )
+    }
+
+    private fun clearUnsignedIntBuffer(buffer: Int) {
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer)
+        glClearBufferData(
+            GL_SHADER_STORAGE_BUFFER,
+            GL_R32UI,
+            GL_RED_INTEGER,
+            GL_UNSIGNED_INT,
+            null as ByteBuffer?,
+        )
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
     }
 
     private fun buffer(bytes: Long): Int = glGenBuffers().also {
@@ -460,10 +550,14 @@ class GravityPipeline(
             convolve,
             drift,
             kick,
+            collisionBuild,
+            collisionCount,
+            collisionSolve,
         )
             .forEach(GlProgram::close)
         intArrayOf(
             bodies,
+            collisionBodies,
             masses,
             acceleration,
             density,
@@ -471,6 +565,9 @@ class GravityPipeline(
             cellCounts,
             cellMass,
             nextBody,
+            collisionHeads,
+            collisionNext,
+            collisionContactCounts,
             fft,
             scratch,
             forceX,
