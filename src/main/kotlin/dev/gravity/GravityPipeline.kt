@@ -103,7 +103,7 @@ class GravityPipeline(
         (gridWidth + gridHeight - 2).toLong() * 4 * Float.SIZE_BYTES,
     )
     private val trajectory = buffer(
-        TRAJECTORY_POINTS.toLong() * 4 * Float.SIZE_BYTES,
+        TRAJECTORY_VERTICES.toLong() * 4 * Float.SIZE_BYTES,
     )
 
     private val clear = GlProgram.compute("/shaders/clear_grid.comp")
@@ -119,6 +119,7 @@ class GravityPipeline(
     private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
     private val collisionCount = GlProgram.compute("/shaders/collision_count.comp")
     private val collisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
+    private val stopBodiesProgram = GlProgram.compute("/shaders/stop_bodies.comp")
     private val trajectoryCompute = GlProgram.compute("/shaders/trajectory.comp")
     private val normalizationMass = config.initialBodies.toFloat()
 
@@ -182,7 +183,7 @@ class GravityPipeline(
         bind(5, cellCounts)
         bind(6, cellMass)
         bind(7, bodies)
-        trajectoryCompute.int("uPointCount", TRAJECTORY_POINTS)
+        trajectoryCompute.int("uStepCount", TRAJECTORY_STEPS)
         trajectoryCompute.int("uMeshWidth", gridWidth)
         trajectoryCompute.int("uPhysicalWidth", physicalGridWidth)
         trajectoryCompute.int("uPhysicalHeight", physicalGridHeight)
@@ -194,6 +195,13 @@ class GravityPipeline(
         trajectoryCompute.float("uMinimumDt", config.timeStep)
         trajectoryCompute.float("uMaximumDt", 1f)
         trajectoryCompute.float("uTargetSegmentPixels", 6f)
+        trajectoryCompute.float(
+            "uMaximumPathPixels",
+            sqrt(
+                viewportWidthFloat * viewportWidthFloat +
+                    viewportHeightFloat * viewportHeightFloat,
+            ),
+        )
         trajectoryCompute.float("uGravity", config.gravitationalConstant)
         trajectoryCompute.float("uSigmaCells", config.softeningCells)
         trajectoryCompute.float("uDomainAspect", domainAspect)
@@ -205,6 +213,15 @@ class GravityPipeline(
 
     fun bindTrajectoryForRender() {
         bind(0, trajectory)
+    }
+
+    fun stopBodies(activeBodies: Int) {
+        stopBodiesProgram.use()
+        bind(0, bodies)
+        bind(1, collisionBodies)
+        stopBodiesProgram.int("uCount", activeBodies)
+        dispatchBodies(activeBodies)
+        barrier()
     }
 
     fun spawnProjectile(
@@ -690,6 +707,7 @@ class GravityPipeline(
             collisionBuild,
             collisionCount,
             collisionSolve,
+            stopBodiesProgram,
             trajectoryCompute,
         )
             .forEach(GlProgram::close)
@@ -719,6 +737,9 @@ class GravityPipeline(
     }
 
     companion object {
-        const val TRAJECTORY_POINTS = 1024
+        const val TRAJECTORY_STEPS = 1024
+        const val TRAJECTORY_VERTICES_PER_STEP = 6
+        const val TRAJECTORY_VERTICES =
+            TRAJECTORY_STEPS * TRAJECTORY_VERTICES_PER_STEP
     }
 }

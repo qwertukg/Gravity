@@ -6,7 +6,9 @@ import org.lwjgl.glfw.GLFW.GLFW_CONTEXT_VERSION_MINOR
 import org.lwjgl.glfw.GLFW.GLFW_FOCUSED
 import org.lwjgl.glfw.GLFW.GLFW_FOCUS_ON_SHOW
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE
+import org.lwjgl.glfw.GLFW.GLFW_KEY_P
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
+import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
@@ -40,7 +42,7 @@ import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT
 import org.lwjgl.opengl.GL11.GL_BLEND
 import org.lwjgl.opengl.GL11.GL_FALSE
-import org.lwjgl.opengl.GL11.GL_LINE_STRIP
+import org.lwjgl.opengl.GL11.GL_LINES
 import org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA
 import org.lwjgl.opengl.GL11.GL_POINTS
 import org.lwjgl.opengl.GL11.GL_SRC_ALPHA
@@ -79,6 +81,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var viewportWidth = 0
     private var viewportHeight = 0
     private var resetRequested = false
+    private var stopRequested = false
+    private var paused = false
     private var cursorX = 0.0
     private var cursorY = 0.0
     private var dragOriginX = 0f
@@ -175,8 +179,12 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 }
                 pendingProjectile = null
             }
+            if (stopRequested) {
+                simulation.stopBodies(active)
+                stopRequested = false
+            }
             timer!!.begin()
-            simulation.step(active)
+            if (!paused) simulation.step(active)
             val trajectory = if (draggingProjectile) {
                 projectileGesture(
                     targetX = cursorX.toFloat(),
@@ -275,7 +283,9 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         check(window != 0L) { "Fullscreen OpenGL window creation failed" }
         glfwSetKeyCallback(window) { target, key, _, action, _ ->
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(target, true)
+            if (key == GLFW_KEY_P && action == GLFW_PRESS) paused = !paused
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
+            if (key == GLFW_KEY_S && action == GLFW_PRESS) stopRequested = true
         }
         glfwSetCursorPosCallback(window) { _, x, y ->
             cursorX = x
@@ -328,7 +338,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 "diameter=${config.contactDiameterPixels}px, " +
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
                 "foreground=$foreground; LMB drag fires a " +
-                "${CircularProjectile.DIAMETER_PIXELS.toInt()}px projectile; Esc exits"
+                "${CircularProjectile.DIAMETER_PIXELS.toInt()}px projectile; " +
+                "P pauses; S stops all bodies; Esc exits"
         )
     }
 
@@ -380,7 +391,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             trajectoryProgram!!.use()
             pipeline!!.bindTrajectoryForRender()
-            glDrawArrays(GL_LINE_STRIP, 0, GravityPipeline.TRAJECTORY_POINTS)
+            glDrawArrays(GL_LINES, 0, GravityPipeline.TRAJECTORY_VERTICES)
             glDisable(GL_BLEND)
         }
         fpsOverlay!!.render(fps)

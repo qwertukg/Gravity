@@ -10,7 +10,7 @@ layout(std430, binding = 5) readonly buffer CellCounts { int cellCounts[]; };
 layout(std430, binding = 6) readonly buffer CellMass { uint cellMass[]; };
 layout(std430, binding = 7) readonly buffer Bodies { vec4 bodies[]; };
 
-uniform int uPointCount;
+uniform int uStepCount;
 uniform int uMeshWidth;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
@@ -22,6 +22,7 @@ uniform vec2 uVelocityPixels;
 uniform float uMinimumDt;
 uniform float uMaximumDt;
 uniform float uTargetSegmentPixels;
+uniform float uMaximumPathPixels;
 uniform float uGravity;
 uniform float uSigmaCells;
 uniform float uDomainAspect;
@@ -30,6 +31,7 @@ uniform float uInverseMassScale;
 
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
+const int VERTICES_PER_STEP = 6;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -149,17 +151,72 @@ float integrationDt(vec2 velocity, vec2 acceleration) {
     return clamp(result, uMinimumDt, uMaximumDt);
 }
 
-vec2 screenIntersection(vec2 start, vec2 end, out bool hitBoundary) {
-    // The simulation is periodic, but the preview deliberately ends at the
-    // first visual seam so a GL line strip never connects across the screen.
-    vec2 delta = end - start;
-    float fraction = 1.0;
-    if (end.x < 0.0) fraction = min(fraction, -start.x / delta.x);
-    if (end.x > 1.0) fraction = min(fraction, (1.0 - start.x) / delta.x);
-    if (end.y < 0.0) fraction = min(fraction, -start.y / delta.y);
-    if (end.y > 1.0) fraction = min(fraction, (1.0 - start.y) / delta.y);
-    hitBoundary = fraction < 1.0;
-    return mix(start, end, clamp(fraction, 0.0, 1.0));
+void emitPeriodicStep(
+    int step,
+    vec2 start,
+    vec2 delta,
+    float startDistance,
+    float stepDistance
+) {
+    int baseVertex = step * VERTICES_PER_STEP;
+    for (int vertex = 0; vertex < VERTICES_PER_STEP; ++vertex) {
+        trajectory[baseVertex + vertex] = vec4(0.0, 0.0, 0.0, -1.0);
+    }
+
+    vec2 end = start + delta;
+    float cuts[4];
+    int cutCount = 2;
+    cuts[0] = 0.0;
+    cuts[1] = 1.0;
+    if (end.x < 0.0) {
+        cuts[cutCount++] = -start.x / delta.x;
+    } else if (end.x >= 1.0) {
+        cuts[cutCount++] = (1.0 - start.x) / delta.x;
+    }
+    if (end.y < 0.0) {
+        cuts[cutCount++] = -start.y / delta.y;
+    } else if (end.y >= 1.0) {
+        cuts[cutCount++] = (1.0 - start.y) / delta.y;
+    }
+
+    for (int index = 1; index < cutCount; ++index) {
+        float value = clamp(cuts[index], 0.0, 1.0);
+        int insertion = index;
+        while (insertion > 0 && cuts[insertion - 1] > value) {
+            cuts[insertion] = cuts[insertion - 1];
+            insertion--;
+        }
+        cuts[insertion] = value;
+    }
+
+    float uniqueCuts[4];
+    int uniqueCount = 0;
+    for (int index = 0; index < cutCount; ++index) {
+        if (uniqueCount == 0 ||
+            abs(cuts[index] - uniqueCuts[uniqueCount - 1]) > 1e-6) {
+            uniqueCuts[uniqueCount++] = cuts[index];
+        }
+    }
+
+    for (int piece = 0; piece < uniqueCount - 1; ++piece) {
+        float firstFraction = uniqueCuts[piece];
+        float secondFraction = uniqueCuts[piece + 1];
+        float middleFraction = 0.5 * (firstFraction + secondFraction);
+        vec2 tile = floor(start + delta * middleFraction);
+        vec2 first = start + delta * firstFraction - tile;
+        vec2 second = start + delta * secondFraction - tile;
+        int vertex = baseVertex + piece * 2;
+        trajectory[vertex] = vec4(
+            clamp(first, vec2(0.0), vec2(1.0)),
+            startDistance + stepDistance * firstFraction,
+            0.0
+        );
+        trajectory[vertex + 1] = vec4(
+            clamp(second, vec2(0.0), vec2(1.0)),
+            startDistance + stepDistance * secondFraction,
+            0.0
+        );
+    }
 }
 
 void main() {
@@ -169,22 +226,37 @@ void main() {
     float pathDistancePixels = 0.0;
     bool finished = false;
 
-    for (int point = 0; point < uPointCount; ++point) {
-        trajectory[point] = vec4(position, pathDistancePixels, 0.0);
-        if (finished) continue;
+    for (int step = 0; step < uStepCount; ++step) {
+        if (finished) {
+            int baseVertex = step * VERTICES_PER_STEP;
+            for (int vertex = 0; vertex < VERTICES_PER_STEP; ++vertex) {
+                trajectory[baseVertex + vertex] =
+                    vec4(0.0, 0.0, 0.0, -1.0);
+            }
+            continue;
+        }
 
         float dt = integrationDt(velocity, acceleration);
         vec2 halfStepVelocity = velocity + acceleration * (0.5 * dt);
-        vec2 candidate = position + halfStepVelocity * dt;
-        bool hitBoundary;
-        vec2 nextPosition = screenIntersection(
+        vec2 delta = halfStepVelocity * dt;
+        float stepDistancePixels = length(delta * uViewport);
+        float remainingDistancePixels =
+            uMaximumPathPixels - pathDistancePixels;
+        if (stepDistancePixels > remainingDistancePixels) {
+            delta *= remainingDistancePixels / stepDistancePixels;
+            stepDistancePixels = remainingDistancePixels;
+            finished = true;
+        }
+        emitPeriodicStep(
+            step,
             position,
-            candidate,
-            hitBoundary
+            delta,
+            pathDistancePixels,
+            stepDistancePixels
         );
-        pathDistancePixels += length((nextPosition - position) * uViewport);
-        position = nextPosition;
-        if (hitBoundary) {
+        pathDistancePixels += stepDistancePixels;
+        position = fract(position + delta);
+        if (pathDistancePixels >= uMaximumPathPixels - 1e-4) {
             finished = true;
             continue;
         }
@@ -194,8 +266,11 @@ void main() {
     }
 
     float inversePathLength = 1.0 / max(pathDistancePixels, 1e-6);
-    for (int point = 0; point < uPointCount; ++point) {
-        trajectory[point].w =
-            clamp(trajectory[point].z * inversePathLength, 0.0, 1.0);
+    int vertexCount = uStepCount * VERTICES_PER_STEP;
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        if (trajectory[vertex].w >= 0.0) {
+            trajectory[vertex].w =
+                clamp(trajectory[vertex].z * inversePathLength, 0.0, 1.0);
+        }
     }
 }
