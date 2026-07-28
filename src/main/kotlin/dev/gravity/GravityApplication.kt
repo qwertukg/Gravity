@@ -214,6 +214,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private fun render(activeBodies: Int, fps: Double) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
+        renderProgram!!.float("uMaximumPressure", config.maximumVisualPressure)
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)

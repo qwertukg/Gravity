@@ -6,6 +6,7 @@ layout(std430, binding = 1) writeonly buffer OutputBodies { vec4 outputBodies[];
 layout(std430, binding = 2) readonly buffer Heads { uint heads[]; };
 layout(std430, binding = 3) readonly buffer CollisionNext { uint collisionNext[]; };
 layout(std430, binding = 4) readonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 5) writeonly buffer Pressures { float pressures[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -16,7 +17,6 @@ uniform float uDiameterPixels;
 uniform float uSubstepDt;
 
 const int MAX_PARTICLES_PER_CELL = 64;
-const float LIQUID_VISCOSITY = 0.05;
 
 vec2 fallbackNormal(uint first, uint second) {
     uint low = min(first, second);
@@ -38,6 +38,7 @@ void main() {
 
     vec2 positionCorrection = vec2(0.0);
     vec2 velocityCorrection = vec2(0.0);
+    float pressure = 0.0;
     uint ownContacts = contactCounts[id];
 
     for (int dy = -1; dy <= 1; ++dy) {
@@ -84,11 +85,11 @@ void main() {
                             velocityCorrection -= normal *
                                 (0.5 * relativeNormalSpeed * pairWeight);
                         }
+                        pressure += 0.5 * pairWeight * (
+                            penetration / uSubstepDt +
+                            max(-relativeNormalSpeed, 0.0)
+                        );
 
-                        // Weak symmetric shear viscosity lets layers slide
-                        // while still transferring momentum like a liquid.
-                        velocityCorrection -= relativeVelocity *
-                            (LIQUID_VISCOSITY * pairWeight);
                     }
                 }
                 encoded = collisionNext[otherId];
@@ -118,4 +119,5 @@ void main() {
     positionPixels = clamp(positionPixels, minimumPosition, maximumPosition);
 
     outputBodies[id] = vec4(positionPixels / uViewport, velocityPixels / uViewport);
+    pressures[id] = pressure;
 }

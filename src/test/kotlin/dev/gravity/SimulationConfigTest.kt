@@ -21,6 +21,7 @@ class SimulationConfigTest {
                 "--square-test=200",
                 "--collisions=6",
                 "--diameter=1.2",
+                "--pressure-max=80",
             ),
             mapOf("GRAVITY_BODIES" to "42", "GRAVITY_GRID" to "1024"),
         )
@@ -31,6 +32,7 @@ class SimulationConfigTest {
         assertEquals(200, config.squareTestPixels)
         assertEquals(6, config.collisionIterations)
         assertEquals(1.2f, config.contactDiameterPixels)
+        assertEquals(80f, config.maximumVisualPressure)
     }
 
     @Test
@@ -56,6 +58,9 @@ class SimulationConfigTest {
         }
         assertFailsWith<IllegalArgumentException> {
             SimulationConfig(contactDiameterPixels = 0.25f)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            SimulationConfig(maximumVisualPressure = 0f)
         }
     }
 

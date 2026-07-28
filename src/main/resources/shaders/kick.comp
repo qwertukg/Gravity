@@ -24,8 +24,6 @@ uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
-uniform float uContactDiameterPixels;
-uniform float uViewportHeight;
 
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
@@ -51,10 +49,9 @@ vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMas
     float rSquared = dot(deltaPhysical, deltaPhysical);
     float sigma = uSigmaCells / float(uPhysicalHeight);
     float localWeight = exp(-rSquared / (2.0 * sigma * sigma));
-    // Contact pressure owns this scale. Softening here keeps dense linked-list
-    // traversal from overpowering the symmetric collision impulses.
-    float minimumDistance =
-        (2.0 * uContactDiameterPixels) / uViewportHeight;
+    float cellWidth = uDomainAspect / float(uPhysicalWidth);
+    float cellHeight = 1.0 / float(uPhysicalHeight);
+    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
     float physicalScale = uGravity * sourceMass * localWeight /
         (uInitialTotalMass * max(rSquared, minimumDistance * minimumDistance));
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);

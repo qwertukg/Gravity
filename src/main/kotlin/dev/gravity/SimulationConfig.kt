@@ -12,6 +12,7 @@ data class SimulationConfig(
     val timeStep: Float = 1f / 120f,
     val collisionIterations: Int = 16,
     val contactDiameterPixels: Float = 1.12838f,
+    val maximumVisualPressure: Float = 64f,
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
     val squareTestPixels: Int? = null,
@@ -31,6 +32,9 @@ data class SimulationConfig(
         require(collisionIterations in 1..16) { "collision iterations must be in 1..16" }
         require(contactDiameterPixels in 0.5f..4f) {
             "contact diameter must be in 0.5..4 pixels"
+        }
+        require(maximumVisualPressure > 0f && maximumVisualPressure.isFinite()) {
+            "maximum visual pressure must be finite and positive"
         }
         require(maxFrames == null || maxFrames > 0)
         require(squareTestPixels == null || squareTestPixels > 0) {
@@ -109,6 +113,11 @@ data class SimulationConfig(
                     "diameter",
                     "GRAVITY_DIAMETER",
                     defaults.contactDiameterPixels,
+                ),
+                maximumVisualPressure = floatValue(
+                    "pressure-max",
+                    "GRAVITY_PRESSURE_MAX",
+                    defaults.maximumVisualPressure,
                 ),
                 maxFrames = values["frames"]?.toIntOrNull(),
                 squareTestPixels = squareTestPixels,

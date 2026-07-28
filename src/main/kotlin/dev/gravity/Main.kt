@@ -8,7 +8,7 @@ fun main(args: Array<String>) {
         System.err.println(
             "Usage: gravity [--bodies=N] [--capacity=N] [--grid=WIDTHxHEIGHT] " +
                 "[--gravity=F] [--softening=F] [--dt=F] [--collisions=N] " +
-                "[--diameter=F] [--frames=N] " +
+                "[--diameter=F] [--pressure-max=F] [--frames=N] " +
                 "[--square-test=PIXELS]"
         )
         return

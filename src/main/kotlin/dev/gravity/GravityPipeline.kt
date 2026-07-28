@@ -77,6 +77,7 @@ class GravityPipeline(
     private val collisionNext = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionContactCounts =
         buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val pressures = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
@@ -103,6 +104,7 @@ class GravityPipeline(
     init {
         seedBodies()
         clearFloatBuffer(acceleration)
+        clearFloatBuffer(pressures)
         initializeKernel()
     }
 
@@ -114,6 +116,7 @@ class GravityPipeline(
     fun reset(activeBodies: Int) {
         seedBodies()
         clearFloatBuffer(acceleration)
+        clearFloatBuffer(pressures)
         initializeAcceleration(activeBodies)
     }
 
@@ -140,6 +143,7 @@ class GravityPipeline(
 
     fun bindBodiesForRender() {
         bind(0, bodies)
+        bind(1, pressures)
     }
 
     /**
@@ -319,6 +323,7 @@ class GravityPipeline(
         bind(2, collisionHeads)
         bind(3, collisionNext)
         bind(4, collisionContactCounts)
+        bind(5, pressures)
         collisionSolve.int("uCount", activeBodies)
         collisionSolve.int("uGridWidth", collisionGridWidth)
         collisionSolve.int("uGridHeight", collisionGridHeight)
@@ -367,8 +372,6 @@ class GravityPipeline(
         kick.float("uGravity", config.gravitationalConstant)
         kick.float("uSigmaCells", config.softeningCells)
         kick.float("uDomainAspect", domainAspect)
-        kick.float("uContactDiameterPixels", config.contactDiameterPixels)
-        kick.float("uViewportHeight", viewportHeight.toFloat())
         dispatchBodies(activeBodies)
         barrier()
     }
@@ -568,6 +571,7 @@ class GravityPipeline(
             collisionHeads,
             collisionNext,
             collisionContactCounts,
+            pressures,
             fft,
             scratch,
             forceX,
