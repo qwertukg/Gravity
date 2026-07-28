@@ -30,7 +30,6 @@ class UniformParticleInitializerTest {
 
         assertTrue(meanX / count in 0.49..0.51)
         assertTrue(meanY / count in 0.49..0.51)
-        assertEquals(count.toDouble(), state.massPrefix.last())
         assertEquals(count.toFloat(), state.normalizationMass)
         assertEquals(73L, state.seed)
     }

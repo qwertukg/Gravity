@@ -5,7 +5,6 @@ import java.security.SecureRandom
 import kotlin.random.Random
 
 data class UniformInitialState(
-    val massPrefix: DoubleArray,
     val normalizationMass: Float,
     val seed: Long,
 )
@@ -35,23 +34,35 @@ object UniformParticleInitializer {
         count: Int,
         seed: Long = seedSource.nextLong(),
         region: NormalizedRegion = NormalizedRegion.FULL_SCREEN,
+    ): UniformInitialState = fillImpl(bodies, masses, count, seed, region)
+
+    fun fillBodies(
+        bodies: FloatBuffer,
+        count: Int,
+        seed: Long = seedSource.nextLong(),
+        region: NormalizedRegion = NormalizedRegion.FULL_SCREEN,
+    ): UniformInitialState = fillImpl(bodies, null, count, seed, region)
+
+    private fun fillImpl(
+        bodies: FloatBuffer,
+        masses: FloatBuffer?,
+        count: Int,
+        seed: Long,
+        region: NormalizedRegion,
     ): UniformInitialState {
         require(count > 0)
         require(bodies.remaining() >= count * 4)
-        require(masses.remaining() >= count)
+        require(masses == null || masses.remaining() >= count)
 
         val random = Random(seed)
-        val prefix = DoubleArray(count + 1)
-        repeat(count) { id ->
+        repeat(count) {
             bodies.put(region.minX + random.nextFloat() * (region.maxX - region.minX))
             bodies.put(region.minY + random.nextFloat() * (region.maxY - region.minY))
             bodies.put(0f)
             bodies.put(0f)
-            masses.put(1f)
-            prefix[id + 1] = (id + 1).toDouble()
+            masses?.put(1f)
         }
         return UniformInitialState(
-            massPrefix = prefix,
             normalizationMass = count.toFloat(),
             seed = seed,
         )

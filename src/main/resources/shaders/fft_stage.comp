@@ -3,14 +3,13 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer InputComplex { vec2 inputComplex[]; };
 layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[]; };
+layout(std430, binding = 2) readonly buffer Twiddles { vec4 twiddles[]; };
 
 uniform int uGridWidth;
 uniform int uGridHeight;
 uniform int uStage;
 uniform int uAxis;
 uniform int uInverse;
-
-const float TAU = 6.28318530717958647692;
 
 vec2 multiplyComplex(vec2 a, vec2 b) {
     return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -39,9 +38,11 @@ void main() {
         ? lowerCoordinate + halfWidth + y * widthInCells
         : x + (lowerCoordinate + halfWidth) * widthInCells;
 
-    float sign = uInverse != 0 ? 1.0 : -1.0;
-    float angle = sign * TAU * float(within & (halfWidth - 1u)) / float(width);
-    vec2 twiddle = vec2(cos(angle), sin(angle));
+    uint twiddleBase = uAxis == 0 ? 0u : widthInCells - 1u;
+    uint twiddleIndex = twiddleBase + halfWidth - 1u +
+        (within & (halfWidth - 1u));
+    vec4 packedTwiddle = twiddles[twiddleIndex];
+    vec2 twiddle = uInverse != 0 ? packedTwiddle.zw : packedTwiddle.xy;
     vec2 evenValue = inputComplex[lowerId];
     vec2 oddValue = multiplyComplex(twiddle, inputComplex[upperId]);
     outputComplex[id] = within < halfWidth ? evenValue + oddValue : evenValue - oddValue;

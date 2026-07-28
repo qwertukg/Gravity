@@ -15,7 +15,6 @@ import org.lwjgl.opengl.GL15.glBufferSubData
 import org.lwjgl.opengl.GL15.glDeleteBuffers
 import org.lwjgl.opengl.GL15.glGenBuffers
 import org.lwjgl.opengl.GL20.glEnableVertexAttribArray
-import org.lwjgl.opengl.GL20.glUseProgram
 import org.lwjgl.opengl.GL20.glVertexAttribPointer
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.opengl.GL30.glDeleteVertexArrays
@@ -34,6 +33,8 @@ class FpsOverlay(
     private val vao = glGenVertexArrays()
     private val vertexBuffer = glGenBuffers()
     private val indexBuffer = glGenBuffers()
+    private var renderedFpsBits = Long.MIN_VALUE
+    private var renderedQuads = 0
 
     init {
         val indices = BufferUtils.createIntBuffer(maximumCharacters * 6)
@@ -55,20 +56,28 @@ class FpsOverlay(
     }
 
     fun render(fps: Double) {
-        vertexData.clear()
-        val text = String.format(Locale.ROOT, "FPS %.1f", fps)
-        val quads = stb_easy_font_print(0f, 0f, text, null as ByteBuffer?, vertexData)
-        vertexData.position(0)
-        vertexData.limit(quads * 4 * 16)
+        val fpsBits = fps.toRawBits()
+        if (fpsBits != renderedFpsBits) {
+            vertexData.clear()
+            val text = String.format(Locale.ROOT, "FPS %.1f", fps)
+            renderedQuads = stb_easy_font_print(
+                0f,
+                0f,
+                text,
+                null as ByteBuffer?,
+                vertexData,
+            )
+            vertexData.position(0)
+            vertexData.limit(renderedQuads * 4 * 16)
+            glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer)
+            glBufferSubData(GL_ARRAY_BUFFER, 0, vertexData)
+            renderedFpsBits = fpsBits
+        }
 
-        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer)
-        glBufferSubData(GL_ARRAY_BUFFER, 0, vertexData)
         program.use()
         program.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
         glBindVertexArray(vao)
-        glDrawElements(GL_TRIANGLES, quads * 6, GL_UNSIGNED_INT, 0L)
-        glBindVertexArray(0)
-        glUseProgram(0)
+        glDrawElements(GL_TRIANGLES, renderedQuads * 6, GL_UNSIGNED_INT, 0L)
     }
 
     override fun close() {

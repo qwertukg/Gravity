@@ -48,7 +48,6 @@ import org.lwjgl.opengl.GL11.glFinish
 import org.lwjgl.opengl.GL11.glPointSize
 import org.lwjgl.opengl.GL11.glViewport
 import org.lwjgl.opengl.GL13.GL_MULTISAMPLE
-import org.lwjgl.opengl.GL20.glUseProgram
 import org.lwjgl.opengl.GL30.glBindVertexArray
 import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import org.lwjgl.opengl.GL30.glGenVertexArrays
@@ -174,7 +173,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             }
             render(active, displayedFps)
             val gpuMillis = timer!!.end()
-            if (gpuMillis != null) {
+            if (!gpuMillis.isNaN()) {
                 smoothedGpuMillis += 0.08 * (gpuMillis - smoothedGpuMillis)
             }
 
@@ -320,8 +319,6 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)
-        glBindVertexArray(0)
-        glUseProgram(0)
         fpsOverlay!!.render(fps)
     }
 

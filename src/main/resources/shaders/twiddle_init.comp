@@ -1,0 +1,25 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) writeonly buffer Twiddles { vec4 twiddles[]; };
+
+uniform int uOffset;
+uniform int uHalfWidth;
+
+const float TAU = 6.28318530717958647692;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uHalfWidth)) return;
+
+    float forwardAngle =
+        -TAU * float(id) / float(uHalfWidth * 2);
+    float inverseAngle =
+        TAU * float(id) / float(uHalfWidth * 2);
+    twiddles[uOffset + int(id)] = vec4(
+        cos(forwardAngle),
+        sin(forwardAngle),
+        cos(inverseAngle),
+        sin(inverseAngle)
+    );
+}

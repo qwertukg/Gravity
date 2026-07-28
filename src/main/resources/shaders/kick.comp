@@ -7,9 +7,8 @@ layout(std430, binding = 2) readonly buffer ForceX { vec2 forceX[]; };
 layout(std430, binding = 3) readonly buffer ForceY { vec2 forceY[]; };
 layout(std430, binding = 4) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
-layout(std430, binding = 6) readonly buffer Masses { float masses[]; };
-layout(std430, binding = 7) readonly buffer CellCounts { int cellCounts[]; };
-layout(std430, binding = 8) readonly buffer CellMass { uint cellMass[]; };
+layout(std430, binding = 6) readonly buffer CellCounts { int cellCounts[]; };
+layout(std430, binding = 7) readonly buffer CellMass { uint cellMass[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -57,25 +56,26 @@ vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMas
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
 }
 
-float interpolateX(vec2 position) {
+vec2 interpolateForce(vec2 position) {
     vec2 gridPosition = position * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 f = fract(gridPosition);
-    float v00 = forceX[forceIndex(base)].x;
-    float v10 = forceX[forceIndex(base + ivec2(1, 0))].x;
-    float v01 = forceX[forceIndex(base + ivec2(0, 1))].x;
-    float v11 = forceX[forceIndex(base + ivec2(1, 1))].x;
-    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
-}
-
-float interpolateY(vec2 position) {
-    vec2 gridPosition = position * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
-    ivec2 base = ivec2(floor(gridPosition));
-    vec2 f = fract(gridPosition);
-    float v00 = forceY[forceIndex(base)].x;
-    float v10 = forceY[forceIndex(base + ivec2(1, 0))].x;
-    float v01 = forceY[forceIndex(base + ivec2(0, 1))].x;
-    float v11 = forceY[forceIndex(base + ivec2(1, 1))].x;
+    vec2 v00 = vec2(
+        forceX[forceIndex(base)].x,
+        forceY[forceIndex(base)].x
+    );
+    vec2 v10 = vec2(
+        forceX[forceIndex(base + ivec2(1, 0))].x,
+        forceY[forceIndex(base + ivec2(1, 0))].x
+    );
+    vec2 v01 = vec2(
+        forceX[forceIndex(base + ivec2(0, 1))].x,
+        forceY[forceIndex(base + ivec2(0, 1))].x
+    );
+    vec2 v11 = vec2(
+        forceX[forceIndex(base + ivec2(1, 1))].x,
+        forceY[forceIndex(base + ivec2(1, 1))].x
+    );
     return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
 }
 
@@ -83,7 +83,7 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
-    vec2 result = vec2(interpolateX(body.xy), interpolateY(body.xy));
+    vec2 result = interpolateForce(body.xy);
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense
     // cells use a Barnes-Hut-style cell monopole to bound frame time.
@@ -106,7 +106,7 @@ void main() {
                 int limit = homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
                 while (other >= 0 && visited < limit) {
                     if (uint(other) != id) {
-                        result += localAcceleration(bodies[other].xy, body.xy, masses[other]);
+                        result += localAcceleration(bodies[other].xy, body.xy, 1.0);
                     }
                     other = nextBody[other];
                     visited++;

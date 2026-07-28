@@ -15,6 +15,7 @@ uniform vec2 uViewport;
 uniform float uCellSizePixels;
 uniform float uDiameterPixels;
 uniform float uSubstepDt;
+uniform int uWritePressure;
 
 const int MAX_PARTICLES_PER_CELL = 64;
 
@@ -35,6 +36,7 @@ void main() {
     vec2 positionPixels = body.xy * uViewport;
     vec2 velocityPixels = body.zw * uViewport;
     ivec2 home = ivec2(floor(positionPixels / uCellSizePixels));
+    float diameterSquared = uDiameterPixels * uDiameterPixels;
 
     vec2 positionCorrection = vec2(0.0);
     vec2 velocityCorrection = vec2(0.0);
@@ -48,7 +50,6 @@ void main() {
                 cell.x >= uGridWidth || cell.y >= uGridHeight) {
                 continue;
             }
-
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             int visited = 0;
             while (encoded != 0u && visited < MAX_PARTICLES_PER_CELL) {
@@ -57,7 +58,6 @@ void main() {
                     vec4 other = inputBodies[otherId];
                     vec2 delta = positionPixels - other.xy * uViewport;
                     float distanceSquared = dot(delta, delta);
-                    float diameterSquared = uDiameterPixels * uDiameterPixels;
                     if (distanceSquared < diameterSquared) {
                         float distance = sqrt(max(distanceSquared, 1e-12));
                         vec2 normal = distanceSquared > 1e-12
@@ -85,10 +85,12 @@ void main() {
                             velocityCorrection -= normal *
                                 (0.5 * relativeNormalSpeed * pairWeight);
                         }
-                        pressure += 0.5 * pairWeight * (
-                            penetration / uSubstepDt +
-                            max(-relativeNormalSpeed, 0.0)
-                        );
+                        if (uWritePressure != 0) {
+                            pressure += 0.5 * pairWeight * (
+                                penetration / uSubstepDt +
+                                max(-relativeNormalSpeed, 0.0)
+                            );
+                        }
 
                     }
                 }
@@ -119,5 +121,5 @@ void main() {
     positionPixels = clamp(positionPixels, minimumPosition, maximumPosition);
 
     outputBodies[id] = vec4(positionPixels / uViewport, velocityPixels / uViewport);
-    pressures[id] = pressure;
+    if (uWritePressure != 0) pressures[id] = pressure;
 }

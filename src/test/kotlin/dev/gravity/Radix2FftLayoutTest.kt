@@ -31,6 +31,7 @@ class Radix2FftLayoutTest {
     }
 
     private fun fft2d(values: DoubleArray, width: Int, height: Int, inverse: Boolean) {
+        val twiddles = twiddles(width, height)
         for (axis in 0..1) {
             val permuted = DoubleArray(values.size)
             val axisSize = if (axis == 0) width else height
@@ -57,10 +58,12 @@ class Radix2FftLayoutTest {
                     val upper = lower + half
                     val lowerId = if (axis == 0) lower + y * width else x + lower * width
                     val upperId = if (axis == 0) upper + y * width else x + upper * width
-                    val angle = (if (inverse) 2.0 else -2.0) * PI *
-                        (within and (half - 1)) / stageWidth
-                    val wr = cos(angle)
-                    val wi = sin(angle)
+                    val twiddleBase = if (axis == 0) 0 else width - 1
+                    val twiddleIndex = twiddleBase + half - 1 +
+                        (within and (half - 1))
+                    val component = twiddleIndex * 4 + if (inverse) 2 else 0
+                    val wr = twiddles[component]
+                    val wi = twiddles[component + 1]
                     val ar = source[lowerId * 2]
                     val ai = source[lowerId * 2 + 1]
                     val br = source[upperId * 2] * wr - source[upperId * 2 + 1] * wi
@@ -73,5 +76,26 @@ class Radix2FftLayoutTest {
             }
             source.copyInto(values)
         }
+    }
+
+    private fun twiddles(width: Int, height: Int): DoubleArray {
+        val result = DoubleArray((width + height - 2) * 4)
+        var offset = 0
+        for (axisSize in intArrayOf(width, height)) {
+            var halfWidth = 1
+            while (halfWidth < axisSize) {
+                repeat(halfWidth) { index ->
+                    val angle = 2.0 * PI * index / (halfWidth * 2)
+                    val destination = (offset + index) * 4
+                    result[destination] = cos(-angle)
+                    result[destination + 1] = sin(-angle)
+                    result[destination + 2] = cos(angle)
+                    result[destination + 3] = sin(angle)
+                }
+                offset += halfWidth
+                halfWidth *= 2
+            }
+        }
+        return result
     }
 }
