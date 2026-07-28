@@ -32,6 +32,7 @@ uniform float uInverseMassScale;
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
 const int VERTICES_PER_STEP = 6;
+const float MINIMUM_DASH_PIXELS = 3.0;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -156,7 +157,9 @@ void emitPeriodicStep(
     vec2 start,
     vec2 delta,
     float startDistance,
-    float stepDistance
+    float stepDistance,
+    float startDashCoordinate,
+    float stepDashCoordinate
 ) {
     int baseVertex = step * VERTICES_PER_STEP;
     for (int vertex = 0; vertex < VERTICES_PER_STEP; ++vertex) {
@@ -208,13 +211,13 @@ void emitPeriodicStep(
         int vertex = baseVertex + piece * 2;
         trajectory[vertex] = vec4(
             clamp(first, vec2(0.0), vec2(1.0)),
-            startDistance + stepDistance * firstFraction,
-            0.0
+            startDashCoordinate + stepDashCoordinate * firstFraction,
+            startDistance + stepDistance * firstFraction
         );
         trajectory[vertex + 1] = vec4(
             clamp(second, vec2(0.0), vec2(1.0)),
-            startDistance + stepDistance * secondFraction,
-            0.0
+            startDashCoordinate + stepDashCoordinate * secondFraction,
+            startDistance + stepDistance * secondFraction
         );
     }
 }
@@ -224,6 +227,7 @@ void main() {
     vec2 velocity = uVelocityPixels / uViewport;
     vec2 acceleration = accelerationAt(position);
     float pathDistancePixels = 0.0;
+    float dashCoordinatePixels = 0.0;
     bool finished = false;
 
     for (int step = 0; step < uStepCount; ++step) {
@@ -247,14 +251,22 @@ void main() {
             stepDistancePixels = remainingDistancePixels;
             finished = true;
         }
+        float speedMultiplier = 1.0 + length(halfStepVelocity);
+        float dashLengthPixels =
+            MINIMUM_DASH_PIXELS * speedMultiplier;
+        float stepDashCoordinatePixels =
+            stepDistancePixels * MINIMUM_DASH_PIXELS / dashLengthPixels;
         emitPeriodicStep(
             step,
             position,
             delta,
             pathDistancePixels,
-            stepDistancePixels
+            stepDistancePixels,
+            dashCoordinatePixels,
+            stepDashCoordinatePixels
         );
         pathDistancePixels += stepDistancePixels;
+        dashCoordinatePixels += stepDashCoordinatePixels;
         position = fract(position + delta);
         if (pathDistancePixels >= uMaximumPathPixels - 1e-4) {
             finished = true;
@@ -270,7 +282,7 @@ void main() {
     for (int vertex = 0; vertex < vertexCount; ++vertex) {
         if (trajectory[vertex].w >= 0.0) {
             trajectory[vertex].w =
-                clamp(trajectory[vertex].z * inversePathLength, 0.0, 1.0);
+                clamp(trajectory[vertex].w * inversePathLength, 0.0, 1.0);
         }
     }
 }
