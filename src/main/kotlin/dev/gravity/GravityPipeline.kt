@@ -50,14 +50,16 @@ class GravityPipeline(
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
-    private val physicalGridWidth = gridWidth / 2
-    private val physicalGridHeight = gridHeight / 2
+    // A cyclic FFT is the natural convolution for a torus. The entire mesh is
+    // physical; no zero-padding or central sub-domain is required.
+    private val physicalGridWidth = gridWidth
+    private val physicalGridHeight = gridHeight
     private val cells = gridWidth * gridHeight
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val collisionGridWidth =
-        ceil(viewportWidth / config.contactDiameterPixels).toInt()
+        ToroidalSpace.collisionGridCells(viewportWidth, config.contactDiameterPixels)
     private val collisionGridHeight =
-        ceil(viewportHeight / config.contactDiameterPixels).toInt()
+        ToroidalSpace.collisionGridCells(viewportHeight, config.contactDiameterPixels)
     private val collisionCells = collisionGridWidth * collisionGridHeight
     private val logGridWidth = gridWidth.countTrailingZeroBits()
     private val logGridHeight = gridHeight.countTrailingZeroBits()
@@ -167,15 +169,8 @@ class GravityPipeline(
         velocityX: Float,
         velocityY: Float,
     ) {
-        val projectileRadius = 0.5f * CircularProjectile.DIAMETER_PIXELS
-        val safeOriginX = originX.coerceIn(
-            projectileRadius,
-            viewportWidthFloat - projectileRadius,
-        )
-        val safeOriginY = originY.coerceIn(
-            projectileRadius,
-            viewportHeightFloat - projectileRadius,
-        )
+        val wrappedOriginX = ToroidalSpace.wrapPixels(originX, viewportWidth)
+        val wrappedOriginY = ToroidalSpace.wrapPixels(originY, viewportHeight)
         val totalMass = activeBodies.toFloat()
 
         trajectoryCompute.use()
@@ -194,7 +189,7 @@ class GravityPipeline(
         trajectoryCompute.int("uNeighborRadiusX", neighborRadiusX)
         trajectoryCompute.int("uNeighborRadiusY", neighborRadiusY)
         trajectoryCompute.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        trajectoryCompute.vec2("uOriginPixels", safeOriginX, safeOriginY)
+        trajectoryCompute.vec2("uOriginPixels", wrappedOriginX, wrappedOriginY)
         trajectoryCompute.vec2("uVelocityPixels", velocityX, velocityY)
         trajectoryCompute.float("uMinimumDt", config.timeStep)
         trajectoryCompute.float("uMaximumDt", 1f)
@@ -224,14 +219,17 @@ class GravityPipeline(
             return 0
         }
 
-        val radius = 0.5f * CircularProjectile.DIAMETER_PIXELS
-        val safeCenterX = centerX.coerceIn(radius, viewportWidth - radius)
-        val safeCenterY = centerY.coerceIn(radius, viewportHeight - radius)
         val upload = memAllocFloat(projectileOffsets.size * 4)
         try {
             projectileOffsets.forEach { offset ->
-                upload.put((safeCenterX + offset.x) / viewportWidth)
-                upload.put((safeCenterY + offset.y) / viewportHeight)
+                upload.put(
+                    ToroidalSpace.wrapPixels(centerX + offset.x, viewportWidth) /
+                        viewportWidth,
+                )
+                upload.put(
+                    ToroidalSpace.wrapPixels(centerY + offset.y, viewportHeight) /
+                        viewportHeight,
+                )
                 upload.put(velocityX / viewportWidth)
                 upload.put(velocityY / viewportHeight)
             }
@@ -263,12 +261,24 @@ class GravityPipeline(
             null,
         )?.asFloatBuffer() ?: error("Unable to map particle buffer for diagnostics")
 
-        var meanX = 0.0
-        var meanY = 0.0
+        var circleXCos = 0.0
+        var circleXSin = 0.0
+        var circleYCos = 0.0
+        var circleYSin = 0.0
         var maxSpeed = 0.0
+        val xCoordinates = DoubleArray(activeBodies)
+        val yCoordinates = DoubleArray(activeBodies)
         for (index in 0 until activeBodies) {
-            meanX += mapped[index * 4].toDouble() * viewportWidth
-            meanY += mapped[index * 4 + 1].toDouble() * viewportHeight
+            val x = mapped[index * 4].toDouble()
+            val y = mapped[index * 4 + 1].toDouble()
+            xCoordinates[index] = x
+            yCoordinates[index] = y
+            val xAngle = 2.0 * Math.PI * x
+            val yAngle = 2.0 * Math.PI * y
+            circleXCos += kotlin.math.cos(xAngle)
+            circleXSin += kotlin.math.sin(xAngle)
+            circleYCos += kotlin.math.cos(yAngle)
+            circleYSin += kotlin.math.sin(yAngle)
             maxSpeed = max(
                 maxSpeed,
                 kotlin.math.hypot(
@@ -277,21 +287,34 @@ class GravityPipeline(
                 ),
             )
         }
+
+        val circularCenterX = ToroidalSpace.wrapUnit(
+            kotlin.math.atan2(circleXSin, circleXCos) / (2.0 * Math.PI),
+        )
+        val circularCenterY = ToroidalSpace.wrapUnit(
+            kotlin.math.atan2(circleYSin, circleYCos) / (2.0 * Math.PI),
+        )
+        var meanX = 0.0
+        var meanY = 0.0
+        for (index in 0 until activeBodies) {
+            val unwrappedX = circularCenterX +
+                ToroidalSpace.minimumImage(xCoordinates[index] - circularCenterX)
+            val unwrappedY = circularCenterY +
+                ToroidalSpace.minimumImage(yCoordinates[index] - circularCenterY)
+            xCoordinates[index] = unwrappedX * viewportWidth
+            yCoordinates[index] = unwrappedY * viewportHeight
+            meanX += xCoordinates[index]
+            meanY += yCoordinates[index]
+        }
         meanX /= activeBodies
         meanY /= activeBodies
 
         var xx = 0.0
         var xy = 0.0
         var yy = 0.0
-        val xCoordinates = DoubleArray(activeBodies)
-        val yCoordinates = DoubleArray(activeBodies)
         for (index in 0 until activeBodies) {
-            val absoluteX = mapped[index * 4].toDouble() * viewportWidth
-            val absoluteY = mapped[index * 4 + 1].toDouble() * viewportHeight
-            xCoordinates[index] = absoluteX
-            yCoordinates[index] = absoluteY
-            val x = absoluteX - meanX
-            val y = absoluteY - meanY
+            val x = xCoordinates[index] - meanX
+            val y = yCoordinates[index] - meanY
             xx += x * x
             xy += x * y
             yy += y * y
@@ -322,8 +345,8 @@ class GravityPipeline(
             return Math.PI * radiusSquared[index] / fraction
         }
         return ClusterStatistics(
-            centerX = medianX,
-            centerY = medianY,
+            centerX = ToroidalSpace.wrapPixels(medianX.toFloat(), viewportWidth).toDouble(),
+            centerY = ToroidalSpace.wrapPixels(medianY.toFloat(), viewportHeight).toDouble(),
             covarianceAreaPixels = area,
             equivalentDiameterPixels = 2.0 * sqrt(area / Math.PI),
             core90AreaPixels = coreArea(0.90),
@@ -405,8 +428,6 @@ class GravityPipeline(
         collisionClear.int("uCount", activeBodies)
         collisionClear.int("uGridWidth", collisionGridWidth)
         collisionClear.int("uGridHeight", collisionGridHeight)
-        collisionClear.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionClear.float("uCellSizePixels", config.contactDiameterPixels)
         dispatchBodies(activeBodies)
         barrier()
 
@@ -418,8 +439,6 @@ class GravityPipeline(
         collisionBuild.int("uCount", activeBodies)
         collisionBuild.int("uGridWidth", collisionGridWidth)
         collisionBuild.int("uGridHeight", collisionGridHeight)
-        collisionBuild.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionBuild.float("uCellSizePixels", config.contactDiameterPixels)
         collisionBuild.float("uKickDt", kickDt)
         collisionBuild.float("uDriftDt", driftDt)
         dispatchBodies(activeBodies)
@@ -434,7 +453,6 @@ class GravityPipeline(
         collisionCount.int("uGridWidth", collisionGridWidth)
         collisionCount.int("uGridHeight", collisionGridHeight)
         collisionCount.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionCount.float("uCellSizePixels", config.contactDiameterPixels)
         collisionCount.float("uDiameterPixels", config.contactDiameterPixels)
         dispatchBodies(activeBodies)
         barrier()
@@ -450,7 +468,6 @@ class GravityPipeline(
         collisionSolve.int("uGridWidth", collisionGridWidth)
         collisionSolve.int("uGridHeight", collisionGridHeight)
         collisionSolve.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionSolve.float("uCellSizePixels", config.contactDiameterPixels)
         collisionSolve.float("uDiameterPixels", config.contactDiameterPixels)
         collisionSolve.float("uSubstepDt", collisionSubstep)
         collisionSolve.int("uWritePressure", if (writePressure) 1 else 0)

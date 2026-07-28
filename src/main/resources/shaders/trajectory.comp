@@ -31,18 +31,21 @@ uniform float uInverseMassScale;
 const int EXACT_CELL_THRESHOLD = 2;
 const int MAX_HOME_INTERACTIONS = 8;
 
-bool insideGrid(ivec2 cell) {
-    return cell.x >= 0 && cell.y >= 0 &&
-        cell.x < uPhysicalWidth && cell.y < uPhysicalHeight;
+ivec2 wrapCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uPhysicalWidth;
+    else if (cell.x >= uPhysicalWidth) cell.x -= uPhysicalWidth;
+    if (cell.y < 0) cell.y += uPhysicalHeight;
+    else if (cell.y >= uPhysicalHeight) cell.y -= uPhysicalHeight;
+    return cell;
 }
 
 int cellIndex(ivec2 cell) {
+    cell = wrapCell(cell);
     return cell.x + cell.y * uPhysicalWidth;
 }
 
 int forceIndex(ivec2 physicalCell) {
-    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
-    ivec2 meshCell = physicalCell + offset;
+    ivec2 meshCell = wrapCell(physicalCell);
     return meshCell.x + meshCell.y * uMeshWidth;
 }
 
@@ -52,6 +55,7 @@ vec2 localAcceleration(
     float sourceMass
 ) {
     vec2 deltaNormalized = sourcePosition - targetPosition;
+    deltaNormalized -= floor(deltaNormalized + vec2(0.5));
     vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
     float rSquared = dot(deltaPhysical, deltaPhysical);
     float sigma = uSigmaCells / float(uPhysicalHeight);
@@ -95,12 +99,11 @@ vec2 accelerationAt(vec2 position) {
     for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
         for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
             ivec2 neighborCell = home + ivec2(dx, dy);
-            if (!insideGrid(neighborCell)) continue;
             int index = cellIndex(neighborCell);
             int count = cellCounts[index];
             bool homeCell = dx == 0 && dy == 0;
             if (!homeCell && count > EXACT_CELL_THRESHOLD) {
-                vec2 center = (vec2(neighborCell) + 0.5) /
+                vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
                 float aggregateMass =
                     float(cellMass[index]) * uInverseMassScale;
@@ -147,6 +150,8 @@ float integrationDt(vec2 velocity, vec2 acceleration) {
 }
 
 vec2 screenIntersection(vec2 start, vec2 end, out bool hitBoundary) {
+    // The simulation is periodic, but the preview deliberately ends at the
+    // first visual seam so a GL line strip never connects across the screen.
     vec2 delta = end - start;
     float fraction = 1.0;
     if (end.x < 0.0) fraction = min(fraction, -start.x / delta.x);

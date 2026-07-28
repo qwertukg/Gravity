@@ -7,16 +7,23 @@ layout(std430, binding = 1) buffer Heads { uint heads[]; };
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
-uniform vec2 uViewport;
-uniform float uCellSizePixels;
+
+ivec2 wrapCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uGridWidth;
+    else if (cell.x >= uGridWidth) cell.x -= uGridWidth;
+    if (cell.y < 0) cell.y += uGridHeight;
+    else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
+    return cell;
+}
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
 
-    vec2 positionPixels = previousBodies[id].xy * uViewport;
-    ivec2 cell = ivec2(floor(positionPixels / uCellSizePixels));
-    cell = clamp(cell, ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+    ivec2 cell = ivec2(floor(
+        previousBodies[id].xy * vec2(uGridWidth, uGridHeight)
+    ));
+    cell = wrapCell(cell);
     uint index = uint(cell.x + cell.y * uGridWidth);
 
     // Several particles may clear the same cell. The atomic makes those

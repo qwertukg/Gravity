@@ -10,27 +10,32 @@ uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
 uniform vec2 uViewport;
-uniform float uCellSizePixels;
 uniform float uDiameterPixels;
 
 const int MAX_PARTICLES_PER_CELL = 64;
+
+ivec2 wrapCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uGridWidth;
+    else if (cell.x >= uGridWidth) cell.x -= uGridWidth;
+    if (cell.y < 0) cell.y += uGridHeight;
+    else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
+    return cell;
+}
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
 
     vec2 positionPixels = bodies[id].xy * uViewport;
-    ivec2 home = ivec2(floor(positionPixels / uCellSizePixels));
+    ivec2 home = ivec2(floor(
+        bodies[id].xy * vec2(uGridWidth, uGridHeight)
+    ));
     float diameterSquared = uDiameterPixels * uDiameterPixels;
     uint contacts = 0u;
 
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
-            ivec2 cell = home + ivec2(dx, dy);
-            if (cell.x < 0 || cell.y < 0 ||
-                cell.x >= uGridWidth || cell.y >= uGridHeight) {
-                continue;
-            }
+            ivec2 cell = wrapCell(home + ivec2(dx, dy));
 
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             int visited = 0;
@@ -39,6 +44,7 @@ void main() {
                 if (otherId != id) {
                     vec2 delta =
                         positionPixels - bodies[otherId].xy * uViewport;
+                    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     if (dot(delta, delta) < diameterSquared) contacts++;
                 }
                 encoded = collisionNext[otherId];

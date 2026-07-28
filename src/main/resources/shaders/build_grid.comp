@@ -14,13 +14,21 @@ uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform int uMassScale;
 
+ivec2 wrapCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uPhysicalWidth;
+    else if (cell.x >= uPhysicalWidth) cell.x -= uPhysicalWidth;
+    if (cell.y < 0) cell.y += uPhysicalHeight;
+    else if (cell.y >= uPhysicalHeight) cell.y -= uPhysicalHeight;
+    return cell;
+}
+
 uint densityIndex(ivec2 physicalCell) {
-    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
-    ivec2 meshCell = physicalCell + offset;
+    ivec2 meshCell = wrapCell(physicalCell);
     return uint(meshCell.x + meshCell.y * uMeshWidth);
 }
 
 uint cellIndex(ivec2 cell) {
+    cell = wrapCell(cell);
     return uint(cell.x + cell.y * uPhysicalWidth);
 }
 

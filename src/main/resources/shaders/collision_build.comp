@@ -9,21 +9,15 @@ layout(std430, binding = 3) readonly buffer Accelerations { vec2 acceleration[];
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
-uniform vec2 uViewport;
-uniform float uCellSizePixels;
 uniform float uKickDt;
 uniform float uDriftDt;
 
-void reflectAxis(inout float position, inout float velocity) {
-    float phase = mod(position, 2.0);
-    if (phase < 0.0) phase += 2.0;
-    if (phase >= 1.0) {
-        position = 2.0 - phase;
-        velocity = -velocity;
-    } else {
-        position = phase;
-    }
-    position = min(position, 0.99999994);
+ivec2 wrapCell(ivec2 cell) {
+    if (cell.x < 0) cell.x += uGridWidth;
+    else if (cell.x >= uGridWidth) cell.x -= uGridWidth;
+    if (cell.y < 0) cell.y += uGridHeight;
+    else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
+    return cell;
 }
 
 void main() {
@@ -34,14 +28,14 @@ void main() {
     if (uKickDt != 0.0 || uDriftDt != 0.0) {
         body.zw += acceleration[id] * (0.5 * uKickDt);
         body.xy += body.zw * uDriftDt;
-        reflectAxis(body.x, body.z);
-        reflectAxis(body.y, body.w);
+        body.xy = fract(body.xy);
         bodies[id] = body;
     }
 
-    vec2 positionPixels = body.xy * uViewport;
-    ivec2 cell = ivec2(floor(positionPixels / uCellSizePixels));
-    cell = clamp(cell, ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+    ivec2 cell = ivec2(floor(
+        body.xy * vec2(uGridWidth, uGridHeight)
+    ));
+    cell = wrapCell(cell);
     uint index = uint(cell.x + cell.y * uGridWidth);
 
     // Zero is the empty-list marker; particle ids are stored one-based.

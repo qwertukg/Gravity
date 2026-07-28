@@ -25,9 +25,9 @@ class CollisionGridOptimizationTest {
             val moved = previous.map {
                 Point(
                     (it.x + random.nextDouble(-1.5, 1.5))
-                        .coerceIn(0.0, width - 1e-6),
+                        .let { value -> value - floor(value / width) * width },
                     (it.y + random.nextDouble(-1.5, 1.5))
-                        .coerceIn(0.0, height - 1e-6),
+                        .let { value -> value - floor(value / height) * height },
                 )
             }.toMutableList()
             if (iteration % 5 == 0) {
@@ -46,8 +46,8 @@ class CollisionGridOptimizationTest {
     }
 
     private fun cell(point: Point, width: Int, height: Int): Int {
-        val x = floor(point.x).toInt().coerceIn(0, width - 1)
-        val y = floor(point.y).toInt().coerceIn(0, height - 1)
+        val x = Math.floorMod(floor(point.x).toInt(), width)
+        val y = Math.floorMod(floor(point.y).toInt(), height)
         return x + y * width
     }
 }

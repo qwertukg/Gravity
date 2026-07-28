@@ -5,25 +5,22 @@ import kotlin.test.assertEquals
 
 class ScreenBoundaryTest {
     @Test
-    fun `positions reflect at screen boundaries`() {
-        assertEquals(0.25 to 37.5, reflectedState(-0.25, -37.5))
-        assertEquals(0.75 to -18.0, reflectedState(1.25, 18.0))
-        assertEquals(0.0 to 4.0, reflectedState(2.0, 4.0))
+    fun `positions wrap at screen boundaries without changing velocity`() {
+        assertEquals(0.75 to -37.5, wrappedState(-0.25, -37.5))
+        assertEquals(0.25 to 18.0, wrappedState(1.25, 18.0))
+        assertEquals(0.0 to 4.0, wrappedState(2.0, 4.0))
+        assertEquals(0.125 to 7.0, wrappedState(-12.875, 7.0))
+        assertEquals(99.75f, ToroidalSpace.wrapPixels(-0.25f, 100))
+        assertEquals(0f, ToroidalSpace.wrapPixels(300f, 100))
     }
 
     @Test
-    fun `opposite screen edges are not adjacent`() {
-        assertEquals(-0.98, 0.01 - 0.99, absoluteTolerance = 1e-12)
-        assertEquals(0.98, 0.99 - 0.01, absoluteTolerance = 1e-12)
+    fun `opposite screen edges are adjacent through minimum image`() {
+        assertEquals(0.02, ToroidalSpace.minimumImage(0.01 - 0.99), 1e-12)
+        assertEquals(-0.02, ToroidalSpace.minimumImage(0.99 - 0.01), 1e-12)
+        assertEquals(-0.5, ToroidalSpace.minimumImage(0.5), 1e-12)
     }
 
-    private fun reflectedState(position: Double, velocity: Double): Pair<Double, Double> {
-        var phase = position % 2.0
-        if (phase < 0.0) phase += 2.0
-        return if (phase >= 1.0) {
-            (2.0 - phase) to -velocity
-        } else {
-            phase to velocity
-        }
-    }
+    private fun wrappedState(position: Double, velocity: Double): Pair<Double, Double> =
+        ToroidalSpace.wrapUnit(position) to velocity
 }
