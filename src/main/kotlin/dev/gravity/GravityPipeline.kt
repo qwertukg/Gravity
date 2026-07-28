@@ -6,6 +6,7 @@ import org.lwjgl.opengl.GL15.GL_READ_ONLY
 import org.lwjgl.opengl.GL15.GL_WRITE_ONLY
 import org.lwjgl.opengl.GL15.glBindBuffer
 import org.lwjgl.opengl.GL15.glBufferData
+import org.lwjgl.opengl.GL15.glBufferSubData
 import org.lwjgl.opengl.GL15.glDeleteBuffers
 import org.lwjgl.opengl.GL15.glGenBuffers
 import org.lwjgl.opengl.GL15.glMapBuffer
@@ -25,6 +26,8 @@ import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
 import org.lwjgl.opengl.GL11.GL_UNSIGNED_INT
+import org.lwjgl.system.MemoryUtil.memAllocFloat
+import org.lwjgl.system.MemoryUtil.memFree
 import java.nio.ByteBuffer
 import java.util.Arrays
 import kotlin.math.ceil
@@ -99,7 +102,6 @@ class GravityPipeline(
     private val collisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
     private lateinit var massPrefix: DoubleArray
     private var normalizationMass = 0f
-    private var initialSeed: Long? = null
 
     init {
         seedBodies()
@@ -117,6 +119,9 @@ class GravityPipeline(
         seedBodies()
         clearFloatBuffer(acceleration)
         clearFloatBuffer(pressures)
+        clearUnsignedIntBuffer(collisionHeads)
+        clearUnsignedIntBuffer(collisionNext)
+        clearUnsignedIntBuffer(collisionContactCounts)
         initializeAcceleration(activeBodies)
     }
 
@@ -144,6 +149,44 @@ class GravityPipeline(
     fun bindBodiesForRender() {
         bind(0, bodies)
         bind(1, pressures)
+    }
+
+    fun spawnProjectile(
+        firstBody: Int,
+        centerX: Float,
+        centerY: Float,
+        velocityX: Float,
+        velocityY: Float,
+    ): Int {
+        val offsets = CircularProjectile.offsets(config.contactDiameterPixels)
+        if (firstBody !in 0..config.capacity ||
+            offsets.size > config.capacity - firstBody) {
+            return 0
+        }
+
+        val radius = 0.5f * CircularProjectile.DIAMETER_PIXELS
+        val safeCenterX = centerX.coerceIn(radius, viewportWidth - radius)
+        val safeCenterY = centerY.coerceIn(radius, viewportHeight - radius)
+        val upload = memAllocFloat(offsets.size * 4)
+        try {
+            offsets.forEach { offset ->
+                upload.put((safeCenterX + offset.x) / viewportWidth)
+                upload.put((safeCenterY + offset.y) / viewportHeight)
+                upload.put(velocityX / viewportWidth)
+                upload.put(velocityY / viewportHeight)
+            }
+            upload.flip()
+            val byteOffset = firstBody.toLong() * 4 * Float.SIZE_BYTES
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, bodies)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, byteOffset, upload)
+            upload.rewind()
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, collisionBodies)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, byteOffset, upload)
+        } finally {
+            memFree(upload)
+        }
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
+        return offsets.size
     }
 
     /**
@@ -456,19 +499,11 @@ class GravityPipeline(
             config.capacity.toLong() * Float.SIZE_BYTES,
             null,
         )?.asFloatBuffer() ?: error("Unable to map mass buffer")
-        val initialState = initialSeed?.let { seed ->
-            UniformParticleInitializer.fill(
-                bodies = mappedBodies,
-                masses = mappedMasses,
-                count = config.capacity,
-                seed = seed,
-            )
-        } ?: UniformParticleInitializer.fill(
+        val initialState = UniformParticleInitializer.fill(
             bodies = mappedBodies,
             masses = mappedMasses,
             count = config.capacity,
         )
-        if (initialSeed == null) initialSeed = initialState.seed
         config.squareTestPixels?.let { side ->
             UniformParticleInitializer.placePixelSquare(
                 bodies = mappedBodies,
@@ -489,8 +524,8 @@ class GravityPipeline(
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Particle buffer became corrupt while seeding" }
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, masses)
         check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)) { "Mass buffer became corrupt while seeding" }
-        // Keep inactive capacity initialized in both ping-pong buffers so the
-        // adaptive controller can safely activate additional bodies later.
+        // Initialize both ping-pong buffers, including inactive capacity
+        // reserved for projectiles.
         copy(bodies, collisionBodies, bodyBytes)
     }
 

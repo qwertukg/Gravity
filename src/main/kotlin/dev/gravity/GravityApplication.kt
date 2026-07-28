@@ -7,6 +7,7 @@ import org.lwjgl.glfw.GLFW.GLFW_FOCUSED
 import org.lwjgl.glfw.GLFW.GLFW_FOCUS_ON_SHOW
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
+import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_PROFILE
@@ -23,7 +24,9 @@ import org.lwjgl.glfw.GLFW.glfwInit
 import org.lwjgl.glfw.GLFW.glfwMakeContextCurrent
 import org.lwjgl.glfw.GLFW.glfwPollEvents
 import org.lwjgl.glfw.GLFW.glfwSetKeyCallback
+import org.lwjgl.glfw.GLFW.glfwSetCursorPosCallback
 import org.lwjgl.glfw.GLFW.glfwSetErrorCallback
+import org.lwjgl.glfw.GLFW.glfwSetMouseButtonCallback
 import org.lwjgl.glfw.GLFW.glfwSetWindowShouldClose
 import org.lwjgl.glfw.GLFW.glfwShowWindow
 import org.lwjgl.glfw.GLFW.glfwSwapBuffers
@@ -50,6 +53,14 @@ import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.opengl.GL43
 import java.util.Locale
+import kotlin.math.hypot
+
+private data class ProjectileGesture(
+    val originX: Float,
+    val originY: Float,
+    val velocityX: Float,
+    val velocityY: Float,
+)
 
 class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var window = 0L
@@ -61,6 +72,12 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var viewportWidth = 0
     private var viewportHeight = 0
     private var resetRequested = false
+    private var cursorX = 0.0
+    private var cursorY = 0.0
+    private var dragOriginX = 0f
+    private var dragOriginY = 0f
+    private var draggingProjectile = false
+    private var pendingProjectile: ProjectileGesture? = null
 
     fun run() {
         initWindow()
@@ -75,7 +92,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         fpsOverlay = FpsOverlay(viewportWidth, viewportHeight)
         timer = GpuTimer()
 
-        val active = config.initialBodies
+        var active = config.initialBodies
         simulation.initializeAcceleration(active)
         activateFullscreenWindow()
         render(active, 0.0)
@@ -93,8 +110,42 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
+                active = config.initialBodies
                 simulation.reset(active)
+                pendingProjectile = null
+                draggingProjectile = false
+                displayedFps = 0.0
+                overlayFrames = 0
+                val resetTime = System.nanoTime()
+                overlayWindowStart = resetTime
+                frames = 0
+                reportStart = resetTime
+                reportAt = resetTime + 2_000_000_000L
+                smoothedGpuMillis = config.targetGpuMillis
                 resetRequested = false
+            }
+            pendingProjectile?.let { projectile ->
+                val spawned = simulation.spawnProjectile(
+                    firstBody = active,
+                    centerX = projectile.originX,
+                    centerY = projectile.originY,
+                    velocityX = projectile.velocityX,
+                    velocityY = projectile.velocityY,
+                )
+                if (spawned > 0) {
+                    active += spawned
+                    System.err.printf(
+                        Locale.ROOT,
+                        "projectile=%,d bodies  total=%,d  velocity=(%.1f, %.1f) px/s%n",
+                        spawned,
+                        active,
+                        projectile.velocityX,
+                        projectile.velocityY,
+                    )
+                } else {
+                    System.err.println("Projectile skipped: particle capacity is full")
+                }
+                pendingProjectile = null
             }
             timer!!.begin()
             simulation.step(active)
@@ -168,11 +219,46 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         val mode = checkNotNull(glfwGetVideoMode(monitor)) { "No video mode" }
         viewportWidth = mode.width()
         viewportHeight = mode.height()
+        cursorX = viewportWidth * 0.5
+        cursorY = viewportHeight * 0.5
         window = glfwCreateWindow(mode.width(), mode.height(), "Gravity", monitor, 0L)
         check(window != 0L) { "Fullscreen OpenGL window creation failed" }
         glfwSetKeyCallback(window) { target, key, _, action, _ ->
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(target, true)
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
+        }
+        glfwSetCursorPosCallback(window) { _, x, y ->
+            cursorX = x
+            cursorY = y
+        }
+        glfwSetMouseButtonCallback(window) { _, button, action, _ ->
+            if (button != GLFW_MOUSE_BUTTON_LEFT) return@glfwSetMouseButtonCallback
+            val physicsX = cursorX.toFloat()
+            val physicsY = viewportHeight - cursorY.toFloat()
+            when (action) {
+                GLFW_PRESS -> {
+                    dragOriginX = physicsX
+                    dragOriginY = physicsY
+                    draggingProjectile = true
+                }
+                org.lwjgl.glfw.GLFW.GLFW_RELEASE -> {
+                    if (draggingProjectile) {
+                        val deltaX = physicsX - dragOriginX
+                        val deltaY = physicsY - dragOriginY
+                        if (hypot(deltaX, deltaY) >= 2f) {
+                            pendingProjectile = ProjectileGesture(
+                                originX = dragOriginX,
+                                originY = dragOriginY,
+                                velocityX = deltaX *
+                                    CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
+                                velocityY = deltaY *
+                                    CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
+                            )
+                        }
+                    }
+                    draggingProjectile = false
+                }
+            }
         }
         glfwMakeContextCurrent(window)
         glfwSwapInterval(0)
@@ -200,7 +286,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 "collisions=${config.collisionIterations}, " +
                 "diameter=${config.contactDiameterPixels}px, " +
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
-                "foreground=$foreground; Esc exits"
+                "foreground=$foreground; LMB drag fires a 100px projectile; Esc exits"
         )
     }
 
