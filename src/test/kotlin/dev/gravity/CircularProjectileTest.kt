@@ -6,13 +6,13 @@ import kotlin.test.assertTrue
 
 class CircularProjectileTest {
     @Test
-    fun `projectile is a dense one hundred pixel disk`() {
+    fun `projectile is a dense fifty pixel disk`() {
         val diameter = 1.12838f
         val offsets = CircularProjectile.offsets(diameter)
         val maximumCenterRadius = 0.5 * CircularProjectile.DIAMETER_PIXELS -
             0.5 * diameter
 
-        assertTrue(offsets.size in 6_500..7_500)
+        assertTrue(offsets.size in 1_500..1_900)
         assertTrue(offsets.all {
             hypot(it.x.toDouble(), it.y.toDouble()) <= maximumCenterRadius + 1e-4
         })

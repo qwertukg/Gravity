@@ -5,7 +5,7 @@ import kotlin.math.sqrt
 data class PixelOffset(val x: Float, val y: Float)
 
 object CircularProjectile {
-    const val DIAMETER_PIXELS = 100f
+    const val DIAMETER_PIXELS = 50f
     const val VELOCITY_PER_DRAG_PIXEL = 4f
 
     fun offsets(contactDiameterPixels: Float): List<PixelOffset> {

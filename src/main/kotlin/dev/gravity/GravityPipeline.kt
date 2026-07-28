@@ -100,6 +100,9 @@ class GravityPipeline(
     private val twiddles = buffer(
         (gridWidth + gridHeight - 2).toLong() * 4 * Float.SIZE_BYTES,
     )
+    private val trajectory = buffer(
+        TRAJECTORY_POINTS.toLong() * 4 * Float.SIZE_BYTES,
+    )
 
     private val clear = GlProgram.compute("/shaders/clear_grid.comp")
     private val build = GlProgram.compute("/shaders/build_grid.comp")
@@ -114,6 +117,7 @@ class GravityPipeline(
     private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
     private val collisionCount = GlProgram.compute("/shaders/collision_count.comp")
     private val collisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
+    private val trajectoryCompute = GlProgram.compute("/shaders/trajectory.comp")
     private val normalizationMass = config.initialBodies.toFloat()
 
     init {
@@ -154,6 +158,58 @@ class GravityPipeline(
     fun bindBodiesForRender() {
         bind(0, bodies)
         bind(1, pressures)
+    }
+
+    fun updateTrajectory(
+        activeBodies: Int,
+        originX: Float,
+        originY: Float,
+        velocityX: Float,
+        velocityY: Float,
+    ) {
+        val projectileRadius = 0.5f * CircularProjectile.DIAMETER_PIXELS
+        val safeOriginX = originX.coerceIn(
+            projectileRadius,
+            viewportWidthFloat - projectileRadius,
+        )
+        val safeOriginY = originY.coerceIn(
+            projectileRadius,
+            viewportHeightFloat - projectileRadius,
+        )
+        val totalMass = activeBodies.toFloat()
+
+        trajectoryCompute.use()
+        bind(0, trajectory)
+        bind(1, forceX)
+        bind(2, forceY)
+        bind(3, cellHeads)
+        bind(4, nextBody)
+        bind(5, cellCounts)
+        bind(6, cellMass)
+        bind(7, bodies)
+        trajectoryCompute.int("uPointCount", TRAJECTORY_POINTS)
+        trajectoryCompute.int("uMeshWidth", gridWidth)
+        trajectoryCompute.int("uPhysicalWidth", physicalGridWidth)
+        trajectoryCompute.int("uPhysicalHeight", physicalGridHeight)
+        trajectoryCompute.int("uNeighborRadiusX", neighborRadiusX)
+        trajectoryCompute.int("uNeighborRadiusY", neighborRadiusY)
+        trajectoryCompute.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
+        trajectoryCompute.vec2("uOriginPixels", safeOriginX, safeOriginY)
+        trajectoryCompute.vec2("uVelocityPixels", velocityX, velocityY)
+        trajectoryCompute.float("uMinimumDt", config.timeStep)
+        trajectoryCompute.float("uMaximumDt", 1f)
+        trajectoryCompute.float("uTargetSegmentPixels", 6f)
+        trajectoryCompute.float("uGravity", config.gravitationalConstant)
+        trajectoryCompute.float("uSigmaCells", config.softeningCells)
+        trajectoryCompute.float("uDomainAspect", domainAspect)
+        trajectoryCompute.float("uInitialTotalMass", normalizationMass)
+        trajectoryCompute.float("uInverseMassScale", 1f / massScaleFor(totalMass))
+        dispatch(1)
+        barrier()
+    }
+
+    fun bindTrajectoryForRender() {
+        bind(0, trajectory)
     }
 
     fun spawnProjectile(
@@ -617,6 +673,7 @@ class GravityPipeline(
             collisionBuild,
             collisionCount,
             collisionSolve,
+            trajectoryCompute,
         )
             .forEach(GlProgram::close)
         intArrayOf(
@@ -639,7 +696,12 @@ class GravityPipeline(
             kernelX,
             kernelY,
             twiddles,
+            trajectory,
         )
             .forEach(::glDeleteBuffers)
+    }
+
+    companion object {
+        const val TRAJECTORY_POINTS = 1024
     }
 }

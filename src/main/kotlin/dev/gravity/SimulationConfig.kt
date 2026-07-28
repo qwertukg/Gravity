@@ -4,7 +4,7 @@ import kotlin.math.min
 
 data class SimulationConfig(
     val capacity: Int = 400_000,
-    val initialBodies: Int = 100_000,
+    val initialBodies: Int = 50_000,
     val gridWidth: Int = 512,
     val gridHeight: Int = 256,
     val gravitationalConstant: Float = 0.035f,

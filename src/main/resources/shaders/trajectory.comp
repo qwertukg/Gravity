@@ -1,0 +1,196 @@
+#version 430 core
+
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer Trajectory { vec4 trajectory[]; };
+layout(std430, binding = 1) readonly buffer ForceX { vec2 forceX[]; };
+layout(std430, binding = 2) readonly buffer ForceY { vec2 forceY[]; };
+layout(std430, binding = 3) readonly buffer Heads { int heads[]; };
+layout(std430, binding = 4) readonly buffer NextBody { int nextBody[]; };
+layout(std430, binding = 5) readonly buffer CellCounts { int cellCounts[]; };
+layout(std430, binding = 6) readonly buffer CellMass { uint cellMass[]; };
+layout(std430, binding = 7) readonly buffer Bodies { vec4 bodies[]; };
+
+uniform int uPointCount;
+uniform int uMeshWidth;
+uniform int uPhysicalWidth;
+uniform int uPhysicalHeight;
+uniform int uNeighborRadiusX;
+uniform int uNeighborRadiusY;
+uniform vec2 uViewport;
+uniform vec2 uOriginPixels;
+uniform vec2 uVelocityPixels;
+uniform float uMinimumDt;
+uniform float uMaximumDt;
+uniform float uTargetSegmentPixels;
+uniform float uGravity;
+uniform float uSigmaCells;
+uniform float uDomainAspect;
+uniform float uInitialTotalMass;
+uniform float uInverseMassScale;
+
+const int EXACT_CELL_THRESHOLD = 2;
+const int MAX_HOME_INTERACTIONS = 8;
+
+bool insideGrid(ivec2 cell) {
+    return cell.x >= 0 && cell.y >= 0 &&
+        cell.x < uPhysicalWidth && cell.y < uPhysicalHeight;
+}
+
+int cellIndex(ivec2 cell) {
+    return cell.x + cell.y * uPhysicalWidth;
+}
+
+int forceIndex(ivec2 physicalCell) {
+    ivec2 offset = ivec2(uPhysicalWidth / 2, uPhysicalHeight / 2);
+    ivec2 meshCell = physicalCell + offset;
+    return meshCell.x + meshCell.y * uMeshWidth;
+}
+
+vec2 localAcceleration(
+    vec2 sourcePosition,
+    vec2 targetPosition,
+    float sourceMass
+) {
+    vec2 deltaNormalized = sourcePosition - targetPosition;
+    vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
+    float rSquared = dot(deltaPhysical, deltaPhysical);
+    float sigma = uSigmaCells / float(uPhysicalHeight);
+    float localWeight = exp(-rSquared / (2.0 * sigma * sigma));
+    float cellWidth = uDomainAspect / float(uPhysicalWidth);
+    float cellHeight = 1.0 / float(uPhysicalHeight);
+    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
+    float physicalScale = uGravity * sourceMass * localWeight /
+        (uInitialTotalMass * max(rSquared, minimumDistance * minimumDistance));
+    return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
+}
+
+vec2 interpolateForce(vec2 position) {
+    vec2 gridPosition = position * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
+    ivec2 base = ivec2(floor(gridPosition));
+    vec2 f = fract(gridPosition);
+    vec2 v00 = vec2(
+        forceX[forceIndex(base)].x,
+        forceY[forceIndex(base)].x
+    );
+    vec2 v10 = vec2(
+        forceX[forceIndex(base + ivec2(1, 0))].x,
+        forceY[forceIndex(base + ivec2(1, 0))].x
+    );
+    vec2 v01 = vec2(
+        forceX[forceIndex(base + ivec2(0, 1))].x,
+        forceY[forceIndex(base + ivec2(0, 1))].x
+    );
+    vec2 v11 = vec2(
+        forceX[forceIndex(base + ivec2(1, 1))].x,
+        forceY[forceIndex(base + ivec2(1, 1))].x
+    );
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+}
+
+vec2 accelerationAt(vec2 position) {
+    vec2 result = interpolateForce(position);
+    ivec2 home = ivec2(floor(
+        position * vec2(uPhysicalWidth, uPhysicalHeight)
+    ));
+    for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
+        for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
+            ivec2 neighborCell = home + ivec2(dx, dy);
+            if (!insideGrid(neighborCell)) continue;
+            int index = cellIndex(neighborCell);
+            int count = cellCounts[index];
+            bool homeCell = dx == 0 && dy == 0;
+            if (!homeCell && count > EXACT_CELL_THRESHOLD) {
+                vec2 center = (vec2(neighborCell) + 0.5) /
+                    vec2(uPhysicalWidth, uPhysicalHeight);
+                float aggregateMass =
+                    float(cellMass[index]) * uInverseMassScale;
+                result += localAcceleration(
+                    center,
+                    position,
+                    aggregateMass
+                );
+            } else {
+                int other = heads[index];
+                int visited = 0;
+                int limit =
+                    homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
+                while (other >= 0 && visited < limit) {
+                    result += localAcceleration(
+                        bodies[other].xy,
+                        position,
+                        1.0
+                    );
+                    other = nextBody[other];
+                    visited++;
+                }
+            }
+        }
+    }
+    return result;
+}
+
+float integrationDt(vec2 velocity, vec2 acceleration) {
+    float speedPixels = length(velocity * uViewport);
+    float accelerationPixels = length(acceleration * uViewport);
+    float result;
+    if (accelerationPixels > 1e-5) {
+        result = (
+            sqrt(
+                speedPixels * speedPixels +
+                2.0 * accelerationPixels * uTargetSegmentPixels
+            ) - speedPixels
+        ) / accelerationPixels;
+    } else {
+        result = uTargetSegmentPixels / max(speedPixels, 1e-5);
+    }
+    return clamp(result, uMinimumDt, uMaximumDt);
+}
+
+vec2 screenIntersection(vec2 start, vec2 end, out bool hitBoundary) {
+    vec2 delta = end - start;
+    float fraction = 1.0;
+    if (end.x < 0.0) fraction = min(fraction, -start.x / delta.x);
+    if (end.x > 1.0) fraction = min(fraction, (1.0 - start.x) / delta.x);
+    if (end.y < 0.0) fraction = min(fraction, -start.y / delta.y);
+    if (end.y > 1.0) fraction = min(fraction, (1.0 - start.y) / delta.y);
+    hitBoundary = fraction < 1.0;
+    return mix(start, end, clamp(fraction, 0.0, 1.0));
+}
+
+void main() {
+    vec2 position = uOriginPixels / uViewport;
+    vec2 velocity = uVelocityPixels / uViewport;
+    vec2 acceleration = accelerationAt(position);
+    float pathDistancePixels = 0.0;
+    bool finished = false;
+
+    for (int point = 0; point < uPointCount; ++point) {
+        trajectory[point] = vec4(position, pathDistancePixels, 0.0);
+        if (finished) continue;
+
+        float dt = integrationDt(velocity, acceleration);
+        vec2 halfStepVelocity = velocity + acceleration * (0.5 * dt);
+        vec2 candidate = position + halfStepVelocity * dt;
+        bool hitBoundary;
+        vec2 nextPosition = screenIntersection(
+            position,
+            candidate,
+            hitBoundary
+        );
+        pathDistancePixels += length((nextPosition - position) * uViewport);
+        position = nextPosition;
+        if (hitBoundary) {
+            finished = true;
+            continue;
+        }
+
+        acceleration = accelerationAt(position);
+        velocity = halfStepVelocity + acceleration * (0.5 * dt);
+    }
+
+    float inversePathLength = 1.0 / max(pathDistancePixels, 1e-6);
+    for (int point = 0; point < uPointCount; ++point) {
+        trajectory[point].w =
+            clamp(trajectory[point].z * inversePathLength, 0.0, 1.0);
+    }
+}

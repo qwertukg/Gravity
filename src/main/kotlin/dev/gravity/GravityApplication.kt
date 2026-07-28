@@ -38,12 +38,18 @@ import org.lwjgl.glfw.GLFW.glfwWindowShouldClose
 import org.lwjgl.glfw.GLFWErrorCallback
 import org.lwjgl.opengl.GL
 import org.lwjgl.opengl.GL11.GL_COLOR_BUFFER_BIT
+import org.lwjgl.opengl.GL11.GL_BLEND
 import org.lwjgl.opengl.GL11.GL_FALSE
+import org.lwjgl.opengl.GL11.GL_LINE_STRIP
+import org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA
 import org.lwjgl.opengl.GL11.GL_POINTS
+import org.lwjgl.opengl.GL11.GL_SRC_ALPHA
+import org.lwjgl.opengl.GL11.glBlendFunc
 import org.lwjgl.opengl.GL11.glClear
 import org.lwjgl.opengl.GL11.glClearColor
 import org.lwjgl.opengl.GL11.glDisable
 import org.lwjgl.opengl.GL11.glDrawArrays
+import org.lwjgl.opengl.GL11.glEnable
 import org.lwjgl.opengl.GL11.glFinish
 import org.lwjgl.opengl.GL11.glPointSize
 import org.lwjgl.opengl.GL11.glViewport
@@ -66,6 +72,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var window = 0L
     private var pipeline: GravityPipeline? = null
     private var renderProgram: GlProgram? = null
+    private var trajectoryProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
     private var vao = 0
     private var timer: GpuTimer? = null
@@ -88,14 +95,18 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         )
         pipeline = simulation
         renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
+        trajectoryProgram = GlProgram.graphics(
+            "/shaders/trajectory.vert",
+            "/shaders/trajectory.frag",
+        )
         vao = glGenVertexArrays()
         fpsOverlay = FpsOverlay(viewportWidth, viewportHeight)
         timer = GpuTimer()
 
         var active = config.initialBodies
-        simulation.initializeAcceleration(active)
+        initializeSimulation(simulation, active)
         activateFullscreenWindow()
-        render(active, 0.0)
+        render(active, 0.0, trajectoryVisible = false)
         glfwSwapBuffers(window)
         glfwPollEvents()
         activateFullscreenWindow()
@@ -126,7 +137,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 )
                 pipeline = simulation
                 timer = GpuTimer()
-                simulation.initializeAcceleration(active)
+                initializeSimulation(simulation, active)
                 pendingProjectile = null
                 draggingProjectile = false
                 displayedFps = 0.0
@@ -164,6 +175,23 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             }
             timer!!.begin()
             simulation.step(active)
+            val trajectory = if (draggingProjectile) {
+                projectileGesture(
+                    targetX = cursorX.toFloat(),
+                    targetY = viewportHeight - cursorY.toFloat(),
+                )
+            } else {
+                null
+            }
+            trajectory?.let {
+                simulation.updateTrajectory(
+                    activeBodies = active,
+                    originX = it.originX,
+                    originY = it.originY,
+                    velocityX = it.velocityX,
+                    velocityY = it.velocityY,
+                )
+            }
             overlayFrames++
             val overlayNow = System.nanoTime()
             if (overlayNow - overlayWindowStart >= 250_000_000L) {
@@ -171,7 +199,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 overlayFrames = 0
                 overlayWindowStart = overlayNow
             }
-            render(active, displayedFps)
+            render(active, displayedFps, trajectoryVisible = trajectory != null)
             val gpuMillis = timer!!.end()
             if (!gpuMillis.isNaN()) {
                 smoothedGpuMillis += 0.08 * (gpuMillis - smoothedGpuMillis)
@@ -258,18 +286,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 }
                 org.lwjgl.glfw.GLFW.GLFW_RELEASE -> {
                     if (draggingProjectile) {
-                        val deltaX = physicsX - dragOriginX
-                        val deltaY = physicsY - dragOriginY
-                        if (hypot(deltaX, deltaY) >= 2f) {
-                            pendingProjectile = ProjectileGesture(
-                                originX = dragOriginX,
-                                originY = dragOriginY,
-                                velocityX = deltaX *
-                                    CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
-                                velocityY = deltaY *
-                                    CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
-                            )
-                        }
+                        pendingProjectile = projectileGesture(physicsX, physicsY)
                     }
                     draggingProjectile = false
                 }
@@ -301,7 +318,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 "collisions=${config.collisionIterations}, " +
                 "diameter=${config.contactDiameterPixels}px, " +
                 "squareTest=${config.squareTestPixels ?: "off"}, " +
-                "foreground=$foreground; LMB drag fires a 100px projectile; Esc exits"
+                "foreground=$foreground; LMB drag fires a " +
+                "${CircularProjectile.DIAMETER_PIXELS.toInt()}px projectile; Esc exits"
         )
     }
 
@@ -312,13 +330,50 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         return foreground && glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0
     }
 
-    private fun render(activeBodies: Int, fps: Double) {
+    private fun projectileGesture(targetX: Float, targetY: Float): ProjectileGesture? {
+        val deltaX = targetX - dragOriginX
+        val deltaY = targetY - dragOriginY
+        if (hypot(deltaX, deltaY) < 2f) return null
+        return ProjectileGesture(
+            originX = dragOriginX,
+            originY = dragOriginY,
+            velocityX = deltaX * CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
+            velocityY = deltaY * CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
+        )
+    }
+
+    private fun initializeSimulation(simulation: GravityPipeline, activeBodies: Int) {
+        simulation.initializeAcceleration(activeBodies)
+        // Warm and validate the preview path outside the first interactive
+        // drag so showing it never introduces a one-frame shader hitch.
+        simulation.updateTrajectory(
+            activeBodies = activeBodies,
+            originX = viewportWidth * 0.5f,
+            originY = viewportHeight * 0.5f,
+            velocityX = 0f,
+            velocityY = 0f,
+        )
+    }
+
+    private fun render(
+        activeBodies: Int,
+        fps: Double,
+        trajectoryVisible: Boolean,
+    ) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
         renderProgram!!.float("uMaximumPressure", config.maximumVisualPressure)
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)
+        if (trajectoryVisible) {
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            trajectoryProgram!!.use()
+            pipeline!!.bindTrajectoryForRender()
+            glDrawArrays(GL_LINE_STRIP, 0, GravityPipeline.TRAJECTORY_POINTS)
+            glDisable(GL_BLEND)
+        }
         fpsOverlay!!.render(fps)
     }
 
@@ -326,6 +381,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         timer?.close()
         if (vao != 0) glDeleteVertexArrays(vao)
         fpsOverlay?.close()
+        trajectoryProgram?.close()
         renderProgram?.close()
         pipeline?.close()
         if (window != 0L) {
