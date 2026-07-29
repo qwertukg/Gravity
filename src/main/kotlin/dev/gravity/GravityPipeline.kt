@@ -77,8 +77,11 @@ class GravityPipeline(
     private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
-    private val projectileOffsets = CircularProjectile.offsets(config.contactDiameterPixels)
+    private val projectileOffsets = HashMap<Float, List<PixelOffset>>()
     private val boundStorageBuffers = IntArray(8) { -1 }
+
+    fun projectileBodyCount(diameterPixels: Float): Int =
+        projectileOffsets(diameterPixels).size
 
     private var bodies = buffer(bodyBytes)
     private var collisionBodies = buffer(bodyBytes)
@@ -230,15 +233,17 @@ class GravityPipeline(
         centerY: Float,
         velocityX: Float,
         velocityY: Float,
+        diameterPixels: Float,
     ): Int {
+        val offsets = projectileOffsets(diameterPixels)
         if (firstBody !in 0..config.capacity ||
-            projectileOffsets.size > config.capacity - firstBody) {
+            offsets.size > config.capacity - firstBody) {
             return 0
         }
 
-        val upload = memAllocFloat(projectileOffsets.size * 4)
+        val upload = memAllocFloat(offsets.size * 4)
         try {
-            projectileOffsets.forEach { offset ->
+            offsets.forEach { offset ->
                 upload.put(
                     ToroidalSpace.wrapPixels(centerX + offset.x, viewportWidth) /
                         viewportWidth,
@@ -261,8 +266,13 @@ class GravityPipeline(
             memFree(upload)
         }
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
-        return projectileOffsets.size
+        return offsets.size
     }
+
+    private fun projectileOffsets(diameterPixels: Float): List<PixelOffset> =
+        projectileOffsets.getOrPut(diameterPixels) {
+            CircularProjectile.offsets(config.contactDiameterPixels, diameterPixels)
+        }
 
     /**
      * Slow, blocking GPU readback used only by finite diagnostic runs.

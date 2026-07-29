@@ -27,18 +27,23 @@ class FpsOverlay(
     private val viewportWidth: Int,
     private val viewportHeight: Int,
 ) : AutoCloseable {
-    private val maximumCharacters = 32
-    private val vertexData = BufferUtils.createByteBuffer(maximumCharacters * 4 * 16)
+    private val maximumCharacters = 256
+    private val maximumQuads = maximumCharacters * 16
+    private val vertexData = BufferUtils.createByteBuffer(maximumQuads * 4 * 16)
     private val program = GlProgram.graphics("/shaders/overlay.vert", "/shaders/overlay.frag")
     private val vao = glGenVertexArrays()
     private val vertexBuffer = glGenBuffers()
     private val indexBuffer = glGenBuffers()
     private var renderedFpsBits = Long.MIN_VALUE
+    private var renderedActiveBodies = -1
+    private var renderedProjectileBodies = -1
+    private var renderedTimeScaleBits = Long.MIN_VALUE
+    private var renderedFutureSpeedBits = Long.MIN_VALUE
     private var renderedQuads = 0
 
     init {
-        val indices = BufferUtils.createIntBuffer(maximumCharacters * 6)
-        repeat(maximumCharacters) { quad ->
+        val indices = BufferUtils.createIntBuffer(maximumQuads * 6)
+        repeat(maximumQuads) { quad ->
             val base = quad * 4
             indices.put(base).put(base + 1).put(base + 2)
             indices.put(base + 2).put(base + 3).put(base)
@@ -55,23 +60,62 @@ class FpsOverlay(
         glBindVertexArray(0)
     }
 
-    fun render(fps: Double) {
+    fun render(
+        fps: Double,
+        activeBodies: Int,
+        projectileBodies: Int,
+        timeScale: Double,
+        futureProjectileSpeed: Double?,
+    ) {
         val fpsBits = fps.toRawBits()
-        if (fpsBits != renderedFpsBits) {
+        val timeScaleBits = timeScale.toRawBits()
+        val futureSpeedBits = futureProjectileSpeed?.toRawBits() ?: NO_SPEED_BITS
+        if (fpsBits != renderedFpsBits ||
+            activeBodies != renderedActiveBodies ||
+            projectileBodies != renderedProjectileBodies ||
+            timeScaleBits != renderedTimeScaleBits ||
+            futureSpeedBits != renderedFutureSpeedBits
+        ) {
+            val projectileSpeed = futureProjectileSpeed?.let {
+                String.format(Locale.ROOT, "%.1f px/s", it)
+            } ?: "-"
+            val text = String.format(
+                Locale.ROOT,
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s",
+                fps,
+                activeBodies,
+                projectileBodies,
+                timeScale * 100.0,
+                projectileSpeed,
+            )
             vertexData.clear()
-            val text = String.format(Locale.ROOT, "FPS %.1f", fps)
-            renderedQuads = stb_easy_font_print(
+            val informationQuads = stb_easy_font_print(
                 0f,
                 0f,
                 text,
                 null as ByteBuffer?,
                 vertexData,
             )
+            vertexData.position(informationQuads * BYTES_PER_QUAD)
+            val controlsQuads = stb_easy_font_print(
+                0f,
+                viewportHeight.toFloat() -
+                    2f * SCREEN_MARGIN_PIXELS -
+                    CONTROL_LINES * FONT_LINE_HEIGHT_PIXELS,
+                CONTROL_TEXT,
+                null as ByteBuffer?,
+                vertexData,
+            )
+            renderedQuads = informationQuads + controlsQuads
             vertexData.position(0)
-            vertexData.limit(renderedQuads * 4 * 16)
+            vertexData.limit(renderedQuads * BYTES_PER_QUAD)
             glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer)
             glBufferSubData(GL_ARRAY_BUFFER, 0, vertexData)
             renderedFpsBits = fpsBits
+            renderedActiveBodies = activeBodies
+            renderedProjectileBodies = projectileBodies
+            renderedTimeScaleBits = timeScaleBits
+            renderedFutureSpeedBits = futureSpeedBits
         }
 
         program.use()
@@ -85,5 +129,22 @@ class FpsOverlay(
         glDeleteBuffers(indexBuffer)
         glDeleteVertexArrays(vao)
         program.close()
+    }
+
+    private companion object {
+        const val BYTES_PER_QUAD = 4 * 16
+        const val SCREEN_MARGIN_PIXELS = 8f
+        const val FONT_LINE_HEIGHT_PIXELS = 12f
+        const val CONTROL_LINES = 8
+        const val CONTROL_TEXT =
+            "LMB drag: aim / fire\n" +
+                "1-9: bullet size 10-90 px\n" +
+                "0: bullet size 100 px\n" +
+                "Mouse wheel: time speed\n" +
+                "P: pause / resume\n" +
+                "S: stop all bodies\n" +
+                "R: reset\n" +
+                "Esc: exit"
+        const val NO_SPEED_BITS = Long.MIN_VALUE + 1
     }
 }

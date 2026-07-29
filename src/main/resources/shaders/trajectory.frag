@@ -9,5 +9,5 @@ void main() {
     if (pathProgress < 0.0) discard;
     if (int(floor(dashCoordinatePixels)) % 6 >= 3) discard;
     float opacity = 1.0 - clamp(pathProgress, 0.0, 1.0);
-    color = vec4(1.0, 0.85, 0.1, opacity);
+    color = vec4(0.0, 1.0, 0.0, opacity);
 }
