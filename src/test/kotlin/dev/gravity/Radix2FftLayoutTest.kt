@@ -15,19 +15,61 @@ import kotlin.test.assertTrue
  */
 class Radix2FftLayoutTest {
     @Test
-    fun `shader layout agrees with JTransforms`() {
-        val width = 32
-        val height = 16
-        val random = Random(73)
-        val expected = DoubleArray(width * height * 2)
-        repeat(width * height) { expected[it * 2] = random.nextDouble(-1.0, 1.0) }
-        val actual = expected.copyOf()
+    fun `shared-memory shader layout agrees with JTransforms forward and inverse`() {
+        for ((width, height) in listOf(
+            16 to 16,
+            32 to 16,
+            16 to 64,
+            128 to 128,
+            512 to 128,
+            128 to 512,
+            2048 to 128,
+        )) {
+            val random = Random(73 + width * 31 + height)
+            val input = DoubleArray(width * height * 2) {
+                random.nextDouble(-1.0, 1.0)
+            }
+            for (inverse in listOf(false, true)) {
+                val expected = input.copyOf()
+                val actual = input.copyOf()
+                val reference = DoubleFFT_2D(height.toLong(), width.toLong())
+                if (inverse) {
+                    reference.complexInverse(expected, false)
+                } else {
+                    reference.complexForward(expected)
+                }
+                fft2d(actual, width, height, inverse)
+                assertError(expected, actual, width, height, inverse)
+            }
+        }
+    }
 
-        DoubleFFT_2D(height.toLong(), width.toLong()).complexForward(expected)
-        fft2d(actual, width, height, inverse = false)
-
-        val maximumError = expected.indices.maxOf { abs(expected[it] - actual[it]) }
-        assertTrue(maximumError < 1e-9, "maximum complex-bin error was $maximumError")
+    @Test
+    fun `periodic convolution agrees with direct rectangular convolution`() {
+        val width = 16
+        val height = 8
+        val random = Random(991)
+        val left = DoubleArray(width * height * 2)
+        val right = DoubleArray(width * height * 2)
+        repeat(width * height) {
+            left[it * 2] = random.nextDouble(-1.0, 1.0)
+            right[it * 2] = random.nextDouble(-1.0, 1.0)
+        }
+        val expected = directCircularConvolution(left, right, width, height)
+        fft2d(left, width, height, inverse = false)
+        fft2d(right, width, height, inverse = false)
+        repeat(width * height) { index ->
+            val ar = left[index * 2]
+            val ai = left[index * 2 + 1]
+            val br = right[index * 2]
+            val bi = right[index * 2 + 1]
+            left[index * 2] = ar * br - ai * bi
+            left[index * 2 + 1] = ar * bi + ai * br
+        }
+        fft2d(left, width, height, inverse = true)
+        val scale = 1.0 / (width * height)
+        left.indices.forEach { left[it] *= scale }
+        assertError(expected, left, width, height, inverse = true)
     }
 
     private fun fft2d(values: DoubleArray, width: Int, height: Int, inverse: Boolean) {
@@ -97,5 +139,51 @@ class Radix2FftLayoutTest {
             }
         }
         return result
+    }
+
+    private fun directCircularConvolution(
+        left: DoubleArray,
+        right: DoubleArray,
+        width: Int,
+        height: Int,
+    ): DoubleArray {
+        val result = DoubleArray(left.size)
+        repeat(height) { y ->
+            repeat(width) { x ->
+                var sum = 0.0
+                repeat(height) { sourceY ->
+                    repeat(width) { sourceX ->
+                        val kernelX = Math.floorMod(x - sourceX, width)
+                        val kernelY = Math.floorMod(y - sourceY, height)
+                        sum += left[(sourceX + sourceY * width) * 2] *
+                            right[(kernelX + kernelY * width) * 2]
+                    }
+                }
+                result[(x + y * width) * 2] = sum
+            }
+        }
+        return result
+    }
+
+    private fun assertError(
+        expected: DoubleArray,
+        actual: DoubleArray,
+        width: Int,
+        height: Int,
+        inverse: Boolean,
+    ) {
+        val maximumAbsolute = expected.indices.maxOf { abs(expected[it] - actual[it]) }
+        // L-infinity relative error remains meaningful when an individual
+        // expected component is exactly (or numerically very close to) zero.
+        val referenceMagnitude = expected.maxOf(::abs).coerceAtLeast(1e-12)
+        val maximumRelative = maximumAbsolute / referenceMagnitude
+        assertTrue(
+            maximumAbsolute < 1e-9,
+            "$width x $height inverse=$inverse absolute error was $maximumAbsolute",
+        )
+        assertTrue(
+            maximumRelative < 1e-10,
+            "$width x $height inverse=$inverse relative error was $maximumRelative",
+        )
     }
 }

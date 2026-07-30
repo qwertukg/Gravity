@@ -43,6 +43,12 @@ data class ClusterStatistics(
     val maxSpeedPixelsPerSecond: Double,
 )
 
+data class FftValidationResult(
+    val maximumAbsoluteError: Double,
+    val maximumRelativeError: Double,
+    val rootMeanSquareError: Double,
+)
+
 class GravityPipeline(
     private val config: SimulationConfig,
     private val viewportWidth: Int,
@@ -62,8 +68,6 @@ class GravityPipeline(
     private val collisionGridHeight =
         ToroidalSpace.collisionGridCells(viewportHeight, config.contactDiameterPixels)
     private val collisionCells = collisionGridWidth * collisionGridHeight
-    private val logGridWidth = gridWidth.countTrailingZeroBits()
-    private val logGridHeight = gridHeight.countTrailingZeroBits()
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
     private val viewportWidthFloat = viewportWidth.toFloat()
     private val viewportHeightFloat = viewportHeight.toFloat()
@@ -98,7 +102,6 @@ class GravityPipeline(
         buffer(config.capacity.toLong() * Int.SIZE_BYTES)
     private val pressures = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
     private val fft = buffer(complexBytes)
-    private val scratch = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
     private val forceY = buffer(complexBytes)
     private val kernelX = buffer(complexBytes)
@@ -113,8 +116,7 @@ class GravityPipeline(
     private val clear = GlProgram.compute("/shaders/clear_grid.comp")
     private val build = GlProgram.compute("/shaders/build_grid.comp")
     private val fftInit = GlProgram.compute("/shaders/fft_init.comp")
-    private val permute = GlProgram.compute("/shaders/fft_permute.comp")
-    private val fftStage = GlProgram.compute("/shaders/fft_stage.comp")
+    private val sharedFft = GlProgram.compute("/shaders/fft_shared.comp")
     private val twiddleInit = GlProgram.compute("/shaders/twiddle_init.comp")
     private val kernelInit = GlProgram.compute("/shaders/kernel_init.comp")
     private val convolve = GlProgram.compute("/shaders/convolve.comp")
@@ -139,6 +141,54 @@ class GravityPipeline(
     fun initializeAcceleration(activeBodies: Int) {
         buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
+    }
+
+    /**
+     * Blocking readback used only by the explicit --fft-validate diagnostic.
+     * It compares the actual GPU density spectrum with a double-precision
+     * radix-2 reference. The reference layout is independently checked against
+     * JTransforms by Radix2FftLayoutTest.
+     */
+    fun validateFft(activeBodies: Int): FftValidationResult {
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, density)
+        val densityMap = glMapBuffer(
+            GL_SHADER_STORAGE_BUFFER,
+            GL_READ_ONLY,
+            cells.toLong() * Int.SIZE_BYTES,
+            null,
+        )?.asIntBuffer() ?: error("Unable to map density for FFT validation")
+        val expected = DoubleArray(cells * 2)
+        val inverseMassScale = 1.0 / massScaleFor(activeBodies.toFloat())
+        repeat(cells) { index ->
+            expected[index * 2] =
+                (densityMap[index].toLong() and 0xffff_ffffL) * inverseMassScale
+        }
+        check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))
+        cpuFft2d(expected, inverse = false)
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, fft)
+        val spectrumMap = glMapBuffer(
+            GL_SHADER_STORAGE_BUFFER,
+            GL_READ_ONLY,
+            complexBytes,
+            null,
+        )?.asFloatBuffer() ?: error("Unable to map spectrum for FFT validation")
+        var maximumAbsolute = 0.0
+        var maximumReference = 0.0
+        var squaredError = 0.0
+        repeat(expected.size) { index ->
+            val difference = kotlin.math.abs(expected[index] - spectrumMap[index])
+            maximumAbsolute = max(maximumAbsolute, difference)
+            maximumReference = max(maximumReference, kotlin.math.abs(expected[index]))
+            squaredError += difference * difference
+        }
+        check(glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))
+        return FftValidationResult(
+            maximumAbsoluteError = maximumAbsolute,
+            maximumRelativeError = maximumAbsolute / maximumReference.coerceAtLeast(1e-30),
+            rootMeanSquareError = sqrt(squaredError / expected.size),
+        )
     }
 
     fun step(activeBodies: Int) {
@@ -423,17 +473,12 @@ class GravityPipeline(
         bind(1, fft)
         fftInit.int("uGridWidth", gridWidth)
         fftInit.int("uGridHeight", gridHeight)
-        fftInit.int("uBits", logGridWidth)
         fftInit.float("uInverseMassScale", 1f / massScale)
         dispatch(cells)
         barrier()
         profiler?.end(GpuStage.GRAVITY_GRID)
         profiler?.begin(GpuStage.FORWARD_FFT)
-        var current = fftStages(fft, scratch, axis = 0, inverse = false)
-
-        current = permute(current, other(current, fft, scratch), axis = 1)
-        current = fftStages(current, other(current, fft, scratch), axis = 1, inverse = false)
-        if (current != fft) copy(current, fft, complexBytes)
+        transform(fft, inverse = false)
         profiler?.end(GpuStage.FORWARD_FFT)
 
         profiler?.begin(GpuStage.CONVOLUTION)
@@ -562,19 +607,11 @@ class GravityPipeline(
     }
 
     private fun inverse(base: Int) {
-        var current = permute(base, scratch, axis = 0)
-        current = fftStages(current, other(current, base, scratch), axis = 0, inverse = true)
-        current = permute(current, other(current, base, scratch), axis = 1)
-        current = fftStages(current, other(current, base, scratch), axis = 1, inverse = true)
-        if (current != base) copy(current, base, complexBytes)
+        transform(base, inverse = true)
     }
 
     private fun forward(base: Int) {
-        var current = permute(base, scratch, axis = 0)
-        current = fftStages(current, other(current, base, scratch), axis = 0, inverse = false)
-        current = permute(current, other(current, base, scratch), axis = 1)
-        current = fftStages(current, other(current, base, scratch), axis = 1, inverse = false)
-        if (current != base) copy(current, base, complexBytes)
+        transform(base, inverse = false)
     }
 
     private fun initializeKernel() {
@@ -612,40 +649,69 @@ class GravityPipeline(
         barrier()
     }
 
-    private fun fftStages(input: Int, output: Int, axis: Int, inverse: Boolean): Int {
-        var source = input
-        var destination = output
-        val stages = if (axis == 0) logGridWidth else logGridHeight
-        repeat(stages) { stage ->
-            fftStage.use()
-            bind(0, source)
-            bind(1, destination)
-            bind(2, twiddles)
-            fftStage.int("uGridWidth", gridWidth)
-            fftStage.int("uGridHeight", gridHeight)
-            fftStage.int("uStage", stage + 1)
-            fftStage.int("uAxis", axis)
-            fftStage.int("uInverse", if (inverse) 1 else 0)
-            dispatch(cells)
-            barrier()
-            val swap = source
-            source = destination
-            destination = swap
-        }
-        return source
+    private fun transform(base: Int, inverse: Boolean) {
+        sharedFft.use()
+        bind(0, base)
+        bind(1, twiddles)
+        sharedFft.int("uGridWidth", gridWidth)
+        sharedFft.int("uGridHeight", gridHeight)
+        sharedFft.int("uInverse", if (inverse) 1 else 0)
+        sharedFft.int("uAxis", 0)
+        glDispatchCompute(gridHeight, 1, 1)
+        barrier()
+        sharedFft.int("uAxis", 1)
+        glDispatchCompute(gridWidth, 1, 1)
+        barrier()
     }
 
-    private fun permute(input: Int, output: Int, axis: Int): Int {
-        permute.use()
-        bind(0, input)
-        bind(1, output)
-        permute.int("uGridWidth", gridWidth)
-        permute.int("uGridHeight", gridHeight)
-        permute.int("uBits", if (axis == 0) logGridWidth else logGridHeight)
-        permute.int("uAxis", axis)
-        dispatch(cells)
-        barrier()
-        return output
+    private fun cpuFft2d(values: DoubleArray, inverse: Boolean) {
+        for (axis in 0..1) {
+            val axisSize = if (axis == 0) gridWidth else gridHeight
+            val lines = if (axis == 0) gridHeight else gridWidth
+            val bits = axisSize.countTrailingZeroBits()
+            val real = DoubleArray(axisSize)
+            val imaginary = DoubleArray(axisSize)
+            repeat(lines) { line ->
+                repeat(axisSize) { coordinate ->
+                    val source = Integer.reverse(coordinate) ushr (32 - bits)
+                    val index = if (axis == 0) source + line * gridWidth
+                    else line + source * gridWidth
+                    real[coordinate] = values[index * 2]
+                    imaginary[coordinate] = values[index * 2 + 1]
+                }
+                var stageWidth = 2
+                while (stageWidth <= axisSize) {
+                    val half = stageWidth / 2
+                    val angleScale = (if (inverse) 2.0 else -2.0) * Math.PI / stageWidth
+                    var base = 0
+                    while (base < axisSize) {
+                        repeat(half) { within ->
+                            val lower = base + within
+                            val upper = lower + half
+                            val angle = angleScale * within
+                            val wr = kotlin.math.cos(angle)
+                            val wi = kotlin.math.sin(angle)
+                            val upperReal = real[upper] * wr - imaginary[upper] * wi
+                            val upperImaginary = real[upper] * wi + imaginary[upper] * wr
+                            val lowerReal = real[lower]
+                            val lowerImaginary = imaginary[lower]
+                            real[lower] = lowerReal + upperReal
+                            imaginary[lower] = lowerImaginary + upperImaginary
+                            real[upper] = lowerReal - upperReal
+                            imaginary[upper] = lowerImaginary - upperImaginary
+                        }
+                        base += stageWidth
+                    }
+                    stageWidth *= 2
+                }
+                repeat(axisSize) { coordinate ->
+                    val index = if (axis == 0) coordinate + line * gridWidth
+                    else line + coordinate * gridWidth
+                    values[index * 2] = real[coordinate]
+                    values[index * 2 + 1] = imaginary[coordinate]
+                }
+            }
+        }
     }
 
     private fun seedBodies() {
@@ -720,9 +786,6 @@ class GravityPipeline(
     private fun massScaleFor(totalMass: Float): Int =
         (4_000_000_000.0 / totalMass).toLong().coerceIn(1L, 65_536L).toInt()
 
-    private fun other(current: Int, first: Int, second: Int): Int =
-        if (current == first) second else first
-
     private fun copy(source: Int, destination: Int, bytes: Long) {
         glBindBuffer(GL_COPY_READ_BUFFER, source)
         glBindBuffer(GL_COPY_WRITE_BUFFER, destination)
@@ -735,8 +798,7 @@ class GravityPipeline(
             clear,
             build,
             fftInit,
-            permute,
-            fftStage,
+            sharedFft,
             twiddleInit,
             kernelInit,
             convolve,
@@ -763,7 +825,6 @@ class GravityPipeline(
             collisionContactCounts,
             pressures,
             fft,
-            scratch,
             forceX,
             forceY,
             kernelX,

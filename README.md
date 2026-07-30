@@ -198,6 +198,7 @@ Linux:
 | `--benchmark=calm\|projectile` | выключено | Воспроизводимый конечный benchmark; автоматически включает profiler |
 | `--warmup-frames=N` | `120` | Число кадров прогрева benchmark, `N ≥ 0` |
 | `--benchmark-frames=N` | `240` | Число измеряемых кадров benchmark, `N > 0` |
+| `--fft-validate=true\|false` | `false` | Блокирующая диагностическая сверка GPU FFT с double reference |
 
 Переменные окружения:
 

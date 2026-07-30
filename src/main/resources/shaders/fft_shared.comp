@@ -1,0 +1,79 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer ComplexValues { vec2 values[]; };
+layout(std430, binding = 1) readonly buffer Twiddles { vec4 twiddles[]; };
+
+uniform int uGridWidth;
+uniform int uGridHeight;
+uniform int uAxis;
+uniform int uInverse;
+
+const uint MAXIMUM_AXIS_SIZE = 2048u;
+const uint MAXIMUM_BUTTERFLIES_PER_INVOCATION = 4u;
+shared vec2 lineValues[MAXIMUM_AXIS_SIZE];
+
+vec2 multiplyComplex(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+uint globalIndex(uint line, uint coordinate, uint width) {
+    return uAxis == 0
+        ? coordinate + line * width
+        : line + coordinate * width;
+}
+
+void main() {
+    uint width = uint(uGridWidth);
+    uint axisSize = uAxis == 0 ? width : uint(uGridHeight);
+    uint line = gl_WorkGroupID.x;
+    uint local = gl_LocalInvocationID.x;
+    int bits = findMSB(int(axisSize));
+
+    for (uint coordinate = local; coordinate < axisSize;
+         coordinate += gl_WorkGroupSize.x) {
+        uint sourceCoordinate = bitfieldReverse(coordinate) >> (32 - bits);
+        lineValues[coordinate] =
+            values[globalIndex(line, sourceCoordinate, width)];
+    }
+    barrier();
+
+    uint twiddleBase = uAxis == 0 ? 0u : width - 1u;
+    for (uint stageWidth = 2u; stageWidth <= axisSize; stageWidth <<= 1u) {
+        uint halfWidth = stageWidth >> 1u;
+        uint lowerIndices[MAXIMUM_BUTTERFLIES_PER_INVOCATION];
+        vec2 lowerValues[MAXIMUM_BUTTERFLIES_PER_INVOCATION];
+        vec2 upperValues[MAXIMUM_BUTTERFLIES_PER_INVOCATION];
+        uint assigned = 0u;
+
+        for (uint butterfly = local; butterfly < axisSize / 2u;
+             butterfly += gl_WorkGroupSize.x) {
+            uint within = butterfly & (halfWidth - 1u);
+            uint lower = (butterfly / halfWidth) * stageWidth + within;
+            vec4 packedTwiddle =
+                twiddles[twiddleBase + halfWidth - 1u + within];
+            vec2 twiddle = uInverse != 0
+                ? packedTwiddle.zw
+                : packedTwiddle.xy;
+            lowerIndices[assigned] = lower;
+            lowerValues[assigned] = lineValues[lower];
+            upperValues[assigned] =
+                multiplyComplex(twiddle, lineValues[lower + halfWidth]);
+            assigned++;
+        }
+
+        barrier();
+        for (uint item = 0u; item < assigned; item++) {
+            uint lower = lowerIndices[item];
+            lineValues[lower] = lowerValues[item] + upperValues[item];
+            lineValues[lower + halfWidth] =
+                lowerValues[item] - upperValues[item];
+        }
+        barrier();
+    }
+
+    for (uint coordinate = local; coordinate < axisSize;
+         coordinate += gl_WorkGroupSize.x) {
+        values[globalIndex(line, coordinate, width)] = lineValues[coordinate];
+    }
+}

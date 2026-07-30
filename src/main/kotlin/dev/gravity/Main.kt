@@ -11,7 +11,7 @@ fun main(args: Array<String>) {
                 "[--diameter=F] [--pressure-max=F] [--frames=N] " +
                 "[--square-test=PIXELS] [--seed=N] [--profile=true|false] " +
                 "[--benchmark=calm|projectile] [--warmup-frames=N] " +
-                "[--benchmark-frames=N]"
+                "[--benchmark-frames=N] [--fft-validate=true|false]"
         )
         return
     }

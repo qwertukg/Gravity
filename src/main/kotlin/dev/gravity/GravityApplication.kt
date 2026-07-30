@@ -484,6 +484,16 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
 
     private fun initializeSimulation(simulation: GravityPipeline, activeBodies: Int) {
         simulation.initializeAcceleration(activeBodies)
+        if (config.validateFft) {
+            val validation = simulation.validateFft(activeBodies)
+            System.err.printf(
+                Locale.ROOT,
+                "FFT validation absolute-error=%.9g relative-error=%.9g rms-error=%.9g%n",
+                validation.maximumAbsoluteError,
+                validation.maximumRelativeError,
+                validation.rootMeanSquareError,
+            )
+        }
         // Warm and validate the preview path outside the first interactive
         // drag so showing it never introduces a one-frame shader hitch.
         simulation.updateTrajectory(

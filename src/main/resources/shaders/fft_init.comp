@@ -6,20 +6,12 @@ layout(std430, binding = 1) writeonly buffer OutputComplex { vec2 outputComplex[
 
 uniform int uGridWidth;
 uniform int uGridHeight;
-uniform int uBits;
 uniform float uInverseMassScale;
-
-uint reverseBits(uint value, int bits) {
-    return bitfieldReverse(value) >> (32 - bits);
-}
 
 void main() {
     uint id = gl_GlobalInvocationID.x;
     uint width = uint(uGridWidth);
     uint cells = width * uint(uGridHeight);
     if (id >= cells) return;
-    uint x = id % width;
-    uint y = id / width;
-    uint source = reverseBits(x, uBits) + y * width;
-    outputComplex[id] = vec2(float(density[source]) * uInverseMassScale, 0.0);
+    outputComplex[id] = vec2(float(density[id]) * uInverseMassScale, 0.0);
 }
