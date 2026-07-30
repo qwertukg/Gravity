@@ -225,6 +225,14 @@ Baseline всех стадий воспроизводится командой:
 .\scripts\run-performance-baseline.ps1
 ```
 
+Итоговая матрица с адаптивными collision-подшагами:
+
+```powershell
+.\scripts\run-performance-final.ps1
+```
+
+Результаты и сравнение качества: [`docs/performance.md`](docs/performance.md).
+
 Методика, оборудование и результаты зафиксированы в
 [`docs/performance-baseline.md`](docs/performance-baseline.md).
 
