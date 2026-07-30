@@ -4,15 +4,16 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Heads { uint heads[]; };
 layout(std430, binding = 2) readonly buffer CollisionNext { uint collisionNext[]; };
-layout(std430, binding = 3) writeonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 3) buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
 uniform vec2 uViewport;
 uniform float uDiameterPixels;
-
-const int MAX_PARTICLES_PER_CELL = 64;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -23,6 +24,11 @@ ivec2 wrapCell(ivec2 cell) {
 }
 
 void main() {
+    if (
+        uAdaptive != 0 &&
+        uSubstepIndex >= 0 &&
+        uint(uSubstepIndex) >= adaptiveState[2]
+    ) return;
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
 
@@ -31,27 +37,24 @@ void main() {
         bodies[id].xy * vec2(uGridWidth, uGridHeight)
     ));
     float diameterSquared = uDiameterPixels * uDiameterPixels;
-    uint contacts = 0u;
-
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
             ivec2 cell = wrapCell(home + ivec2(dx, dy));
 
             uint encoded = heads[cell.x + cell.y * uGridWidth];
-            int visited = 0;
-            while (encoded != 0u && visited < MAX_PARTICLES_PER_CELL) {
+            while (encoded != 0u) {
                 uint otherId = encoded - 1u;
-                if (otherId != id) {
+                if (otherId > id) {
                     vec2 delta =
                         positionPixels - bodies[otherId].xy * uViewport;
                     delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
-                    if (dot(delta, delta) < diameterSquared) contacts++;
+                    if (dot(delta, delta) < diameterSquared) {
+                        atomicAdd(contactCounts[id], 1u);
+                        atomicAdd(contactCounts[otherId], 1u);
+                    }
                 }
                 encoded = collisionNext[otherId];
-                visited++;
             }
         }
     }
-
-    contactCounts[id] = contacts;
 }

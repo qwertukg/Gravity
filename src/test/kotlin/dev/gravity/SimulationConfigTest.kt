@@ -3,6 +3,7 @@ package dev.gravity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class SimulationConfigTest {
     @Test
@@ -19,7 +20,8 @@ class SimulationConfigTest {
                 "--capacity=200000",
                 "--grid=1024x512",
                 "--square-test=200",
-                "--collisions=6",
+            "--collisions=6",
+            "--adaptive-collisions=true",
                 "--diameter=1.2",
                 "--pressure-max=80",
             ),
@@ -31,6 +33,7 @@ class SimulationConfigTest {
         assertEquals(512, config.gridHeight)
         assertEquals(200, config.squareTestPixels)
         assertEquals(6, config.collisionIterations)
+        assertTrue(config.adaptiveCollisions)
         assertEquals(1.2f, config.contactDiameterPixels)
         assertEquals(80f, config.maximumVisualPressure)
     }

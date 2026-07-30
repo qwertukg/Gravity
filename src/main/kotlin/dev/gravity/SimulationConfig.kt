@@ -22,6 +22,7 @@ data class SimulationConfig(
     val benchmarkWarmupFrames: Int = 120,
     val benchmarkFrames: Int = 240,
     val validateFft: Boolean = false,
+    val adaptiveCollisions: Boolean = false,
 ) {
     init {
         require(capacity > 0) { "capacity must be positive" }
@@ -156,6 +157,10 @@ data class SimulationConfig(
                 benchmarkFrames = values["benchmark-frames"]?.toIntOrNull()
                     ?: defaults.benchmarkFrames,
                 validateFft = booleanValue("fft-validate", defaults.validateFft),
+                adaptiveCollisions = booleanValue(
+                    "adaptive-collisions",
+                    defaults.adaptiveCollisions,
+                ),
             )
         }
     }

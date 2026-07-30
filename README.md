@@ -199,6 +199,7 @@ Linux:
 | `--warmup-frames=N` | `120` | Число кадров прогрева benchmark, `N ≥ 0` |
 | `--benchmark-frames=N` | `240` | Число измеряемых кадров benchmark, `N > 0` |
 | `--fft-validate=true\|false` | `false` | Блокирующая диагностическая сверка GPU FFT с double reference |
+| `--adaptive-collisions=true\|false` | `false` | GPU-адаптивное число collision-подшагов, максимум задаёт `--collisions` |
 
 Переменные окружения:
 

@@ -348,6 +348,11 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 )
                 val cluster = simulation.measureCluster(active)
                 reportCluster(cluster)
+                if (config.adaptiveCollisions) {
+                    reportAdaptiveCollisions(
+                        simulation.measureAdaptiveCollisions(),
+                    )
+                }
                 glfwSetWindowShouldClose(window, true)
             } else if (config.maxFrames != null && totalFrames >= config.maxFrames) {
                 profiler?.let {
@@ -359,6 +364,11 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 }
                 val cluster = simulation.measureCluster(active)
                 reportCluster(cluster)
+                if (config.adaptiveCollisions) {
+                    reportAdaptiveCollisions(
+                        simulation.measureAdaptiveCollisions(),
+                    )
+                }
                 glfwSetWindowShouldClose(window, true)
             }
         }
@@ -596,7 +606,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             Locale.ROOT,
             "cluster center=(%.1f, %.1f) covariance-area=%,.0f px^2 " +
                 "equivalent-diameter=%.1f px core90=%,.0f px^2 " +
-                "core99=%,.0f px^2 max-speed=%.1f px/s%n",
+                "core99=%,.0f px^2 max-speed=%.1f px/s " +
+                "avg-speed=%.1f px/s non-finite=%d%n",
             cluster.centerX,
             cluster.centerY,
             cluster.covarianceAreaPixels,
@@ -604,6 +615,23 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             cluster.core90AreaPixels,
             cluster.core99AreaPixels,
             cluster.maxSpeedPixelsPerSecond,
+            cluster.averageSpeedPixelsPerSecond,
+            cluster.nonFiniteBodies,
+        )
+    }
+
+    private fun reportAdaptiveCollisions(
+        statistics: AdaptiveCollisionStatistics,
+    ) {
+        System.err.printf(
+            Locale.ROOT,
+            "adaptive-collisions substeps=%d max-speed=%.1f px/s " +
+                "max-penetration=%.6f px max-contacts=%d dense-bodies=%d%n",
+            statistics.substeps,
+            statistics.maximumSpeedPixelsPerSecond,
+            statistics.maximumPenetrationPixels,
+            statistics.maximumContactCount,
+            statistics.denseContactBodies,
         )
     }
 

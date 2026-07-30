@@ -1,6 +1,7 @@
 package dev.gravity
 
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -55,6 +56,88 @@ class CpuCollisionReferenceTest {
         assertFalse(PairId(0, 4) in expected)
         assertGridMatchesReference(bodies, 1000, 1000, 1.12838)
         assertGridMatchesReference(listOf(Body(0.5, 0.5)), 1000, 1000, 1.12838)
+        assertGridMatchesReference(emptyList(), 1000, 1000, 1.12838)
+    }
+
+    @Test
+    fun `fast crossing wraps to the opposite torus edge without losing contact`() {
+        val width = 1000
+        val start = Body(0.9998, 0.5)
+        val displacementPixels = 2.0
+        val crossed = start.copy(
+            x = ToroidalSpace.wrapUnit(
+                start.x + displacementPixels / width,
+            ),
+        )
+        val neighbor = Body(0.0015, 0.5)
+        val bodies = listOf(crossed, neighbor)
+        assertTrue(touching(crossed, neighbor, width, 1000, 1.12838))
+        assertGridMatchesReference(bodies, width, 1000, 1.12838)
+    }
+
+    @Test
+    fun `dense square reference has finite symmetric Jacobi corrections`() {
+        val width = 800
+        val height = 600
+        val diameter = 1.12838
+        val spacing = diameter * 0.55
+        val bodies = buildList {
+            repeat(11) { y ->
+                repeat(11) { x ->
+                    add(
+                        Body(
+                            0.5 + (x - 5) * spacing / width,
+                            0.5 + (y - 5) * spacing / height,
+                        ),
+                    )
+                }
+            }
+        }
+        val pairs = bruteForce(bodies, width, height, diameter)
+        assertGridMatchesReference(bodies, width, height, diameter)
+
+        val counts = IntArray(bodies.size)
+        pairs.forEach {
+            counts[it.first]++
+            counts[it.second]++
+        }
+        val correctionX = DoubleArray(bodies.size)
+        val correctionY = DoubleArray(bodies.size)
+        var totalPenetration = 0.0
+        var maximumPenetration = 0.0
+        pairs.forEach { pair ->
+            val first = bodies[pair.first]
+            val second = bodies[pair.second]
+            var dx = (first.x - second.x) * width
+            var dy = (first.y - second.y) * height
+            dx -= floor(dx / width + 0.5) * width
+            dy -= floor(dy / height + 0.5) * height
+            val distance = hypot(dx, dy)
+            val penetration = diameter - distance
+            totalPenetration += penetration
+            maximumPenetration = maxOf(maximumPenetration, penetration)
+            val normal = if (distance > 1e-6) {
+                dx / distance to dy / distance
+            } else {
+                fallbackNormal(pair.first, pair.second)
+            }
+            val pairWeight =
+                1.0 / maxOf(counts[pair.first], counts[pair.second], 1)
+            val correction = 0.5 * penetration * pairWeight
+            correctionX[pair.first] += normal.first * correction
+            correctionY[pair.first] += normal.second * correction
+            correctionX[pair.second] -= normal.first * correction
+            correctionY[pair.second] -= normal.second * correction
+        }
+
+        assertTrue(pairs.isNotEmpty())
+        assertTrue(maximumPenetration in 0.0..diameter)
+        assertTrue(totalPenetration / pairs.size in 0.0..diameter)
+        assertEquals(pairs.size * 2, counts.sum())
+        assertEquals(0.0, correctionX.sum(), 1e-12)
+        assertEquals(0.0, correctionY.sum(), 1e-12)
+        assertTrue(correctionX.all(Double::isFinite))
+        assertTrue(correctionY.all(Double::isFinite))
     }
 
     private fun assertGridMatchesReference(

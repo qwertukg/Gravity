@@ -7,6 +7,7 @@ layout(std430, binding = 2) readonly buffer Heads { uint heads[]; };
 layout(std430, binding = 3) readonly buffer CollisionNext { uint collisionNext[]; };
 layout(std430, binding = 4) readonly buffer ContactCounts { uint contactCounts[]; };
 layout(std430, binding = 5) writeonly buffer Pressures { float pressures[]; };
+layout(std430, binding = 6) buffer AdaptiveState { uint adaptiveState[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -14,9 +15,10 @@ uniform int uGridHeight;
 uniform vec2 uViewport;
 uniform float uDiameterPixels;
 uniform float uSubstepDt;
+uniform float uTimeStep;
 uniform int uWritePressure;
-
-const int MAX_PARTICLES_PER_CELL = 64;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -38,6 +40,11 @@ vec2 fallbackNormal(uint first, uint second) {
 void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
+    if (
+        uAdaptive != 0 &&
+        uSubstepIndex >= 0 &&
+        uint(uSubstepIndex) >= adaptiveState[2]
+    ) return;
 
     vec4 body = inputBodies[id];
     vec2 positionPixels = body.xy * uViewport;
@@ -51,13 +58,21 @@ void main() {
     vec2 velocityCorrection = vec2(0.0);
     float pressure = 0.0;
     uint ownContacts = contactCounts[id];
+    float effectiveSubstepDt = uAdaptive != 0
+        ? uTimeStep / float(max(adaptiveState[2], 1u))
+        : uSubstepDt;
+    if (uWritePressure != 0) {
+        atomicMax(adaptiveState[3], ownContacts);
+        if (ownContacts >= 4u) {
+            atomicAdd(adaptiveState[4], 1u);
+        }
+    }
 
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
             ivec2 cell = wrapCell(home + ivec2(dx, dy));
             uint encoded = heads[cell.x + cell.y * uGridWidth];
-            int visited = 0;
-            while (encoded != 0u && visited < MAX_PARTICLES_PER_CELL) {
+            while (encoded != 0u) {
                 uint otherId = encoded - 1u;
                 if (otherId != id) {
                     vec4 other = inputBodies[otherId];
@@ -92,8 +107,12 @@ void main() {
                                 (0.5 * relativeNormalSpeed * pairWeight);
                         }
                         if (uWritePressure != 0) {
+                            atomicMax(
+                                adaptiveState[1],
+                                floatBitsToUint(penetration)
+                            );
                             pressure += 0.5 * pairWeight * (
-                                penetration / uSubstepDt +
+                                penetration / effectiveSubstepDt +
                                 max(-relativeNormalSpeed, 0.0)
                             );
                         }
@@ -101,13 +120,12 @@ void main() {
                     }
                 }
                 encoded = collisionNext[otherId];
-                visited++;
             }
         }
     }
 
     positionPixels += positionCorrection;
-    velocityPixels += velocityCorrection + positionCorrection / uSubstepDt;
+    velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
     positionPixels = mod(positionPixels, uViewport);
 
     outputBodies[id] = vec4(positionPixels / uViewport, velocityPixels / uViewport);

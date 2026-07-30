@@ -3,10 +3,14 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer PreviousBodies { vec4 previousBodies[]; };
 layout(std430, binding = 1) buffer Heads { uint heads[]; };
+layout(std430, binding = 2) writeonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 3) readonly buffer AdaptiveState { uint adaptiveState[]; };
 
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -17,8 +21,14 @@ ivec2 wrapCell(ivec2 cell) {
 }
 
 void main() {
+    if (
+        uAdaptive != 0 &&
+        uSubstepIndex >= 0 &&
+        uint(uSubstepIndex) >= adaptiveState[2]
+    ) return;
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
+    contactCounts[id] = 0u;
 
     ivec2 cell = ivec2(floor(
         previousBodies[id].xy * vec2(uGridWidth, uGridHeight)
