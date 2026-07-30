@@ -1,163 +1,171 @@
 # Gravity
 
-Полноэкранный двумерный N-body-симулятор на Kotlin/JVM и OpenGL 4.3.
-Вычисление гравитации, столкновений, интегрирование и прогноз траектории
-выполняются compute-шейдерами на GPU.
+A fullscreen two-dimensional N-body simulator built with Kotlin/JVM and
+OpenGL 4.3. Gravity, collisions, integration, and trajectory prediction are
+computed by GPU compute shaders.
 
-## Техническая модель
+## Technical model
 
-| Параметр | Значение по умолчанию |
+| Parameter | Default value |
 |---|---:|
-| Начальное число тел | `50 000` |
-| Максимальная ёмкость | `400 000` |
-| FFT-сетка | `512 × 256` |
-| Физический шаг | `1/120` |
-| Контактных подшагов | `16` |
-| Контактный диаметр тела | `1.12838 px` |
-| Гравитационная постоянная | `0.035` |
-| Радиус Ewald-смягчения | `0.85` ячейки |
-| Верхняя граница визуального давления | `64 px/s` |
-| Диаметр пули | `50 px` |
+| Initial body count | `50,000` |
+| Maximum capacity | `400,000` |
+| FFT grid | `512 × 256` |
+| Physics time step | `1/120` |
+| Collision substeps | `16` |
+| Body contact diameter | `1.12838 px` |
+| Gravitational constant | `0.035` |
+| Ewald softening radius | `0.85` cells |
+| Visual pressure upper bound | `64 px/s` |
+| Projectile diameter | `50 px` |
 
-- Область симуляции совпадает с разрешением основного экрана.
-- Пространство является тором: левый край соединён с правым, верхний — с
-  нижним. Координаты переносятся периодически без отражения и изменения
-  скорости.
-- Положение и скорость каждого тела хранятся в SSBO как `vec4(x, y, vx, vy)`
-  в нормализованных координатах. Масса каждого тела равна единице.
-- Начальные позиции равномерно случайны по экрану, начальные скорости равны
-  нулю. Seed создаётся через `SecureRandom` и выводится в консоль.
-- Тела не сливаются и не удаляются. Новые тела добавляются только выстрелами,
-  пока не заполнен `--capacity`.
-- VSync и multisampling отключены. Каждое тело выводится одной точкой размером
-  `1 px` на чёрном фоне.
+- The simulation domain matches the primary display resolution.
+- Space is toroidal: the left edge connects to the right edge and the top
+  connects to the bottom. Coordinates wrap periodically without reflection or
+  velocity changes.
+- Each body's position and velocity are stored in an SSBO as
+  `vec4(x, y, vx, vy)` in normalized coordinates. Every body has unit mass.
+- Initial positions are uniformly random across the screen and initial
+  velocities are zero. The seed is generated with `SecureRandom` and printed
+  to the console.
+- Bodies are never merged or removed. New bodies are added only by firing
+  projectiles, until `--capacity` is reached.
+- VSync and multisampling are disabled. Every body is rendered as a single
+  `1 px` point on a black background.
 
-### Гравитация
+### Gravity
 
-Используется P3M-схема:
+The simulator uses a P3M scheme:
 
-1. Масса распределяется на периодическую сетку методом CIC.
-2. Выполняется radix-2 2D FFT плотности.
-3. В спектральном пространстве применяется периодическое ядро Грина,
-   построенное по кратчайшему образу на торе.
-4. Учитываются деконволюция двойного CIC-окна и гауссово Ewald-разделение.
-5. Два обратных FFT формируют компоненты дальнего поля.
-6. Поле интерполируется к телам методом CIC.
-7. Ближняя часть силы корректируется по связанным спискам сеточных ячеек.
+1. Mass is deposited onto a periodic grid with CIC.
+2. A radix-2 2D FFT transforms the density.
+3. A periodic Green's function based on the torus minimum image is applied in
+   frequency space.
+4. The solver applies double-CIC-window deconvolution and Gaussian Ewald
+   splitting.
+5. Two inverse FFTs produce the far-field components.
+6. The field is interpolated back to bodies with CIC.
+7. The short-range force is corrected through linked lists of grid cells.
 
-Радиус локального поиска равен трём значениям `--softening` и ограничен
-диапазоном от 1 до 6 ячеек по каждой оси. В соседней ячейке до двух тел
-обрабатываются точно, более плотная ячейка заменяется массовым монополем.
-В домашней ячейке проверяется не более восьми тел.
+The local search radius is three times `--softening`, clamped to 1–6 cells on
+each axis. Up to two bodies in a neighboring cell are evaluated exactly; a
+denser neighboring cell is represented by its mass monopole. No more than
+eight bodies are checked in the home cell.
 
-FFT-сетка целиком соответствует физической области и не использует
-zero-padding. Обе стороны сетки должны быть степенями двойки. Twiddle-факторы
-и спектральное ядро вычисляются один раз при создании или сбросе симуляции.
+The FFT grid covers the entire physical domain and does not use zero-padding.
+Both dimensions must be powers of two. Twiddle factors and the spectral kernel
+are computed once when the simulation is created or reset.
 
-### Интегрирование и столкновения
+### Integration and collisions
 
-- Интегратор — симплектический kick-drift-kick.
-- Один физический шаг делится на `--collisions` контактных подшагов.
-- Контакты ищутся в отдельном периодическом spatial hash. Размер ячейки не
-  меньше контактного диаметра; проверяется соседство `3 × 3`.
-- Один проход контактного шейдера обрабатывает до 64 тел из каждой ячейки.
-- Тела считаются гладкими кругами с коэффициентом восстановления `0`.
-- Jacobi-коррекция симметрично устраняет проникновение и встречную нормальную
-  скорость. Поправка положения преобразуется в скорость через `Δv = Δx/Δt`.
-- Давление записывается только финальным контактным проходом. Цвет тела
-  вычисляется по HSV от голубого через зелёный и жёлтый к красному; значения
-  выше `--pressure-max` ограничиваются красным.
+- Integration uses symplectic kick-drift-kick.
+- One physics step is divided into `--collisions` collision substeps.
+- Contacts are found in a separate periodic spatial hash. Cell size is at
+  least the contact diameter, and a `3 × 3` neighborhood is searched.
+- Collision-cell linked lists are traversed completely; there is no per-cell
+  body limit.
+- Bodies are modeled as smooth circles with a restitution coefficient of `0`.
+- A symmetric Jacobi correction removes penetration and approaching normal
+  velocity. Position correction is converted to velocity with
+  `Δv = Δx/Δt`.
+- Pressure is written only by the final collision pass. Body color follows an
+  HSV gradient from cyan through green and yellow to red; values above
+  `--pressure-max` are clamped to red.
+- Optional GPU-adaptive collision substeps use maximum displacement,
+  penetration, and contact-graph density. High-speed bodies and dense clusters
+  automatically retain the required number of passes.
 
-Основные массивы, FFT и spatial hash остаются в VRAM. Состояние частиц не
-копируется на CPU каждый кадр. Блокирующее чтение GPU используется только при
-завершении диагностического запуска с `--frames`.
+The primary arrays, FFT buffers, and spatial hashes remain in VRAM. Particle
+state is not copied to the CPU every frame. Blocking GPU readback is used only
+at the end of explicit diagnostic and benchmark runs.
 
-Средняя сложность физического шага:
-`O(N + M log M + N·k)`, где `N` — число тел, `M` — число узлов FFT-сетки,
-`k` — число локальных соседей.
+The average complexity of one physics step is
+`O(N + M log M + N·k)`, where `N` is the body count, `M` is the number of FFT
+grid nodes, and `k` is the local neighbor count.
 
-### Масштаб времени и пауза
+### Time scale and pause
 
-Физический `--dt` всегда постоянен. Масштаб времени задаёт частоту выполнения
-целых физических шагов:
+The physical `--dt` is always constant. Time scale controls how often complete
+physics steps are executed:
 
-- `100%` — один шаг на каждый отрисованный кадр;
-- `50%` — в среднем один шаг на два кадра;
-- `1%` — в среднем один шаг на сто кадров.
+- `100%` — one step per rendered frame;
+- `50%` — one step every two frames on average;
+- `1%` — one step every one hundred frames on average.
 
-Диапазон — `1–100%`, шаг колеса — `5%`. Изменение масштаба не масштабирует
-скорости, давление, гравитацию или контактные поправки. Пауза пропускает
-физические шаги и сохраняет состояние без изменений.
+The range is `1–100%`, and each mouse-wheel increment changes it by `5%`.
+Changing the time scale does not scale velocity, pressure, gravity, or
+collision corrections. Pausing skips physics steps and preserves the state
+unchanged.
 
-### Пули и прогноз траектории
+### Projectiles and trajectory prediction
 
-- Клавиши `1–9` выбирают диаметр `10–90 px`; клавиша `0` выбирает `100 px`.
-- Пуля формируется гексагонально упакованными телами с тем же контактным
-  диаметром, что и остальные тела. Наборы смещений кэшируются отдельно для
-  каждого выбранного размера.
-- Все тела пули получают скорость
-  `dragVector × 4 px/s` на каждый пиксель перемещения мыши.
-- При зажатой ЛКМ точка создания показывается зелёной окружностью фактического
-  диаметра пули. Окружность имеет пунктир примерно `3 px / 3 px` и
-  продолжается через границы тора.
-- Прогноз вычисляется на GPU по текущему гравитационному полю. Столкновения с
-  движущимися телами в прогноз не входят.
-- Используется до 1024 адаптивных шагов. Целевая длина сегмента — `6 px`,
-  шаг времени ограничен диапазоном от физического `dt` до `1 s`.
-- Полная длина линии равна диагонали экрана. Сегменты разделяются на швах тора,
-  фаза пунктира при переходе через шов сохраняется.
-- Минимальный штрих и промежуток равны `3 px / 3 px`; их длина непрерывно
-  увеличивается с будущей нормализованной скоростью.
-- Прозрачность меняется от 0% в начале до 100% в конце.
-- Геометрия пересчитывается по монотонному времени не чаще 30 раз в секунду и
-  отрисовывается каждый кадр из сохранённого GPU-буфера.
+- Keys `1–9` select a diameter of `10–90 px`; key `0` selects `100 px`.
+- A projectile is made of hexagonally packed bodies with the same contact
+  diameter as every other body. Offset sets are cached separately for each
+  selected size.
+- Every projectile body receives a velocity of
+  `dragVector × 4 px/s` per pixel of mouse movement.
+- While the left mouse button is held, the spawn point is shown as a green
+  circle with the projectile's actual diameter. Its dash pattern is
+  approximately `3 px / 3 px` and continues across torus boundaries.
+- Prediction is computed on the GPU from the current gravity field. Collisions
+  with moving bodies are not included in the prediction.
+- Up to 1,024 adaptive steps are used. The target segment length is `6 px`,
+  and prediction time steps are clamped from the physical `dt` through `1 s`.
+- The full line length equals the display diagonal. Segments split at torus
+  seams while preserving dash phase.
+- The minimum dash and gap are `3 px / 3 px`; their lengths increase
+  continuously with future normalized speed.
+- Opacity changes from 0% at the start to 100% at the end.
+- Geometry is recomputed from monotonic time at most 30 times per second and
+  rendered every frame from a retained GPU buffer.
 
-### Оверлей и консоль
+### Overlay and console
 
-В левом верхнем углу отображаются:
+The upper-left overlay shows:
 
-- FPS, обновляемый каждые 250 мс;
-- текущее число тел;
-- число тел в пуле выбранного размера;
-- масштаб времени в процентах;
-- будущая скорость пули при удержании ЛКМ.
+- FPS, updated every 250 ms;
+- current body count;
+- body count in a projectile of the selected size;
+- time scale as a percentage;
+- future projectile speed while the left mouse button is held.
 
-В левом нижнем углу отображается управление. Оба блока используют STB Easy
-Font и общий GPU-буфер. Раз в две секунды в консоль выводятся число тел, FPS,
-сглаженное GPU-время кадра и размер FFT-сетки.
+Controls are shown in the lower-left corner. Both blocks use STB Easy Font and
+a shared GPU buffer. Every two seconds the console reports body count, FPS,
+smoothed GPU frame time, and FFT grid size.
 
-## Управление
+## Controls
 
-| Ввод | Действие |
+| Input | Action |
 |---|---|
-| Зажать и протянуть ЛКМ | Выбрать направление и скорость пули, показать прогноз |
-| Отпустить ЛКМ | Создать пулю в точке первоначального нажатия |
-| `1`–`9` | Выбрать диаметр пули `10–90 px` |
-| `0` | Выбрать диаметр пули `100 px` |
-| Колесо вниз/вверх | Уменьшить/увеличить масштаб времени на 5% |
-| `P` | Пауза или продолжение без изменения состояния |
-| `S` | Обнулить скорости всех активных тел |
-| `R` | Создать новую GPU-сессию и случайное начальное состояние |
-| `Esc` | Завершить программу |
+| Hold and drag LMB | Select projectile direction and speed; show prediction |
+| Release LMB | Spawn a projectile at the initial press position |
+| `1`–`9` | Select a projectile diameter of `10–90 px` |
+| `0` | Select a projectile diameter of `100 px` |
+| Mouse wheel down/up | Decrease/increase time scale by 5% |
+| `P` | Pause or resume without changing state |
+| `S` | Set the velocity of every active body to zero |
+| `R` | Create a new GPU session and random initial state |
+| `Esc` | Exit |
 
-## Требования
+## Requirements
 
-- 64-битная Windows или Linux.
-- Установленный JDK 18: сборка явно использует `jvmToolchain(18)`.
-- GPU и драйвер с OpenGL 4.3 Core, compute shaders и SSBO.
-- Основной монитор, доступный через GLFW; приложение запускается на нём в
-  полноэкранном режиме с текущим разрешением.
-- Доступ в интернет при первом запуске Gradle Wrapper для загрузки Gradle и
-  Maven-зависимостей.
-- Достаточный объём VRAM для выбранных `--capacity` и `--grid`. Увеличение
-  каждого параметра увеличивает постоянное потребление VRAM.
+- 64-bit Windows or Linux.
+- JDK 18 installed; the build explicitly uses `jvmToolchain(18)`.
+- A GPU and driver supporting OpenGL 4.3 Core, compute shaders, and SSBOs.
+- A primary monitor accessible through GLFW. The application opens fullscreen
+  on that monitor at its current resolution.
+- Internet access on the first Gradle Wrapper run to download Gradle and Maven
+  dependencies.
+- Enough VRAM for the selected `--capacity` and `--grid`. Increasing either
+  parameter increases persistent VRAM usage.
 
-Gradle запускает приложение с `-Xms512m`, `-Xmx2g` и `-XX:+UseZGC`.
-На Windows JNA используется для перевода полноэкранного окна на передний план.
-Стандартный macOS OpenGL ограничен версией 4.1, поэтому требование OpenGL 4.3
-обычно исключает запуск на macOS.
+Gradle starts the application with `-Xms512m`, `-Xmx2g`, and `-XX:+UseZGC`.
+On Windows, JNA brings the fullscreen window to the foreground. Standard macOS
+OpenGL is limited to version 4.1, so the OpenGL 4.3 requirement normally
+precludes running on macOS.
 
-## Запуск
+## Running
 
 Windows:
 
@@ -171,39 +179,39 @@ Linux:
 ./gradlew run
 ```
 
-Запуск с параметрами:
+Run with options:
 
 ```powershell
 .\gradlew.bat run --args="--bodies=50000 --capacity=400000 --grid=512x256"
 ```
 
-Поддерживается только синтаксис `--key=value`.
+Only `--key=value` syntax is supported.
 
-| Параметр | По умолчанию | Ограничения и назначение |
+| Option | Default | Constraints and purpose |
 |---|---:|---|
-| `--bodies=N` | `50000` | Начальное число тел; ограничивается `capacity` |
-| `--capacity=N` | `400000` | Ёмкость GPU-буферов, `N > 0` |
-| `--grid=WxH` | `512x256` | FFT-сетка; стороны — степени двойки `128–2048` |
-| `--grid=N` | — | Квадратная FFT-сетка `N × N` |
-| `--gravity=F` | `0.035` | Гравитационная постоянная, `F ≥ 0` |
-| `--softening=F` | `0.85` | Ewald-смягчение в ячейках, `F > 0` |
-| `--dt=F` | `0.008333...` | Постоянный физический шаг, `F > 0` |
-| `--collisions=N` | `16` | Число контактных подшагов, `1–16` |
-| `--diameter=F` | `1.12838` | Контактный диаметр тела, `0.5–4 px` |
-| `--pressure-max=F` | `64` | Давление, соответствующее красному цвету, `F > 0` |
-| `--frames=N` | выключено | Завершить после `N > 0` кадров и вывести диагностику |
-| `--square-test=W` | выключено | Разместить тела по одному на пиксель в области шириной `W` |
-| `--seed=N` | случайный | Воспроизводимый signed 64-bit seed начального состояния |
-| `--profile=true\|false` | `false` | Детальный асинхронный GPU profiler стадий |
-| `--benchmark=calm\|projectile` | выключено | Воспроизводимый конечный benchmark; автоматически включает profiler |
-| `--warmup-frames=N` | `120` | Число кадров прогрева benchmark, `N ≥ 0` |
-| `--benchmark-frames=N` | `240` | Число измеряемых кадров benchmark, `N > 0` |
-| `--fft-validate=true\|false` | `false` | Блокирующая диагностическая сверка GPU FFT с double reference |
-| `--adaptive-collisions=true\|false` | `false` | GPU-адаптивное число collision-подшагов, максимум задаёт `--collisions` |
+| `--bodies=N` | `50000` | Initial body count; clamped to `capacity` |
+| `--capacity=N` | `400000` | GPU buffer capacity, `N > 0` |
+| `--grid=WxH` | `512x256` | FFT grid; dimensions are powers of two in `128–2048` |
+| `--grid=N` | — | Square `N × N` FFT grid |
+| `--gravity=F` | `0.035` | Gravitational constant, `F ≥ 0` |
+| `--softening=F` | `0.85` | Ewald softening in cells, `F > 0` |
+| `--dt=F` | `0.008333...` | Constant physics time step, `F > 0` |
+| `--collisions=N` | `16` | Maximum collision substeps, `1–16` |
+| `--diameter=F` | `1.12838` | Body contact diameter, `0.5–4 px` |
+| `--pressure-max=F` | `64` | Pressure mapped to red, `F > 0` |
+| `--frames=N` | disabled | Exit after `N > 0` frames and print diagnostics |
+| `--square-test=W` | disabled | Place one body per pixel in a region of width `W` |
+| `--seed=N` | random | Reproducible signed 64-bit initial-state seed |
+| `--profile=true\|false` | `false` | Detailed asynchronous per-stage GPU profiler |
+| `--benchmark=calm\|projectile` | disabled | Reproducible finite benchmark; enables the profiler |
+| `--warmup-frames=N` | `120` | Benchmark warm-up frames, `N ≥ 0` |
+| `--benchmark-frames=N` | `240` | Measured benchmark frames, `N > 0` |
+| `--fft-validate=true\|false` | `false` | Blocking diagnostic GPU FFT comparison with a double reference |
+| `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
 
-Переменные окружения:
+Environment variables:
 
-| Переменная | Эквивалентный параметр |
+| Variable | Equivalent option |
 |---|---|
 | `GRAVITY_BODIES` | `--bodies` |
 | `GRAVITY_CAPACITY` | `--capacity` |
@@ -215,77 +223,81 @@ Linux:
 | `GRAVITY_DIAMETER` | `--diameter` |
 | `GRAVITY_PRESSURE_MAX` | `--pressure-max` |
 
-Аргумент командной строки имеет приоритет над переменной окружения.
-Параметры `--frames`, `--square-test`, `--seed`, `--profile` и benchmark
-не имеют эквивалентов в окружении.
+A command-line argument takes precedence over its environment variable.
+`--frames`, `--square-test`, `--seed`, `--profile`, and benchmark options do
+not have environment equivalents.
 
-Baseline всех стадий воспроизводится командой:
+Reproduce the per-stage baseline with:
 
 ```powershell
 .\scripts\run-performance-baseline.ps1
 ```
 
-Итоговая матрица с адаптивными collision-подшагами:
+Run the final matrix with adaptive collision substeps:
 
 ```powershell
 .\scripts\run-performance-final.ps1
 ```
 
-Результаты и сравнение качества: [`docs/performance.md`](docs/performance.md).
+Results and quality comparison:
+[`docs/performance.md`](docs/performance.md).
 
-Методика, оборудование и результаты зафиксированы в
+The baseline methodology, hardware, and results are documented in
 [`docs/performance-baseline.md`](docs/performance-baseline.md).
 
-Диагностический пример для 400 000 тел:
+Diagnostic example for 400,000 bodies:
 
 ```powershell
 .\gradlew.bat run --args="--bodies=400000 --square-test=632 --frames=2400"
 ```
 
-`--square-test=W` создаёт область `W × ceil(bodies/W)` в центре экрана.
-Область должна помещаться в текущее разрешение. После последнего кадра
-выводятся центр кластера, площадь по ковариации, эквивалентный диаметр, оценки
-площади ядра для 90% и 99% тел и максимальная скорость.
+`--square-test=W` creates a `W × ceil(bodies/W)` region in the center of the
+screen. The region must fit within the current resolution. After the final
+frame, the application reports cluster center, covariance area, equivalent
+diameter, 90% and 99% core-area estimates, maximum and average speed, and the
+number of non-finite bodies.
 
-Сборка запускаемого дистрибутива:
+Build a runnable distribution:
 
 ```powershell
 .\gradlew.bat installDist
 .\build\install\gravity\bin\gravity.bat
 ```
 
-## Зависимости
+## Dependencies
 
-| Компонент | Версия | Назначение |
+| Component | Version | Purpose |
 |---|---:|---|
-| Kotlin JVM Gradle plugin | `2.4.10` | Компиляция Kotlin/JVM |
-| JVM toolchain | `18` | Целевая Java toolchain |
-| Gradle Wrapper | `9.6.1` | Сборка и управление зависимостями |
-| LWJGL BOM и Core | `3.4.1` | Java-доступ к нативным API |
-| LWJGL GLFW | `3.4.1` | Окно, fullscreen и ввод |
-| LWJGL OpenGL | `3.4.1` | OpenGL 4.3 и compute shaders |
-| LWJGL STB | `3.4.1` | STB Easy Font для оверлея |
-| LWJGL platform natives | `3.4.1` | Нативные библиотеки текущей ОС |
-| JNA Platform | `5.18.1` | Управление foreground-окном на Windows |
-| Kotlin Test | версия Kotlin | Модульные тесты |
-| JTransforms | `3.2` | Эталонный FFT только в тестах |
+| Kotlin JVM Gradle plugin | `2.4.10` | Kotlin/JVM compilation |
+| JVM toolchain | `18` | Target Java toolchain |
+| Gradle Wrapper | `9.6.1` | Build and dependency management |
+| LWJGL BOM and Core | `3.4.1` | Java access to native APIs |
+| LWJGL GLFW | `3.4.1` | Window, fullscreen mode, and input |
+| LWJGL OpenGL | `3.4.1` | OpenGL 4.3 and compute shaders |
+| LWJGL STB | `3.4.1` | STB Easy Font for the overlay |
+| LWJGL platform natives | `3.4.1` | Native libraries for the current OS |
+| JNA Platform | `5.18.1` | Foreground-window handling on Windows |
+| Kotlin Test | Kotlin version | Unit tests |
+| JTransforms | `3.2` | Reference FFT used only by tests |
 
-Runtime- и test-зависимости загружаются из Maven Central, Kotlin-плагин — через
-Gradle Plugin Portal, дистрибутив Gradle Wrapper — с `services.gradle.org`.
-Версия нативного пакета LWJGL выбирается автоматически:
-`natives-windows`, `natives-linux` или `natives-macos`.
+Runtime and test dependencies are downloaded from Maven Central, the Kotlin
+plugin comes from the Gradle Plugin Portal, and the Gradle Wrapper distribution
+comes from `services.gradle.org`. The LWJGL native package is selected
+automatically as `natives-windows`, `natives-linux`, or `natives-macos`.
 
-## Тесты
+## Tests
 
 ```powershell
 .\gradlew.bat test
 ```
 
-Тесты покрывают:
+Tests cover:
 
-- разбор параметров и ограничения конфигурации;
-- начальную случайную и пиксельную раскладку;
-- radix-2 FFT относительно JTransforms;
-- периодические координаты, collision grid и переход быстрых тел через швы;
-- планировщик масштаба времени и частоты обновления траектории;
-- размеры и упаковку пуль `10–100 px`.
+- configuration parsing and validation;
+- random and pixel-grid initialization;
+- radix-2 FFT output against JTransforms;
+- periodic coordinates, the collision grid, and fast bodies crossing seams;
+- time-scale scheduling and trajectory update frequency;
+- projectile dimensions and packing from `10–100 px`;
+- the O(N²) CPU collision reference, coincident bodies, dense cells, and
+  symmetric Jacobi corrections.
