@@ -64,4 +64,33 @@ class SimulationConfigTest {
         }
     }
 
+    @Test
+    fun `benchmark options enable deterministic profiling`() {
+        val config = SimulationConfig.parse(
+            arrayOf(
+                "--benchmark=projectile",
+                "--warmup-frames=40",
+                "--benchmark-frames=80",
+                "--seed=20260730",
+            ),
+            emptyMap(),
+        )
+
+        assertEquals(BenchmarkScenario.PROJECTILE, config.benchmarkScenario)
+        assertEquals(40, config.benchmarkWarmupFrames)
+        assertEquals(80, config.benchmarkFrames)
+        assertEquals(20_260_730L, config.seed)
+        assertEquals(true, config.profile)
+    }
+
+    @Test
+    fun `benchmark rejects incompatible finite diagnostic run`() {
+        assertFailsWith<IllegalArgumentException> {
+            SimulationConfig.parse(
+                arrayOf("--benchmark=calm", "--frames=10"),
+                emptyMap(),
+            )
+        }
+    }
+
 }

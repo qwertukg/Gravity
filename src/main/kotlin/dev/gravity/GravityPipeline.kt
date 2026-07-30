@@ -47,6 +47,7 @@ class GravityPipeline(
     private val config: SimulationConfig,
     private val viewportWidth: Int,
     private val viewportHeight: Int,
+    private val profiler: GpuProfiler? = null,
 ) : AutoCloseable {
     private val gridWidth = config.gridWidth
     private val gridHeight = config.gridHeight
@@ -141,6 +142,8 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
+        profiler?.begin(GpuStage.PHYSICS_STEP)
+        profiler?.begin(GpuStage.COLLISION_SUBSTEPS)
         repeat(config.collisionIterations) { substep ->
             resolveCollisions(
                 activeBodies = activeBodies,
@@ -149,6 +152,7 @@ class GravityPipeline(
                 writePressure = false,
             )
         }
+        profiler?.end(GpuStage.COLLISION_SUBSTEPS)
         buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
         // The final gravity kick can create new inward contact velocity in the
@@ -159,6 +163,7 @@ class GravityPipeline(
             driftDt = 0f,
             writePressure = true,
         )
+        profiler?.end(GpuStage.PHYSICS_STEP)
     }
 
     fun bindBodiesForRender() {
@@ -173,6 +178,7 @@ class GravityPipeline(
         velocityX: Float,
         velocityY: Float,
     ) {
+        profiler?.begin(GpuStage.TRAJECTORY)
         val wrappedOriginX = ToroidalSpace.wrapPixels(originX, viewportWidth)
         val wrappedOriginY = ToroidalSpace.wrapPixels(originY, viewportHeight)
         val totalMass = activeBodies.toFloat()
@@ -212,6 +218,7 @@ class GravityPipeline(
         trajectoryCompute.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         dispatch(1)
         barrier()
+        profiler?.end(GpuStage.TRAJECTORY)
     }
 
     fun bindTrajectoryForRender() {
@@ -385,6 +392,7 @@ class GravityPipeline(
     private fun buildForce(activeBodies: Int) {
         val totalMass = activeBodies.toFloat()
         val massScale = massScaleFor(totalMass)
+        profiler?.begin(GpuStage.GRAVITY_GRID)
         clear.use()
         bind(0, density)
         bind(1, cellHeads)
@@ -419,12 +427,16 @@ class GravityPipeline(
         fftInit.float("uInverseMassScale", 1f / massScale)
         dispatch(cells)
         barrier()
+        profiler?.end(GpuStage.GRAVITY_GRID)
+        profiler?.begin(GpuStage.FORWARD_FFT)
         var current = fftStages(fft, scratch, axis = 0, inverse = false)
 
         current = permute(current, other(current, fft, scratch), axis = 1)
         current = fftStages(current, other(current, fft, scratch), axis = 1, inverse = false)
         if (current != fft) copy(current, fft, complexBytes)
+        profiler?.end(GpuStage.FORWARD_FFT)
 
+        profiler?.begin(GpuStage.CONVOLUTION)
         convolve.use()
         bind(0, fft)
         bind(1, forceX)
@@ -435,9 +447,14 @@ class GravityPipeline(
         convolve.int("uGridHeight", gridHeight)
         dispatch(cells)
         barrier()
+        profiler?.end(GpuStage.CONVOLUTION)
 
+        profiler?.begin(GpuStage.INVERSE_FFT_X)
         inverse(forceX)
+        profiler?.end(GpuStage.INVERSE_FFT_X)
+        profiler?.begin(GpuStage.INVERSE_FFT_Y)
         inverse(forceY)
+        profiler?.end(GpuStage.INVERSE_FFT_Y)
     }
 
     private fun resolveCollisions(
@@ -449,6 +466,7 @@ class GravityPipeline(
         // collisionBodies is the input buffer used to build the current heads
         // list. Clearing only its occupied cells is exact and avoids scanning
         // millions of empty screen-sized cells on every substep.
+        profiler?.begin(GpuStage.COLLISION_CLEAR)
         collisionClear.use()
         bind(0, collisionBodies)
         bind(1, collisionHeads)
@@ -457,7 +475,9 @@ class GravityPipeline(
         collisionClear.int("uGridHeight", collisionGridHeight)
         dispatchBodies(activeBodies)
         barrier()
+        profiler?.end(GpuStage.COLLISION_CLEAR)
 
+        profiler?.begin(GpuStage.COLLISION_BUILD)
         collisionBuild.use()
         bind(0, bodies)
         bind(1, collisionHeads)
@@ -470,7 +490,9 @@ class GravityPipeline(
         collisionBuild.float("uDriftDt", driftDt)
         dispatchBodies(activeBodies)
         barrier()
+        profiler?.end(GpuStage.COLLISION_BUILD)
 
+        profiler?.begin(GpuStage.COLLISION_COUNT)
         collisionCount.use()
         bind(0, bodies)
         bind(1, collisionHeads)
@@ -483,7 +505,9 @@ class GravityPipeline(
         collisionCount.float("uDiameterPixels", config.contactDiameterPixels)
         dispatchBodies(activeBodies)
         barrier()
+        profiler?.end(GpuStage.COLLISION_COUNT)
 
+        profiler?.begin(GpuStage.COLLISION_SOLVE)
         collisionSolve.use()
         bind(0, bodies)
         bind(1, collisionBodies)
@@ -500,6 +524,7 @@ class GravityPipeline(
         collisionSolve.int("uWritePressure", if (writePressure) 1 else 0)
         dispatchBodies(activeBodies)
         barrier()
+        profiler?.end(GpuStage.COLLISION_SOLVE)
 
         val swap = bodies
         bodies = collisionBodies
@@ -507,6 +532,7 @@ class GravityPipeline(
     }
 
     private fun applyKick(activeBodies: Int, initial: Boolean) {
+        profiler?.begin(GpuStage.GRAVITY_KICK)
         val totalMass = activeBodies.toFloat()
         kick.use()
         bind(0, bodies)
@@ -532,6 +558,7 @@ class GravityPipeline(
         kick.float("uDomainAspect", domainAspect)
         dispatchBodies(activeBodies)
         barrier()
+        profiler?.end(GpuStage.GRAVITY_KICK)
     }
 
     private fun inverse(base: Int) {
@@ -628,6 +655,7 @@ class GravityPipeline(
         val initialState = UniformParticleInitializer.fillBodies(
             bodies = mappedBodies,
             count = config.capacity,
+            seed = config.seed ?: java.security.SecureRandom().nextLong(),
         )
         config.squareTestPixels?.let { side ->
             UniformParticleInitializer.placePixelSquare(

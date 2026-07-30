@@ -193,6 +193,11 @@ Linux:
 | `--pressure-max=F` | `64` | Давление, соответствующее красному цвету, `F > 0` |
 | `--frames=N` | выключено | Завершить после `N > 0` кадров и вывести диагностику |
 | `--square-test=W` | выключено | Разместить тела по одному на пиксель в области шириной `W` |
+| `--seed=N` | случайный | Воспроизводимый signed 64-bit seed начального состояния |
+| `--profile=true\|false` | `false` | Детальный асинхронный GPU profiler стадий |
+| `--benchmark=calm\|projectile` | выключено | Воспроизводимый конечный benchmark; автоматически включает profiler |
+| `--warmup-frames=N` | `120` | Число кадров прогрева benchmark, `N ≥ 0` |
+| `--benchmark-frames=N` | `240` | Число измеряемых кадров benchmark, `N > 0` |
 
 Переменные окружения:
 
@@ -209,7 +214,17 @@ Linux:
 | `GRAVITY_PRESSURE_MAX` | `--pressure-max` |
 
 Аргумент командной строки имеет приоритет над переменной окружения.
-`--frames` и `--square-test` не имеют эквивалентов в окружении.
+Параметры `--frames`, `--square-test`, `--seed`, `--profile` и benchmark
+не имеют эквивалентов в окружении.
+
+Baseline всех стадий воспроизводится командой:
+
+```powershell
+.\scripts\run-performance-baseline.ps1
+```
+
+Методика, оборудование и результаты зафиксированы в
+[`docs/performance-baseline.md`](docs/performance-baseline.md).
 
 Диагностический пример для 400 000 тел:
 

@@ -16,6 +16,11 @@ data class SimulationConfig(
     val targetGpuMillis: Double = 13.5,
     val maxFrames: Int? = null,
     val squareTestPixels: Int? = null,
+    val seed: Long? = null,
+    val profile: Boolean = false,
+    val benchmarkScenario: BenchmarkScenario? = null,
+    val benchmarkWarmupFrames: Int = 120,
+    val benchmarkFrames: Int = 240,
 ) {
     init {
         require(capacity > 0) { "capacity must be positive" }
@@ -39,6 +44,11 @@ data class SimulationConfig(
         require(maxFrames == null || maxFrames > 0)
         require(squareTestPixels == null || squareTestPixels > 0) {
             "square test size must be positive"
+        }
+        require(benchmarkWarmupFrames >= 0)
+        require(benchmarkFrames > 0)
+        require(maxFrames == null || benchmarkScenario == null) {
+            "--frames and --benchmark cannot be used together"
         }
     }
 
@@ -66,6 +76,15 @@ data class SimulationConfig(
                     ?: env[environmentKey]?.toFloatOrNull()
                     ?: default
 
+            fun booleanValue(key: String, default: Boolean): Boolean =
+                values[key]?.let {
+                    when (it.lowercase()) {
+                        "true", "1", "yes", "on" -> true
+                        "false", "0", "no", "off" -> false
+                        else -> throw IllegalArgumentException("Invalid boolean for --$key: $it")
+                    }
+                } ?: default
+
             val grid = values["grid"] ?: env["GRAVITY_GRID"]
             val (gridWidth, gridHeight) = when {
                 grid == null -> defaults.gridWidth to defaults.gridHeight
@@ -85,6 +104,7 @@ data class SimulationConfig(
             }
             val capacity = intValue("capacity", "GRAVITY_CAPACITY", defaults.capacity)
             val squareTestPixels = values["square-test"]?.toIntOrNull()
+            val benchmarkScenario = values["benchmark"]?.let { BenchmarkScenario.parse(it) }
             return SimulationConfig(
                 capacity = capacity,
                 initialBodies = min(
@@ -121,6 +141,34 @@ data class SimulationConfig(
                 ),
                 maxFrames = values["frames"]?.toIntOrNull(),
                 squareTestPixels = squareTestPixels,
+                seed = values["seed"]?.toLongOrNull()
+                    ?: if ("seed" in values) {
+                        throw IllegalArgumentException("Invalid seed: ${values["seed"]}")
+                    } else {
+                        null
+                    },
+                profile = booleanValue("profile", defaults.profile) ||
+                    benchmarkScenario != null,
+                benchmarkScenario = benchmarkScenario,
+                benchmarkWarmupFrames = values["warmup-frames"]?.toIntOrNull()
+                    ?: defaults.benchmarkWarmupFrames,
+                benchmarkFrames = values["benchmark-frames"]?.toIntOrNull()
+                    ?: defaults.benchmarkFrames,
+            )
+        }
+    }
+}
+
+enum class BenchmarkScenario {
+    CALM,
+    PROJECTILE;
+
+    companion object {
+        fun parse(value: String): BenchmarkScenario = when (value.lowercase()) {
+            "calm" -> CALM
+            "projectile" -> PROJECTILE
+            else -> throw IllegalArgumentException(
+                "Invalid benchmark scenario: $value (expected calm or projectile)"
             )
         }
     }
