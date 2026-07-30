@@ -61,7 +61,7 @@ void main() {
     float effectiveSubstepDt = uAdaptive != 0
         ? uTimeStep / float(max(adaptiveState[2], 1u))
         : uSubstepDt;
-    if (uWritePressure != 0) {
+    if (uWritePressure != 0 && uAdaptive != 0) {
         atomicMax(adaptiveState[3], ownContacts);
         if (ownContacts >= 4u) {
             atomicAdd(adaptiveState[4], 1u);
@@ -107,10 +107,12 @@ void main() {
                                 (0.5 * relativeNormalSpeed * pairWeight);
                         }
                         if (uWritePressure != 0) {
-                            atomicMax(
-                                adaptiveState[1],
-                                floatBitsToUint(penetration)
-                            );
+                            if (uAdaptive != 0) {
+                                atomicMax(
+                                    adaptiveState[1],
+                                    floatBitsToUint(penetration)
+                                );
+                            }
                             pressure += 0.5 * pairWeight * (
                                 penetration / effectiveSubstepDt +
                                 max(-relativeNormalSpeed, 0.0)
