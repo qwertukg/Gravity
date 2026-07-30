@@ -63,13 +63,13 @@ data class AdaptiveCollisionStatistics(
 )
 
 class GravityPipeline(
-    private val config: SimulationConfig,
+    private val config: GravityConfig,
     private val viewportWidth: Int,
     private val viewportHeight: Int,
     private val profiler: GpuProfiler? = null,
 ) : AutoCloseable {
-    private val gridWidth = config.gridWidth
-    private val gridHeight = config.gridHeight
+    private val gridWidth = config.gravity.gridWidth
+    private val gridHeight = config.gravity.gridHeight
     // A cyclic FFT is the natural convolution for a torus. The entire mesh is
     // physical; no zero-padding or central sub-domain is required.
     private val physicalGridWidth = gridWidth
@@ -77,23 +77,42 @@ class GravityPipeline(
     private val cells = gridWidth * gridHeight
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val collisionGridWidth =
-        ToroidalSpace.collisionGridCells(viewportWidth, config.contactDiameterPixels)
+        ToroidalSpace.collisionGridCells(
+            viewportWidth,
+            config.collisions.contactDiameterPixels,
+        )
     private val collisionGridHeight =
-        ToroidalSpace.collisionGridCells(viewportHeight, config.contactDiameterPixels)
+        ToroidalSpace.collisionGridCells(
+            viewportHeight,
+            config.collisions.contactDiameterPixels,
+        )
     private val collisionCells = collisionGridWidth * collisionGridHeight
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
     private val viewportWidthFloat = viewportWidth.toFloat()
     private val viewportHeightFloat = viewportHeight.toFloat()
-    private val collisionSubstep = config.timeStep / config.collisionIterations
+    private val collisionSubstep =
+        config.collisions.timeStep / config.collisions.maximumSubsteps
     private val neighborRadiusX =
         ceil(
-            3f * config.softeningCells * physicalGridWidth /
+            config.gravity.localSearchSigmaMultiplier *
+                config.gravity.softeningCells * physicalGridWidth /
                 (physicalGridHeight * domainAspect),
-        ).toInt().coerceIn(1, 6)
+        ).toInt().coerceIn(
+            config.gravity.minimumNeighborRadiusCells,
+            config.gravity.maximumNeighborRadiusCells,
+        )
     private val neighborRadiusY =
-        ceil(config.softeningCells * 3f).toInt().coerceIn(1, 6)
-    private val bodyBytes = config.capacity.toLong() * 4 * Float.SIZE_BYTES
-    private val accelerationBytes = config.capacity.toLong() * 2 * Float.SIZE_BYTES
+        ceil(
+            config.gravity.softeningCells *
+                config.gravity.localSearchSigmaMultiplier,
+        ).toInt().coerceIn(
+            config.gravity.minimumNeighborRadiusCells,
+            config.gravity.maximumNeighborRadiusCells,
+        )
+    private val bodyBytes =
+        config.particles.capacity.toLong() * 4 * Float.SIZE_BYTES
+    private val accelerationBytes =
+        config.particles.capacity.toLong() * 2 * Float.SIZE_BYTES
     private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
     private val projectileOffsets = HashMap<Float, List<PixelOffset>>()
     private val boundStorageBuffers = IntArray(8) { -1 }
@@ -108,15 +127,20 @@ class GravityPipeline(
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
-    private val nextBody = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val nextBody =
+        buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
-    private val collisionNext = buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+    private val collisionNext =
+        buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionContactCounts =
-        buffer(config.capacity.toLong() * Int.SIZE_BYTES)
+        buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionAdaptiveState = buffer(5L * Int.SIZE_BYTES)
     private val collisionDispatchCommands =
-        buffer(config.collisionIterations.toLong() * 3 * Int.SIZE_BYTES)
-    private val pressures = buffer(config.capacity.toLong() * Float.SIZE_BYTES)
+        buffer(
+            config.collisions.maximumSubsteps.toLong() * 3 * Int.SIZE_BYTES,
+        )
+    private val pressures =
+        buffer(config.particles.capacity.toLong() * Float.SIZE_BYTES)
     private val fft = buffer(complexBytes)
     private val forceX = buffer(complexBytes)
     private val forceY = buffer(complexBytes)
@@ -125,8 +149,10 @@ class GravityPipeline(
     private val twiddles = buffer(
         (gridWidth + gridHeight - 2).toLong() * 4 * Float.SIZE_BYTES,
     )
+    val trajectoryVertexCount =
+        config.trajectory.steps * TRAJECTORY_VERTICES_PER_STEP
     private val trajectory = buffer(
-        TRAJECTORY_VERTICES.toLong() * 4 * Float.SIZE_BYTES,
+        trajectoryVertexCount.toLong() * 4 * Float.SIZE_BYTES,
     )
 
     private val clear = GlProgram.compute("/shaders/clear_grid.comp")
@@ -149,7 +175,7 @@ class GravityPipeline(
         GlProgram.compute("/shaders/collision_adaptive_finalize.comp")
     private val stopBodiesProgram = GlProgram.compute("/shaders/stop_bodies.comp")
     private val trajectoryCompute = GlProgram.compute("/shaders/trajectory.comp")
-    private val normalizationMass = config.initialBodies.toFloat()
+    private val normalizationMass = config.particles.initialBodies.toFloat()
 
     init {
         seedBodies()
@@ -241,16 +267,16 @@ class GravityPipeline(
 
     fun step(activeBodies: Int) {
         profiler?.begin(GpuStage.PHYSICS_STEP)
-        if (config.adaptiveCollisions) {
+        if (config.collisions.adaptive) {
             profiler?.begin(GpuStage.COLLISION_ADAPTIVE)
             prepareAdaptiveCollisions(activeBodies)
             profiler?.end(GpuStage.COLLISION_ADAPTIVE)
         }
         profiler?.begin(GpuStage.COLLISION_SUBSTEPS)
-        repeat(config.collisionIterations) { substep ->
+        repeat(config.collisions.maximumSubsteps) { substep ->
             resolveCollisions(
                 activeBodies = activeBodies,
-                kickDt = if (substep == 0) config.timeStep else 0f,
+                kickDt = if (substep == 0) config.collisions.timeStep else 0f,
                 driftDt = collisionSubstep,
                 writePressure = false,
                 substepIndex = substep,
@@ -297,7 +323,7 @@ class GravityPipeline(
         bind(5, cellCounts)
         bind(6, cellMass)
         bind(7, bodies)
-        trajectoryCompute.int("uStepCount", TRAJECTORY_STEPS)
+        trajectoryCompute.int("uStepCount", config.trajectory.steps)
         trajectoryCompute.int("uMeshWidth", gridWidth)
         trajectoryCompute.int("uPhysicalWidth", physicalGridWidth)
         trajectoryCompute.int("uPhysicalHeight", physicalGridHeight)
@@ -306,18 +332,44 @@ class GravityPipeline(
         trajectoryCompute.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
         trajectoryCompute.vec2("uOriginPixels", wrappedOriginX, wrappedOriginY)
         trajectoryCompute.vec2("uVelocityPixels", velocityX, velocityY)
-        trajectoryCompute.float("uMinimumDt", config.timeStep)
-        trajectoryCompute.float("uMaximumDt", 1f)
-        trajectoryCompute.float("uTargetSegmentPixels", 6f)
+        trajectoryCompute.float("uMinimumDt", config.collisions.timeStep)
+        trajectoryCompute.float(
+            "uMaximumDt",
+            config.trajectory.maximumTimeStep,
+        )
+        trajectoryCompute.float(
+            "uTargetSegmentPixels",
+            config.trajectory.targetSegmentPixels,
+        )
         trajectoryCompute.float(
             "uMaximumPathPixels",
-            sqrt(
-                viewportWidthFloat * viewportWidthFloat +
-                    viewportHeightFloat * viewportHeightFloat,
-            ),
+            config.trajectory.maximumPathViewportDiagonals *
+                sqrt(
+                    viewportWidthFloat * viewportWidthFloat +
+                        viewportHeightFloat * viewportHeightFloat,
+                ),
         )
-        trajectoryCompute.float("uGravity", config.gravitationalConstant)
-        trajectoryCompute.float("uSigmaCells", config.softeningCells)
+        trajectoryCompute.float(
+            "uGravity",
+            config.gravity.gravitationalConstant,
+        )
+        trajectoryCompute.float("uSigmaCells", config.gravity.softeningCells)
+        trajectoryCompute.int(
+            "uExactCellThreshold",
+            config.gravity.exactNeighborBodyLimit,
+        )
+        trajectoryCompute.int(
+            "uMaximumHomeInteractions",
+            config.gravity.maximumHomeBodyInteractions,
+        )
+        trajectoryCompute.float(
+            "uMinimumDashPixels",
+            config.trajectory.minimumDashPixels,
+        )
+        trajectoryCompute.float(
+            "uMinimumDistanceCellFraction",
+            config.gravity.minimumDistanceCellFraction,
+        )
         trajectoryCompute.float("uDomainAspect", domainAspect)
         trajectoryCompute.float("uInitialTotalMass", normalizationMass)
         trajectoryCompute.float("uInverseMassScale", 1f / massScaleFor(totalMass))
@@ -348,8 +400,8 @@ class GravityPipeline(
         diameterPixels: Float,
     ): Int {
         val offsets = projectileOffsets(diameterPixels)
-        if (firstBody !in 0..config.capacity ||
-            offsets.size > config.capacity - firstBody) {
+        if (firstBody !in 0..config.particles.capacity ||
+            offsets.size > config.particles.capacity - firstBody) {
             return 0
         }
 
@@ -383,7 +435,10 @@ class GravityPipeline(
 
     private fun projectileOffsets(diameterPixels: Float): List<PixelOffset> =
         projectileOffsets.getOrPut(diameterPixels) {
-            CircularProjectile.offsets(config.contactDiameterPixels, diameterPixels)
+            CircularProjectile.offsets(
+                config.collisions.contactDiameterPixels,
+                diameterPixels,
+            )
         }
 
     /**
@@ -555,6 +610,10 @@ class GravityPipeline(
         bind(4, kernelY)
         convolve.int("uGridWidth", gridWidth)
         convolve.int("uGridHeight", gridHeight)
+        convolve.float(
+            "uMinimumAssignmentWindowPower",
+            config.gravity.minimumAssignmentWindowPower,
+        )
         dispatch(cells)
         barrier()
         profiler?.end(GpuStage.CONVOLUTION)
@@ -586,7 +645,10 @@ class GravityPipeline(
         collisionClear.int("uCount", activeBodies)
         collisionClear.int("uGridWidth", collisionGridWidth)
         collisionClear.int("uGridHeight", collisionGridHeight)
-        collisionClear.int("uAdaptive", if (config.adaptiveCollisions) 1 else 0)
+        collisionClear.int(
+            "uAdaptive",
+            if (config.collisions.adaptive) 1 else 0,
+        )
         collisionClear.int("uSubstepIndex", substepIndex ?: -1)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
@@ -604,8 +666,11 @@ class GravityPipeline(
         collisionBuild.int("uGridHeight", collisionGridHeight)
         collisionBuild.float("uKickDt", kickDt)
         collisionBuild.float("uDriftDt", driftDt)
-        collisionBuild.float("uTimeStep", config.timeStep)
-        collisionBuild.int("uAdaptive", if (config.adaptiveCollisions) 1 else 0)
+        collisionBuild.float("uTimeStep", config.collisions.timeStep)
+        collisionBuild.int(
+            "uAdaptive",
+            if (config.collisions.adaptive) 1 else 0,
+        )
         collisionBuild.int("uSubstepIndex", substepIndex ?: -1)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
@@ -622,8 +687,18 @@ class GravityPipeline(
         collisionCount.int("uGridWidth", collisionGridWidth)
         collisionCount.int("uGridHeight", collisionGridHeight)
         collisionCount.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionCount.float("uDiameterPixels", config.contactDiameterPixels)
-        collisionCount.int("uAdaptive", if (config.adaptiveCollisions) 1 else 0)
+        collisionCount.float(
+            "uDiameterPixels",
+            config.collisions.contactDiameterPixels,
+        )
+        collisionCount.int(
+            "uNeighborCellRadius",
+            config.collisions.neighborCellRadius,
+        )
+        collisionCount.int(
+            "uAdaptive",
+            if (config.collisions.adaptive) 1 else 0,
+        )
         collisionCount.int("uSubstepIndex", substepIndex ?: -1)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
@@ -642,10 +717,32 @@ class GravityPipeline(
         collisionSolve.int("uGridWidth", collisionGridWidth)
         collisionSolve.int("uGridHeight", collisionGridHeight)
         collisionSolve.vec2("uViewport", viewportWidthFloat, viewportHeightFloat)
-        collisionSolve.float("uDiameterPixels", config.contactDiameterPixels)
+        collisionSolve.float(
+            "uDiameterPixels",
+            config.collisions.contactDiameterPixels,
+        )
+        collisionSolve.int(
+            "uNeighborCellRadius",
+            config.collisions.neighborCellRadius,
+        )
+        collisionSolve.int(
+            "uDenseContactThreshold",
+            config.collisions.denseContactThreshold,
+        )
+        collisionSolve.float(
+            "uRestitutionCoefficient",
+            config.collisions.restitutionCoefficient,
+        )
+        collisionSolve.float(
+            "uCoincidentDistanceSquaredEpsilon",
+            config.collisions.coincidentDistanceSquaredEpsilon,
+        )
         collisionSolve.float("uSubstepDt", collisionSubstep)
-        collisionSolve.float("uTimeStep", config.timeStep)
-        collisionSolve.int("uAdaptive", if (config.adaptiveCollisions) 1 else 0)
+        collisionSolve.float("uTimeStep", config.collisions.timeStep)
+        collisionSolve.int(
+            "uAdaptive",
+            if (config.collisions.adaptive) 1 else 0,
+        )
         collisionSolve.int("uWritePressure", if (writePressure) 1 else 0)
         collisionSolve.int("uSubstepIndex", substepIndex ?: -1)
         dispatchCollisionBodies(activeBodies, substepIndex)
@@ -680,7 +777,7 @@ class GravityPipeline(
         bind(1, collisionDispatchCommands)
         collisionAdaptiveFinalize.int(
             "uMaximumSubsteps",
-            config.collisionIterations,
+            config.collisions.maximumSubsteps,
         )
         collisionAdaptiveFinalize.int(
             "uBodyWorkgroups",
@@ -688,20 +785,28 @@ class GravityPipeline(
         )
         collisionAdaptiveFinalize.int(
             "uDenseContactBodyThreshold",
-            max(256, activeBodies / 100),
+            max(
+                config.collisions.minimumDenseBodies,
+                ceil(
+                    activeBodies * config.collisions.denseBodyFraction,
+                ).toInt(),
+            ),
         )
-        collisionAdaptiveFinalize.float("uTimeStep", config.timeStep)
+        collisionAdaptiveFinalize.float(
+            "uTimeStep",
+            config.collisions.timeStep,
+        )
         collisionAdaptiveFinalize.float(
             "uDiameterPixels",
-            config.contactDiameterPixels,
+            config.collisions.contactDiameterPixels,
         )
         collisionAdaptiveFinalize.float(
             "uAllowedDisplacementFraction",
-            ADAPTIVE_DISPLACEMENT_FRACTION,
+            config.collisions.allowedDisplacementFraction,
         )
         collisionAdaptiveFinalize.float(
             "uAllowedPenetrationFraction",
-            ADAPTIVE_PENETRATION_FRACTION,
+            config.collisions.allowedPenetrationFraction,
         )
         glDispatchCompute(1, 1, 1)
         barrier()
@@ -728,9 +833,21 @@ class GravityPipeline(
         kick.int("uInitial", if (initial) 1 else 0)
         kick.int("uNeighborRadiusX", neighborRadiusX)
         kick.int("uNeighborRadiusY", neighborRadiusY)
-        kick.float("uDt", config.timeStep)
-        kick.float("uGravity", config.gravitationalConstant)
-        kick.float("uSigmaCells", config.softeningCells)
+        kick.float("uDt", config.collisions.timeStep)
+        kick.float("uGravity", config.gravity.gravitationalConstant)
+        kick.float("uSigmaCells", config.gravity.softeningCells)
+        kick.int(
+            "uExactCellThreshold",
+            config.gravity.exactNeighborBodyLimit,
+        )
+        kick.int(
+            "uMaximumHomeInteractions",
+            config.gravity.maximumHomeBodyInteractions,
+        )
+        kick.float(
+            "uMinimumDistanceCellFraction",
+            config.gravity.minimumDistanceCellFraction,
+        )
         kick.float("uDomainAspect", domainAspect)
         dispatchBodies(activeBodies)
         barrier()
@@ -754,9 +871,9 @@ class GravityPipeline(
         kernelInit.int("uPhysicalWidth", physicalGridWidth)
         kernelInit.int("uPhysicalHeight", physicalGridHeight)
         kernelInit.float("uDomainAspect", domainAspect)
-        kernelInit.float("uGravity", config.gravitationalConstant)
+        kernelInit.float("uGravity", config.gravity.gravitationalConstant)
         kernelInit.float("uInitialTotalMass", normalizationMass)
-        kernelInit.float("uSigmaCells", config.softeningCells)
+        kernelInit.float("uSigmaCells", config.gravity.softeningCells)
         dispatch(cells)
         barrier()
         forward(kernelX)
@@ -851,13 +968,14 @@ class GravityPipeline(
             ?.asFloatBuffer() ?: error("Unable to map particle buffer")
         val initialState = UniformParticleInitializer.fillBodies(
             bodies = mappedBodies,
-            count = config.capacity,
-            seed = config.seed ?: java.security.SecureRandom().nextLong(),
+            count = config.particles.capacity,
+            seed = config.particles.seed
+                ?: java.security.SecureRandom().nextLong(),
         )
-        config.squareTestPixels?.let { side ->
+        config.particles.squareTestPixels?.let { side ->
             UniformParticleInitializer.placePixelSquare(
                 bodies = mappedBodies,
-                count = config.initialBodies,
+                count = config.particles.initialBodies,
                 widthPixels = side,
                 viewportWidth = viewportWidth,
                 viewportHeight = viewportHeight,
@@ -913,7 +1031,7 @@ class GravityPipeline(
     private fun dispatch(items: Int) = glDispatchCompute((items + 255) / 256, 1, 1)
     private fun dispatchBodies(items: Int) = dispatch(items)
     private fun dispatchCollisionBodies(items: Int, substepIndex: Int?) {
-        if (config.adaptiveCollisions && substepIndex != null) {
+        if (config.collisions.adaptive && substepIndex != null) {
             glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, collisionDispatchCommands)
             glDispatchComputeIndirect(
                 substepIndex.toLong() * 3L * Int.SIZE_BYTES,
@@ -984,13 +1102,6 @@ class GravityPipeline(
     }
 
     companion object {
-        const val TRAJECTORY_STEPS = 1024
         const val TRAJECTORY_VERTICES_PER_STEP = 6
-        const val TRAJECTORY_VERTICES =
-            TRAJECTORY_STEPS * TRAJECTORY_VERTICES_PER_STEP
-        private const val ADAPTIVE_DISPLACEMENT_FRACTION = 0.25f
-        // One eighth of a diameter remains below the positional correction
-        // scale of a single conservative displacement substep.
-        private const val ADAPTIVE_PENETRATION_FRACTION = 0.125f
     }
 }

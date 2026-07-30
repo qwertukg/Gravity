@@ -23,9 +23,9 @@ uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
-
-const int EXACT_CELL_THRESHOLD = 2;
-const int MAX_HOME_INTERACTIONS = 8;
+uniform int uExactCellThreshold;
+uniform int uMaximumHomeInteractions;
+uniform float uMinimumDistanceCellFraction;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -54,7 +54,8 @@ vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMas
     float localWeight = exp(-rSquared / (2.0 * sigma * sigma));
     float cellWidth = uDomainAspect / float(uPhysicalWidth);
     float cellHeight = 1.0 / float(uPhysicalHeight);
-    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
+    float minimumDistance =
+        uMinimumDistanceCellFraction * min(cellWidth, cellHeight);
     float physicalScale = uGravity * sourceMass * localWeight /
         (uInitialTotalMass * max(rSquared, minimumDistance * minimumDistance));
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
@@ -98,7 +99,7 @@ void main() {
             int index = cellIndex(neighborCell);
             int count = cellCounts[index];
             bool homeCell = dx == 0 && dy == 0;
-            if (!homeCell && count > EXACT_CELL_THRESHOLD) {
+            if (!homeCell && count > uExactCellThreshold) {
                 vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
                 float aggregateMass = float(cellMass[index]) * uInverseMassScale;
@@ -106,7 +107,9 @@ void main() {
             } else {
                 int other = heads[index];
                 int visited = 0;
-                int limit = homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
+                int limit = homeCell
+                    ? uMaximumHomeInteractions
+                    : uExactCellThreshold;
                 while (other >= 0 && visited < limit) {
                     if (uint(other) != id) {
                         result += localAcceleration(bodies[other].xy, body.xy, 1.0);

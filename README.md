@@ -187,6 +187,15 @@ Run with options:
 
 Only `--key=value` syntax is supported.
 
+All runtime tuning is defined in the typed
+[`GravityConfig`](src/main/kotlin/dev/gravity/GravityConfig.kt) object. It is
+split into `particles`, `gravity`, `collisions`, `trajectory`, `projectiles`,
+`presentation`, and `diagnostics` sections. Command-line and environment
+values are parsed into the same object, and unknown command-line keys are
+rejected. Shader ABI values such as workgroup width, SSBO layouts, shared FFT
+capacity, and vertices per trajectory step remain implementation constants
+because changing them at runtime would invalidate compiled shader layouts.
+
 | Option | Default | Constraints and purpose |
 |---|---:|---|
 | `--bodies=N` | `50000` | Initial body count; clamped to `capacity` |
@@ -208,6 +217,52 @@ Only `--key=value` syntax is supported.
 | `--benchmark-frames=N` | `240` | Measured benchmark frames, `N > 0` |
 | `--fft-validate=true\|false` | `false` | Blocking diagnostic GPU FFT comparison with a double reference |
 | `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
+| `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
+| `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
+| `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
+| `--adaptive-displacement-fraction=F` | `0.25` | Allowed displacement as a fraction of body diameter, `0–1` |
+| `--adaptive-penetration-fraction=F` | `0.125` | Penetration trigger as a fraction of body diameter, `0–1` |
+| `--adaptive-dense-contact-count=N` | `4` | Contacts required for a body to count as dense |
+| `--adaptive-dense-body-fraction=F` | `0.01` | Dense-body fraction that selects all collision passes, `0–1` |
+| `--adaptive-dense-min-bodies=N` | `256` | Minimum dense-body threshold, `N ≥ 1` |
+| `--near-radius-sigma=F` | `3` | Near-field search radius in softening sigmas, `F > 0` |
+| `--near-radius-min=N` | `1` | Minimum near-field radius in cells |
+| `--near-radius-max=N` | `6` | Maximum near-field radius in cells |
+| `--near-exact-bodies=N` | `2` | Neighbor-cell bodies evaluated exactly before using a monopole |
+| `--near-home-bodies=N` | `8` | Maximum exact interactions in the home gravity cell |
+| `--near-min-distance-fraction=F` | `0.05` | Near-force minimum distance as a cell-size fraction |
+| `--cic-window-floor=F` | `0.08` | Minimum squared CIC assignment-window power used in deconvolution |
+| `--trajectory-steps=N` | `1024` | Maximum predicted trajectory steps, `1–65536` |
+| `--trajectory-max-dt=F` | `1` | Maximum trajectory integration step in seconds |
+| `--trajectory-segment-px=F` | `6` | Target predicted segment length in pixels |
+| `--trajectory-path-diagonals=F` | `1` | Maximum path length in viewport diagonals |
+| `--trajectory-updates-per-second=N` | `30` | Maximum trajectory recomputation frequency |
+| `--trajectory-min-dash-px=F` | `3` | Minimum trajectory dash and gap length |
+| `--projectile-diameter=F` | `50` | Initially selected projectile diameter |
+| `--projectile-drag-scale=F` | `4` | Projectile speed per drag pixel |
+| `--projectile-min-drag-px=F` | `2` | Minimum drag distance that creates a projectile |
+| `--projectile-size-step=F` | `10` | Diameter increment selected by keys `1–9` |
+| `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
+| `--preview-period-px=F` | `6` | Projectile-preview dash period |
+| `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
+| `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |
+| `--benchmark-projectile-diameter=F` | `100` | Benchmark projectile diameter |
+| `--benchmark-projectile-vx=F` | `2000` | Benchmark projectile horizontal speed |
+| `--benchmark-projectile-vy=F` | `0` | Benchmark projectile vertical speed |
+| `--target-gpu-ms=F` | `13.5` | Initial smoothed GPU-time display value |
+| `--time-scale-min=F` | `0.01` | Minimum interactive time scale, `0–1` |
+| `--time-scale-scroll=F` | `0.05` | Time-scale change per mouse-wheel increment |
+| `--fps-update-ms=N` | `250` | Overlay FPS update interval |
+| `--console-report-ms=N` | `2000` | Console statistics interval |
+| `--gpu-smoothing=F` | `0.08` | Exponential GPU-time smoothing factor, `0–1` |
+| `--point-size=F` | `1` | Rendered body point size in pixels |
+| `--overlay-characters=N` | `256` | Maximum overlay character capacity |
+| `--overlay-margin-px=F` | `8` | Overlay margin in pixels |
+| `--overlay-line-height-px=F` | `12` | Overlay line height in pixels |
+| `--profiler-ring=N` | `16` | Asynchronous profiler frame-ring size |
+| `--profiler-segments=N` | `128` | Maximum measured stage segments per frame |
+| `--profile-history=N` | `8192` | Maximum completed profiles retained in memory |
+| `--timer-ring=N` | `16` | Lightweight frame-timer query-ring size |
 
 Environment variables:
 

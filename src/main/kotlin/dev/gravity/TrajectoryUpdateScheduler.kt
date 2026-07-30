@@ -1,8 +1,10 @@
 package dev.gravity
 
 internal class TrajectoryUpdateScheduler(
-    private val updateIntervalNanos: Long = 1_000_000_000L / 30L,
+    updatesPerSecond: Int,
 ) {
+    private val updateIntervalNanos =
+        1_000_000_000L / updatesPerSecond.also { require(it > 0) }
     private var lastUpdateNanos = 0L
     private var hasUpdated = false
 

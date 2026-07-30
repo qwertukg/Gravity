@@ -26,8 +26,20 @@ import java.util.Locale
 class FpsOverlay(
     private val viewportWidth: Int,
     private val viewportHeight: Int,
+    private val config: PresentationConfig,
+    projectileConfig: ProjectileConfig,
 ) : AutoCloseable {
-    private val maximumCharacters = 256
+    private val controlText =
+        "LMB drag: aim / fire\n" +
+            "1-9: bullet size step ${projectileConfig.digitDiameterStepPixels.toInt()} px\n" +
+            "0: bullet size ${projectileConfig.maximumDiameterPixels.toInt()} px\n" +
+            "Mouse wheel: time speed\n" +
+            "P: pause / resume\n" +
+            "S: stop all bodies\n" +
+            "R: reset\n" +
+            "Esc: exit"
+    private val controlLines = controlText.lineSequence().count()
+    private val maximumCharacters = config.overlayMaximumCharacters
     private val maximumQuads = maximumCharacters * 16
     private val vertexData = BufferUtils.createByteBuffer(maximumQuads * 4 * 16)
     private val program = GlProgram.graphics("/shaders/overlay.vert", "/shaders/overlay.frag")
@@ -100,9 +112,9 @@ class FpsOverlay(
             val controlsQuads = stb_easy_font_print(
                 0f,
                 viewportHeight.toFloat() -
-                    2f * SCREEN_MARGIN_PIXELS -
-                    CONTROL_LINES * FONT_LINE_HEIGHT_PIXELS,
-                CONTROL_TEXT,
+                    2f * config.overlayMarginPixels -
+                    controlLines * config.overlayLineHeightPixels,
+                controlText,
                 null as ByteBuffer?,
                 vertexData,
             )
@@ -120,6 +132,7 @@ class FpsOverlay(
 
         program.use()
         program.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
+        program.float("uMarginPixels", config.overlayMarginPixels)
         glBindVertexArray(vao)
         glDrawElements(GL_TRIANGLES, renderedQuads * 6, GL_UNSIGNED_INT, 0L)
     }
@@ -133,18 +146,6 @@ class FpsOverlay(
 
     private companion object {
         const val BYTES_PER_QUAD = 4 * 16
-        const val SCREEN_MARGIN_PIXELS = 8f
-        const val FONT_LINE_HEIGHT_PIXELS = 12f
-        const val CONTROL_LINES = 8
-        const val CONTROL_TEXT =
-            "LMB drag: aim / fire\n" +
-                "1-9: bullet size 10-90 px\n" +
-                "0: bullet size 100 px\n" +
-                "Mouse wheel: time speed\n" +
-                "P: pause / resume\n" +
-                "S: stop all bodies\n" +
-                "R: reset\n" +
-                "Esc: exit"
         const val NO_SPEED_BITS = Long.MIN_VALUE + 1
     }
 }

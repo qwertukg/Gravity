@@ -1,8 +1,13 @@
 package dev.gravity
 
 internal class SimulationSpeed(
-    private val scalePerScroll: Double = 0.05,
+    private val scalePerScroll: Double,
+    private val minimumScale: Double,
 ) {
+    init {
+        require(scalePerScroll > 0.0)
+        require(minimumScale in 0.0..1.0)
+    }
     private var stepAccumulator = 0.0
 
     var scale: Double = 1.0
@@ -11,7 +16,7 @@ internal class SimulationSpeed(
     fun scroll(yOffset: Double) {
         scale = (
             scale + yOffset * scalePerScroll
-        ).coerceIn(MINIMUM_SCALE, 1.0)
+        ).coerceIn(minimumScale, 1.0)
     }
 
     fun shouldAdvance(paused: Boolean): Boolean {
@@ -24,6 +29,5 @@ internal class SimulationSpeed(
 
     private companion object {
         const val ACCUMULATOR_EPSILON = 1e-12
-        const val MINIMUM_SCALE = 0.01
     }
 }

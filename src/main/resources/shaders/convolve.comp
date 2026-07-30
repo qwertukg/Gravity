@@ -9,6 +9,7 @@ layout(std430, binding = 4) readonly buffer KernelYSpectrum { vec2 kernelYSpectr
 
 uniform int uGridWidth;
 uniform int uGridHeight;
+uniform float uMinimumAssignmentWindowPower;
 
 const float PI = 3.14159265358979323846;
 
@@ -33,7 +34,10 @@ void main() {
     float sx = sinc(PI * float(integerKx) / float(uGridWidth));
     float sy = sinc(PI * float(integerKy) / float(uGridHeight));
     float assignmentWindow = sx * sx * sy * sy;
-    float deconvolution = 1.0 / max(assignmentWindow * assignmentWindow, 0.08);
+    float deconvolution = 1.0 / max(
+        assignmentWindow * assignmentWindow,
+        uMinimumAssignmentWindowPower
+    );
     float inverseTransformSize = 1.0 / float(uGridWidth * uGridHeight);
     float scale = deconvolution * inverseTransformSize;
 

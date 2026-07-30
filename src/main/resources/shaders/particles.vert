@@ -5,6 +5,7 @@ layout(std430, binding = 1) readonly buffer Pressures { float pressures[]; };
 
 flat out float particlePressure;
 uniform float uMaximumPressure;
+uniform float uPointSizePixels;
 
 void main() {
     vec2 position = bodies[gl_VertexID].xy * 2.0 - 1.0;
@@ -14,5 +15,5 @@ void main() {
         1.0
     );
     gl_Position = vec4(position, 0.0, 1.0);
-    gl_PointSize = 1.0;
+    gl_PointSize = uPointSizePixels;
 }

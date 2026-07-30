@@ -14,6 +14,10 @@ uniform int uGridWidth;
 uniform int uGridHeight;
 uniform vec2 uViewport;
 uniform float uDiameterPixels;
+uniform int uNeighborCellRadius;
+uniform int uDenseContactThreshold;
+uniform float uRestitutionCoefficient;
+uniform float uCoincidentDistanceSquaredEpsilon;
 uniform float uSubstepDt;
 uniform float uTimeStep;
 uniform int uWritePressure;
@@ -63,13 +67,13 @@ void main() {
         : uSubstepDt;
     if (uWritePressure != 0 && uAdaptive != 0) {
         atomicMax(adaptiveState[3], ownContacts);
-        if (ownContacts >= 4u) {
+        if (ownContacts >= uint(uDenseContactThreshold)) {
             atomicAdd(adaptiveState[4], 1u);
         }
     }
 
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
+    for (int dy = -uNeighborCellRadius; dy <= uNeighborCellRadius; ++dy) {
+        for (int dx = -uNeighborCellRadius; dx <= uNeighborCellRadius; ++dx) {
             ivec2 cell = wrapCell(home + ivec2(dx, dy));
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             while (encoded != 0u) {
@@ -80,8 +84,12 @@ void main() {
                     delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     float distanceSquared = dot(delta, delta);
                     if (distanceSquared < diameterSquared) {
-                        float distance = sqrt(max(distanceSquared, 1e-12));
-                        vec2 normal = distanceSquared > 1e-12
+                        float distance = sqrt(max(
+                            distanceSquared,
+                            uCoincidentDistanceSquaredEpsilon
+                        ));
+                        vec2 normal =
+                            distanceSquared > uCoincidentDistanceSquaredEpsilon
                             ? delta / distance
                             : fallbackNormal(id, otherId);
                         float penetration = uDiameterPixels - distance;
@@ -104,7 +112,12 @@ void main() {
                             // Smooth circular bodies, e=0: the approaching
                             // normal components meet at their pair average.
                             velocityCorrection -= normal *
-                                (0.5 * relativeNormalSpeed * pairWeight);
+                                (
+                                    0.5 *
+                                    (1.0 + uRestitutionCoefficient) *
+                                    relativeNormalSpeed *
+                                    pairWeight
+                                );
                         }
                         if (uWritePressure != 0) {
                             if (uAdaptive != 0) {

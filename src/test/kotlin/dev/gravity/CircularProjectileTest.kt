@@ -9,8 +9,12 @@ class CircularProjectileTest {
     @Test
     fun `projectile is a dense fifty pixel disk`() {
         val diameter = 1.12838f
-        val offsets = CircularProjectile.offsets(diameter)
-        val maximumCenterRadius = 0.5 * CircularProjectile.DEFAULT_DIAMETER_PIXELS -
+        val projectile = ProjectileConfig()
+        val offsets = CircularProjectile.offsets(
+            diameter,
+            projectile.defaultDiameterPixels,
+        )
+        val maximumCenterRadius = 0.5 * projectile.defaultDiameterPixels -
             0.5 * diameter
 
         assertTrue(offsets.size in 1_500..1_900)
@@ -21,10 +25,22 @@ class CircularProjectileTest {
 
     @Test
     fun `digit keys select projectile diameter from ten to one hundred pixels`() {
-        assertEquals(100f, CircularProjectile.diameterForDigit(0))
+        val projectile = ProjectileConfig()
+        assertEquals(100f, projectile.diameterForDigit(0))
         for (digit in 1..9) {
-            assertEquals(digit * 10f, CircularProjectile.diameterForDigit(digit))
+            assertEquals(digit * 10f, projectile.diameterForDigit(digit))
         }
+    }
+
+    @Test
+    fun `digit mapping is supplied by projectile configuration`() {
+        val projectile = ProjectileConfig(
+            digitDiameterStepPixels = 12f,
+            maximumDiameterPixels = 120f,
+        )
+        assertEquals(12f, projectile.diameterForDigit(1))
+        assertEquals(108f, projectile.diameterForDigit(9))
+        assertEquals(120f, projectile.diameterForDigit(0))
     }
 
     @Test

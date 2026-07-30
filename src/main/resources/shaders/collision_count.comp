@@ -12,6 +12,7 @@ uniform int uGridWidth;
 uniform int uGridHeight;
 uniform vec2 uViewport;
 uniform float uDiameterPixels;
+uniform int uNeighborCellRadius;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
 
@@ -37,8 +38,8 @@ void main() {
         bodies[id].xy * vec2(uGridWidth, uGridHeight)
     ));
     float diameterSquared = uDiameterPixels * uDiameterPixels;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
+    for (int dy = -uNeighborCellRadius; dy <= uNeighborCellRadius; ++dy) {
+        for (int dx = -uNeighborCellRadius; dx <= uNeighborCellRadius; ++dx) {
             ivec2 cell = wrapCell(home + ivec2(dx, dy));
 
             uint encoded = heads[cell.x + cell.y * uGridWidth];

@@ -28,11 +28,12 @@ uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
 uniform float uInverseMassScale;
+uniform int uExactCellThreshold;
+uniform int uMaximumHomeInteractions;
+uniform float uMinimumDashPixels;
+uniform float uMinimumDistanceCellFraction;
 
-const int EXACT_CELL_THRESHOLD = 2;
-const int MAX_HOME_INTERACTIONS = 8;
 const int VERTICES_PER_STEP = 6;
-const float MINIMUM_DASH_PIXELS = 3.0;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -65,7 +66,8 @@ vec2 localAcceleration(
     float localWeight = exp(-rSquared / (2.0 * sigma * sigma));
     float cellWidth = uDomainAspect / float(uPhysicalWidth);
     float cellHeight = 1.0 / float(uPhysicalHeight);
-    float minimumDistance = 0.05 * min(cellWidth, cellHeight);
+    float minimumDistance =
+        uMinimumDistanceCellFraction * min(cellWidth, cellHeight);
     float physicalScale = uGravity * sourceMass * localWeight /
         (uInitialTotalMass * max(rSquared, minimumDistance * minimumDistance));
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
@@ -105,7 +107,7 @@ vec2 accelerationAt(vec2 position) {
             int index = cellIndex(neighborCell);
             int count = cellCounts[index];
             bool homeCell = dx == 0 && dy == 0;
-            if (!homeCell && count > EXACT_CELL_THRESHOLD) {
+            if (!homeCell && count > uExactCellThreshold) {
                 vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
                 float aggregateMass =
@@ -119,7 +121,9 @@ vec2 accelerationAt(vec2 position) {
                 int other = heads[index];
                 int visited = 0;
                 int limit =
-                    homeCell ? MAX_HOME_INTERACTIONS : EXACT_CELL_THRESHOLD;
+                    homeCell
+                        ? uMaximumHomeInteractions
+                        : uExactCellThreshold;
                 while (other >= 0 && visited < limit) {
                     result += localAcceleration(
                         bodies[other].xy,
@@ -253,9 +257,9 @@ void main() {
         }
         float speedMultiplier = 1.0 + length(halfStepVelocity);
         float dashLengthPixels =
-            MINIMUM_DASH_PIXELS * speedMultiplier;
+            uMinimumDashPixels * speedMultiplier;
         float stepDashCoordinatePixels =
-            stepDistancePixels * MINIMUM_DASH_PIXELS / dashLengthPixels;
+            stepDistancePixels * uMinimumDashPixels / dashLengthPixels;
         emitPeriodicStep(
             step,
             position,

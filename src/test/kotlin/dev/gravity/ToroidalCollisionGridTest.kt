@@ -52,7 +52,7 @@ class ToroidalCollisionGridTest {
         val translatedCenterX = ToroidalSpace.wrapUnit((centerX + 11.0) / width)
         val translatedCenterY = ToroidalSpace.wrapUnit((centerY - 8.0) / height)
 
-        CircularProjectile.offsets(1.12838f).forEach { offset ->
+        CircularProjectile.offsets(1.12838f, 50f).forEach { offset ->
             val translatedX = ToroidalSpace.wrapUnit(
                 (centerX + offset.x + 11.0) / width,
             )

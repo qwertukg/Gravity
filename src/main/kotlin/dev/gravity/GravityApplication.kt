@@ -80,7 +80,7 @@ private data class ProjectileGesture(
     val diameterPixels: Float,
 )
 
-class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
+class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var window = 0L
     private var pipeline: GravityPipeline? = null
     private var renderProgram: GlProgram? = null
@@ -95,20 +95,25 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private var resetRequested = false
     private var stopRequested = false
     private var paused = false
-    private val simulationSpeed = SimulationSpeed()
-    private val trajectoryUpdates = TrajectoryUpdateScheduler()
+    private val simulationSpeed = SimulationSpeed(
+        scalePerScroll = config.presentation.timeScalePerScroll,
+        minimumScale = config.presentation.minimumTimeScale,
+    )
+    private val trajectoryUpdates = TrajectoryUpdateScheduler(
+        updatesPerSecond = config.trajectory.updatesPerSecond,
+    )
     private var cursorX = 0.0
     private var cursorY = 0.0
     private var dragOriginX = 0f
     private var dragOriginY = 0f
     private var draggingProjectile = false
     private var pendingProjectile: ProjectileGesture? = null
-    private var projectileDiameterPixels = CircularProjectile.DEFAULT_DIAMETER_PIXELS
+    private var projectileDiameterPixels = config.projectiles.defaultDiameterPixels
     private var projectileBodyCount = 0
 
     fun run() {
         initWindow()
-        profiler = if (config.profile) GpuProfiler() else null
+        profiler = createProfiler()
         var simulation = GravityPipeline(
             config,
             viewportWidth = viewportWidth,
@@ -127,10 +132,19 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             "/shaders/trajectory.frag",
         )
         vao = glGenVertexArrays()
-        fpsOverlay = FpsOverlay(viewportWidth, viewportHeight)
-        timer = if (profiler == null) GpuTimer() else null
+        fpsOverlay = FpsOverlay(
+            viewportWidth,
+            viewportHeight,
+            config.presentation,
+            config.projectiles,
+        )
+        timer = if (profiler == null) {
+            GpuTimer(config.diagnostics.timerRingSlots)
+        } else {
+            null
+        }
 
-        var active = config.initialBodies
+        var active = config.particles.initialBodies
         initializeSimulation(simulation, active)
         activateFullscreenWindow()
         render(
@@ -142,22 +156,26 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glfwSwapBuffers(window)
         glfwPollEvents()
         activateFullscreenWindow()
-        var reportAt = System.nanoTime() + 2_000_000_000L
+        val consoleReportNanos =
+            config.presentation.consoleReportMillis * 1_000_000L
+        val fpsUpdateNanos =
+            config.presentation.fpsUpdateMillis * 1_000_000L
+        var reportAt = System.nanoTime() + consoleReportNanos
         var frames = 0
         var totalFrames = 0L
         var reportStart = System.nanoTime()
         var overlayWindowStart = reportStart
         var overlayFrames = 0
         var displayedFps = 0.0
-        var smoothedGpuMillis = config.targetGpuMillis
-        val benchmarkStart = config.benchmarkWarmupFrames.toLong()
-        val benchmarkEnd = benchmarkStart + config.benchmarkFrames
+        var smoothedGpuMillis = config.presentation.targetGpuMillis
+        val benchmarkStart = config.diagnostics.benchmarkWarmupFrames.toLong()
+        val benchmarkEnd = benchmarkStart + config.diagnostics.benchmarkFrames
         var benchmarkProjectileLaunched = false
         var benchmarkProfileReported = false
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
-                active = config.initialBodies
+                active = config.particles.initialBodies
                 // A reset starts a new GPU session, just like application
                 // startup, instead of retaining resources and timer queries
                 // from the previous simulation.
@@ -165,7 +183,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 timer?.close()
                 timer = null
                 profiler?.close()
-                profiler = if (config.profile) GpuProfiler() else null
+                profiler = createProfiler()
                 simulation.close()
                 pipeline = null
                 simulation = GravityPipeline(
@@ -177,7 +195,11 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 pipeline = simulation
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
-                timer = if (profiler == null) GpuTimer() else null
+                timer = if (profiler == null) {
+                    GpuTimer(config.diagnostics.timerRingSlots)
+                } else {
+                    null
+                }
                 initializeSimulation(simulation, active)
                 pendingProjectile = null
                 draggingProjectile = false
@@ -188,25 +210,25 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 overlayWindowStart = resetTime
                 frames = 0
                 reportStart = resetTime
-                reportAt = resetTime + 2_000_000_000L
-                smoothedGpuMillis = config.targetGpuMillis
+                reportAt = resetTime + consoleReportNanos
+                smoothedGpuMillis = config.presentation.targetGpuMillis
                 resetRequested = false
             }
-            if (config.benchmarkScenario == BenchmarkScenario.PROJECTILE &&
+            if (config.diagnostics.benchmarkScenario == BenchmarkScenario.PROJECTILE &&
                 !benchmarkProjectileLaunched &&
                 totalFrames == benchmarkStart
             ) {
                 val spawned = simulation.spawnProjectile(
                     firstBody = active,
-                    centerX = viewportWidth * BENCHMARK_PROJECTILE_ORIGIN_X,
-                    centerY = viewportHeight * BENCHMARK_PROJECTILE_ORIGIN_Y,
-                    velocityX = BENCHMARK_PROJECTILE_VELOCITY_X,
-                    velocityY = BENCHMARK_PROJECTILE_VELOCITY_Y,
-                    diameterPixels = BENCHMARK_PROJECTILE_DIAMETER_PIXELS,
+                    centerX = viewportWidth * config.projectiles.benchmarkOriginX,
+                    centerY = viewportHeight * config.projectiles.benchmarkOriginY,
+                    velocityX = config.projectiles.benchmarkVelocityX,
+                    velocityY = config.projectiles.benchmarkVelocityY,
+                    diameterPixels = config.projectiles.benchmarkDiameterPixels,
                 )
                 check(spawned > 0) {
                     "Benchmark projectile needs spare capacity (active=$active, " +
-                        "capacity=${config.capacity})"
+                        "capacity=${config.particles.capacity})"
                 }
                 active += spawned
                 benchmarkProjectileLaunched = true
@@ -216,9 +238,9 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                         "velocity=(%.1f, %.1f) px/s%n",
                     spawned,
                     active,
-                    BENCHMARK_PROJECTILE_DIAMETER_PIXELS,
-                    BENCHMARK_PROJECTILE_VELOCITY_X,
-                    BENCHMARK_PROJECTILE_VELOCITY_Y,
+                    config.projectiles.benchmarkDiameterPixels,
+                    config.projectiles.benchmarkVelocityX,
+                    config.projectiles.benchmarkVelocityY,
                 )
             }
             pendingProjectile?.let { projectile ->
@@ -251,7 +273,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 simulation.stopBodies(active)
                 stopRequested = false
             }
-            val collectProfile = config.benchmarkScenario == null ||
+            val collectProfile = config.diagnostics.benchmarkScenario == null ||
                 totalFrames in benchmarkStart..<benchmarkEnd
             profiler?.beginFrame(totalFrames, collect = collectProfile)
             timer?.begin()
@@ -278,20 +300,20 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 )
             }
             val benchmarkTrajectoryVisible =
-                config.benchmarkScenario == BenchmarkScenario.PROJECTILE &&
+                config.diagnostics.benchmarkScenario == BenchmarkScenario.PROJECTILE &&
                     totalFrames in benchmarkStart..<benchmarkEnd
             if (benchmarkTrajectoryVisible) {
                 simulation.updateTrajectory(
                     activeBodies = active,
-                    originX = viewportWidth * BENCHMARK_PROJECTILE_ORIGIN_X,
-                    originY = viewportHeight * BENCHMARK_PROJECTILE_ORIGIN_Y,
-                    velocityX = BENCHMARK_PROJECTILE_VELOCITY_X,
-                    velocityY = BENCHMARK_PROJECTILE_VELOCITY_Y,
+                    originX = viewportWidth * config.projectiles.benchmarkOriginX,
+                    originY = viewportHeight * config.projectiles.benchmarkOriginY,
+                    velocityX = config.projectiles.benchmarkVelocityX,
+                    velocityY = config.projectiles.benchmarkVelocityY,
                 )
             }
             overlayFrames++
             val overlayNow = System.nanoTime()
-            if (overlayNow - overlayWindowStart >= 250_000_000L) {
+            if (overlayNow - overlayWindowStart >= fpsUpdateNanos) {
                 displayedFps = overlayFrames * 1e9 / (overlayNow - overlayWindowStart)
                 overlayFrames = 0
                 overlayWindowStart = overlayNow
@@ -312,7 +334,8 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             profiler?.endFrame()
             val gpuMillis = timer?.end() ?: profiler?.latestFrameMillis ?: Double.NaN
             if (!gpuMillis.isNaN()) {
-                smoothedGpuMillis += 0.08 * (gpuMillis - smoothedGpuMillis)
+                smoothedGpuMillis += config.presentation.gpuTimeSmoothing *
+                    (gpuMillis - smoothedGpuMillis)
             }
 
             glfwSwapBuffers(window)
@@ -328,14 +351,14 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                     active,
                     fps,
                     smoothedGpuMillis,
-                    config.gridWidth,
-                    config.gridHeight,
+                    config.gravity.gridWidth,
+                    config.gravity.gridHeight,
                 )
                 frames = 0
                 reportStart = now
-                reportAt = now + 2_000_000_000L
+                reportAt = now + consoleReportNanos
             }
-            if (config.benchmarkScenario != null &&
+            if (config.diagnostics.benchmarkScenario != null &&
                 totalFrames >= benchmarkEnd &&
                 profiler!!.pendingFrames == 0 &&
                 !benchmarkProfileReported
@@ -344,27 +367,30 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
                 reportProfile(
                     summary = profiler!!.summary(),
                     activeBodies = active,
-                    requestedFrames = config.benchmarkFrames,
+                    requestedFrames = config.diagnostics.benchmarkFrames,
                 )
                 val cluster = simulation.measureCluster(active)
                 reportCluster(cluster)
-                if (config.adaptiveCollisions) {
+                if (config.collisions.adaptive) {
                     reportAdaptiveCollisions(
                         simulation.measureAdaptiveCollisions(),
                     )
                 }
                 glfwSetWindowShouldClose(window, true)
-            } else if (config.maxFrames != null && totalFrames >= config.maxFrames) {
+            } else if (
+                config.diagnostics.maxFrames != null &&
+                totalFrames >= config.diagnostics.maxFrames
+            ) {
                 profiler?.let {
                     reportProfile(
                         summary = it.summary(),
                         activeBodies = active,
-                        requestedFrames = config.maxFrames,
+                        requestedFrames = config.diagnostics.maxFrames,
                     )
                 }
                 val cluster = simulation.measureCluster(active)
                 reportCluster(cluster)
-                if (config.adaptiveCollisions) {
+                if (config.collisions.adaptive) {
                     reportAdaptiveCollisions(
                         simulation.measureAdaptiveCollisions(),
                     )
@@ -402,7 +428,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             if (key == GLFW_KEY_S && action == GLFW_PRESS) stopRequested = true
             if (key in GLFW_KEY_0..GLFW_KEY_9 && action == GLFW_PRESS) {
                 projectileDiameterPixels =
-                    CircularProjectile.diameterForDigit(key - GLFW_KEY_0)
+                    config.projectiles.diameterForDigit(key - GLFW_KEY_0)
                 pipeline?.let {
                     projectileBodyCount =
                         it.projectileBodyCount(projectileDiameterPixels)
@@ -443,7 +469,7 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glDisable(GL_MULTISAMPLE)
         glViewport(0, 0, mode.width(), mode.height())
         glClearColor(0f, 0f, 0f, 1f)
-        glPointSize(1f)
+        glPointSize(config.presentation.bodyPointSizePixels)
         glfwShowWindow(window)
         glfwFocusWindow(window)
         glClear(GL_COLOR_BUFFER_BIT)
@@ -458,16 +484,18 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         System.err.println(
             "Gravity: viewport=${mode.width()}x${mode.height()}, " +
                 "space=${mode.width()}x${mode.height()}, " +
-                "initial=${config.initialBodies}, grid=${config.gridWidth}x${config.gridHeight}, " +
-                "collisions=${config.collisionIterations}, " +
-                "diameter=${config.contactDiameterPixels}px, " +
-                "squareTest=${config.squareTestPixels ?: "off"}, " +
-                "seed=${config.seed?.toString() ?: "random"}, " +
-                "profile=${config.profile}, " +
-                "benchmark=${config.benchmarkScenario?.name?.lowercase() ?: "off"}, " +
+                "initial=${config.particles.initialBodies}, " +
+                "grid=${config.gravity.gridWidth}x${config.gravity.gridHeight}, " +
+                "collisions=${config.collisions.maximumSubsteps}, " +
+                "diameter=${config.collisions.contactDiameterPixels}px, " +
+                "squareTest=${config.particles.squareTestPixels ?: "off"}, " +
+                "seed=${config.particles.seed?.toString() ?: "random"}, " +
+                "profile=${config.diagnostics.profile}, " +
+                "benchmark=${config.diagnostics.benchmarkScenario?.name?.lowercase() ?: "off"}, " +
                 "foreground=$foreground; LMB drag fires a " +
                 "${projectileDiameterPixels.toInt()}px projectile; " +
-                "digits 1-9/0 select 10-90/100px; " +
+                "digits 1-9 use ${config.projectiles.digitDiameterStepPixels.toInt()}px steps; " +
+                "0 selects ${config.projectiles.maximumDiameterPixels.toInt()}px; " +
                 "wheel controls time speed; P pauses; S stops all bodies; Esc exits"
         )
     }
@@ -482,19 +510,19 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     private fun projectileGesture(targetX: Float, targetY: Float): ProjectileGesture? {
         val deltaX = targetX - dragOriginX
         val deltaY = targetY - dragOriginY
-        if (hypot(deltaX, deltaY) < 2f) return null
+        if (hypot(deltaX, deltaY) < config.projectiles.minimumDragPixels) return null
         return ProjectileGesture(
             originX = dragOriginX,
             originY = dragOriginY,
-            velocityX = deltaX * CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
-            velocityY = deltaY * CircularProjectile.VELOCITY_PER_DRAG_PIXEL,
+            velocityX = deltaX * config.projectiles.velocityPerDragPixel,
+            velocityY = deltaY * config.projectiles.velocityPerDragPixel,
             diameterPixels = projectileDiameterPixels,
         )
     }
 
     private fun initializeSimulation(simulation: GravityPipeline, activeBodies: Int) {
         simulation.initializeAcceleration(activeBodies)
-        if (config.validateFft) {
+        if (config.diagnostics.validateFft) {
             val validation = simulation.validateFft(activeBodies)
             System.err.printf(
                 Locale.ROOT,
@@ -523,7 +551,14 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
     ) {
         glClear(GL_COLOR_BUFFER_BIT)
         renderProgram!!.use()
-        renderProgram!!.float("uMaximumPressure", config.maximumVisualPressure)
+        renderProgram!!.float(
+            "uMaximumPressure",
+            config.presentation.maximumVisualPressure,
+        )
+        renderProgram!!.float(
+            "uPointSizePixels",
+            config.presentation.bodyPointSizePixels,
+        )
         pipeline!!.bindBodiesForRender()
         glBindVertexArray(vao)
         glDrawArrays(GL_POINTS, 0, activeBodies)
@@ -531,14 +566,18 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             trajectoryProgram!!.use()
+            trajectoryProgram!!.float(
+                "uMinimumDashPixels",
+                config.trajectory.minimumDashPixels,
+            )
             pipeline!!.bindTrajectoryForRender()
-            glDrawArrays(GL_LINES, 0, GravityPipeline.TRAJECTORY_VERTICES)
+            glDrawArrays(GL_LINES, 0, pipeline!!.trajectoryVertexCount)
             glDisable(GL_BLEND)
         }
         if (draggingProjectile) {
             val previewDashCount = (
                 Math.PI * projectileDiameterPixels /
-                    PROJECTILE_PREVIEW_PERIOD_PIXELS
+                    config.projectiles.previewPeriodPixels
                 ).roundToInt().coerceAtLeast(1)
             projectilePreviewProgram!!.use()
             projectilePreviewProgram!!.vec2(
@@ -581,15 +620,19 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
             "GPU_PROFILE scenario=%s initial-bodies=%d active-bodies=%d " +
                 "grid=%dx%d viewport=%dx%d seed=%s warmup=%d " +
                 "requested-samples=%d collected-samples=%d dropped=%d%n",
-            config.benchmarkScenario?.name?.lowercase() ?: "diagnostic",
-            config.initialBodies,
+            config.diagnostics.benchmarkScenario?.name?.lowercase() ?: "diagnostic",
+            config.particles.initialBodies,
             activeBodies,
-            config.gridWidth,
-            config.gridHeight,
+            config.gravity.gridWidth,
+            config.gravity.gridHeight,
             viewportWidth,
             viewportHeight,
-            config.seed?.toString() ?: "random",
-            if (config.benchmarkScenario == null) 0 else config.benchmarkWarmupFrames,
+            config.particles.seed?.toString() ?: "random",
+            if (config.diagnostics.benchmarkScenario == null) {
+                0
+            } else {
+                config.diagnostics.benchmarkWarmupFrames
+            },
             requestedFrames,
             summary.frames,
             profiler?.droppedFrames ?: 0,
@@ -652,13 +695,20 @@ class GravityApplication(private val config: SimulationConfig) : AutoCloseable {
         glfwSetErrorCallback(null)?.free()
     }
 
+    private fun createProfiler(): GpuProfiler? =
+        if (config.diagnostics.profile) {
+            GpuProfiler(
+                ringSlots = config.diagnostics.profilerRingSlots,
+                maxSegmentsPerFrame =
+                    config.diagnostics.profilerMaximumSegmentsPerFrame,
+                completedFrameCapacity =
+                    config.diagnostics.profilerCompletedFrameCapacity,
+            )
+        } else {
+            null
+        }
+
     private companion object {
-        const val PROJECTILE_PREVIEW_PERIOD_PIXELS = 6f
         const val TORUS_PREVIEW_INSTANCES = 9
-        const val BENCHMARK_PROJECTILE_ORIGIN_X = 0.25f
-        const val BENCHMARK_PROJECTILE_ORIGIN_Y = 0.5f
-        const val BENCHMARK_PROJECTILE_DIAMETER_PIXELS = 100f
-        const val BENCHMARK_PROJECTILE_VELOCITY_X = 2_000f
-        const val BENCHMARK_PROJECTILE_VELOCITY_Y = 0f
     }
 }

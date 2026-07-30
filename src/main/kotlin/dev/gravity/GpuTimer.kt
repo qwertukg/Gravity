@@ -111,12 +111,14 @@ class GpuProfileSummary internal constructor(
  * the GPU. Timestamp pairs can be nested, unlike GL_TIME_ELAPSED queries.
  */
 class GpuProfiler(
-    private val ringSlots: Int = 16,
-    private val maxSegmentsPerFrame: Int = 128,
+    private val ringSlots: Int,
+    private val maxSegmentsPerFrame: Int,
+    private val completedFrameCapacity: Int,
 ) : AutoCloseable {
     init {
         require(ringSlots > 0)
         require(maxSegmentsPerFrame > 0)
+        require(completedFrameCapacity > 0)
     }
 
     private class Slot(maxSegments: Int) {
@@ -240,7 +242,7 @@ class GpuProfiler(
                     if (milliseconds[stage].isNaN()) elapsed else milliseconds[stage] + elapsed
             }
             completed.addLast(GpuFrameProfile(slot.frame, milliseconds))
-            if (completed.size > MAX_COMPLETED_FRAMES) completed.removeFirst()
+            if (completed.size > completedFrameCapacity) completed.removeFirst()
             latestFrameMillis = milliseconds[GpuStage.FRAME.ordinal]
             slot.pending = false
             pending.removeFirst()
@@ -256,16 +258,13 @@ class GpuProfiler(
         slots.forEach { slot -> slot.queries.forEach(::glDeleteQueries) }
     }
 
-    private companion object {
-        const val MAX_COMPLETED_FRAMES = 8_192
-    }
 }
 
 /**
  * Low-overhead frame timer retained for normal interactive runs. Detailed
  * profiling uses [GpuProfiler] instead because elapsed queries cannot nest.
  */
-class GpuTimer(private val slots: Int = 16) : AutoCloseable {
+class GpuTimer(private val slots: Int) : AutoCloseable {
     init {
         require(slots > 0)
     }

@@ -5,17 +5,9 @@ import kotlin.math.sqrt
 data class PixelOffset(val x: Float, val y: Float)
 
 object CircularProjectile {
-    const val DEFAULT_DIAMETER_PIXELS = 50f
-    const val VELOCITY_PER_DRAG_PIXEL = 4f
-
-    fun diameterForDigit(digit: Int): Float {
-        require(digit in 0..9)
-        return if (digit == 0) 100f else digit * 10f
-    }
-
     fun offsets(
         contactDiameterPixels: Float,
-        projectileDiameterPixels: Float = DEFAULT_DIAMETER_PIXELS,
+        projectileDiameterPixels: Float,
     ): List<PixelOffset> {
         require(contactDiameterPixels > 0f)
         require(projectileDiameterPixels >= contactDiameterPixels)
