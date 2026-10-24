@@ -10,7 +10,7 @@ uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform float uDomainAspect;
 uniform float uGravity;
-uniform float uInitialTotalMass;
+uniform float uTotalMass;
 uniform float uSigmaCells;
 
 void main() {
@@ -40,7 +40,7 @@ void main() {
     float directionY = rawY * 2 == uGridHeight ? 0.0 : dy;
     // Convolution is indexed target-source, so the attractive kernel is
     // -minimumImage(delta)/r².
-    float scale = -uGravity * longWeight / (uInitialTotalMass * rSquared);
+    float scale = -uGravity * longWeight / (uTotalMass * rSquared);
     kernelX[id] = vec2(scale * directionX / uDomainAspect, 0.0);
     kernelY[id] = vec2(scale * directionY, 0.0);
 }

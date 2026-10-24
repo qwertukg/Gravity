@@ -26,7 +26,7 @@ uniform float uDt;
 uniform float uGravity;
 uniform float uSigmaCells;
 uniform float uDomainAspect;
-uniform float uInitialTotalMass;
+uniform float uTotalMass;
 uniform int uExactCellThreshold;
 uniform int uMaximumHomeInteractions;
 uniform float uMinimumDistanceCellFraction;
@@ -71,7 +71,7 @@ vec2 localAcceleration(vec2 sourcePosition, vec2 targetPosition, float sourceMas
     float minimumDistance =
         uMinimumDistanceCellFraction * min(cellWidth, cellHeight);
     float physicalScale = uGravity * sourceMass * localWeight /
-        (uInitialTotalMass * max(rSquared, minimumDistance * minimumDistance));
+        (uTotalMass * max(rSquared, minimumDistance * minimumDistance));
     return physicalScale * deltaPhysical / vec2(uDomainAspect, 1.0);
 }
 

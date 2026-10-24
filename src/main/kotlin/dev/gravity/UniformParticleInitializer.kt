@@ -101,4 +101,34 @@ object UniformParticleInitializer {
             bodies.put(id * 4 + 3, 0f)
         }
     }
+
+    /**
+     * Places [count] resting bodies independently and uniformly at random in
+     * a disc of [radiusPixels] at the screen centre. Unlike a packed disc they
+     * start mostly apart, so gravity has to pull them together.
+     */
+    fun placeRandomDisc(
+        bodies: FloatBuffer,
+        count: Int,
+        radiusPixels: Int,
+        viewportWidth: Int,
+        viewportHeight: Int,
+        seed: Long,
+    ) {
+        require(bodies.capacity() >= count * 4)
+        require(2 * radiusPixels <= minOf(viewportWidth, viewportHeight))
+
+        val random = Random(seed xor 0x0D15_C7E5L)
+        val centerX = viewportWidth * 0.5
+        val centerY = viewportHeight * 0.5
+        repeat(count) { id ->
+            // sqrt of a uniform variate gives a uniform density over the area.
+            val radius = radiusPixels * kotlin.math.sqrt(random.nextDouble())
+            val angle = random.nextDouble() * 2.0 * Math.PI
+            bodies.put(id * 4, ((centerX + radius * kotlin.math.cos(angle)) / viewportWidth).toFloat())
+            bodies.put(id * 4 + 1, ((centerY + radius * kotlin.math.sin(angle)) / viewportHeight).toFloat())
+            bodies.put(id * 4 + 2, 0f)
+            bodies.put(id * 4 + 3, 0f)
+        }
+    }
 }

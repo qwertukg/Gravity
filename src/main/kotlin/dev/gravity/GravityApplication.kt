@@ -551,6 +551,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 "collisions=${config.collisions.maximumSubsteps}, " +
                 "diameter=${config.collisions.contactDiameterPixels}px, " +
                 "squareTest=${config.particles.squareTestPixels ?: "off"}, " +
+                "discTest=${config.particles.discTestRadiusPixels ?: "off"}, " +
                 "seed=${config.particles.seed?.toString() ?: "random"}, " +
                 "profile=${config.diagnostics.profile}, " +
                 "benchmark=${config.diagnostics.benchmarkScenario?.name?.lowercase() ?: "off"}, " +
@@ -607,6 +608,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                     capacity = maxOf(config.particles.capacity, bodies),
                     initialBodies = bodies,
                     squareTestPixels = null,
+                    discTestRadiusPixels = null,
                 ),
             )
         }

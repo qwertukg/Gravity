@@ -231,7 +231,12 @@ class GravityPipeline(
     private val sortCount = GlProgram.compute("/shaders/spatial_sort_count.comp")
     private val sortScan = GlProgram.compute("/shaders/spatial_sort_scan.comp")
     private val sortScatter = GlProgram.compute("/shaders/spatial_sort_scatter.comp")
-    private val normalizationMass = config.particles.initialBodies.toFloat()
+    /**
+     * Gravity is normalised to the bodies simulated right now, not to the
+     * initial count: fired projectiles share the same total mass instead of
+     * adding to it, so N bodies always pull alike however they were created.
+     */
+    private var normalizationMass = config.particles.initialBodies.toFloat()
     private val neighborCache = if (
         config.collisions.neighborCache && CollisionNeighborCache.cacheBytes(config.particles.capacity) <=
         glGetInteger64(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
@@ -275,6 +280,7 @@ class GravityPipeline(
     }
 
     fun initializeAcceleration(activeBodies: Int) {
+        normalizeTo(activeBodies)
         if (mutualGravity) buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
     }
@@ -353,6 +359,7 @@ class GravityPipeline(
     }
 
     fun step(activeBodies: Int) {
+        normalizeTo(activeBodies)
         profiler?.begin(GpuStage.PHYSICS_STEP)
         val sortInterval = config.particles.spatialSortInterval
         if (sortInterval > 0 && physicsSteps++ % sortInterval == 0L) sortBodies(activeBodies)
@@ -398,6 +405,7 @@ class GravityPipeline(
         velocityX: Float,
         velocityY: Float,
     ) {
+        normalizeTo(activeBodies)
         profiler?.begin(GpuStage.TRAJECTORY)
         val wrappedOriginX = placeX(originX)
         val wrappedOriginY = placeY(originY)
@@ -470,7 +478,7 @@ class GravityPipeline(
             config.gravity.minimumDistanceCellFraction,
         )
         trajectoryCompute.float("uDomainAspect", domainAspect)
-        trajectoryCompute.float("uInitialTotalMass", normalizationMass)
+        trajectoryCompute.float("uTotalMass", normalizationMass)
         dispatch(1)
         barrier()
         profiler?.end(GpuStage.TRAJECTORY)
@@ -937,7 +945,7 @@ class GravityPipeline(
         bind(5, nextBody)
         bind(6, cellCounts)
         kick.int("uCount", activeBodies)
-        kick.float("uInitialTotalMass", normalizationMass)
+        kick.float("uTotalMass", normalizationMass)
         kick.int("uMeshWidth", meshWidth)
         kick.int("uMeshHeight", meshHeight)
         kick.int("uBounded", if (bounded) 1 else 0)
@@ -1020,6 +1028,18 @@ class GravityPipeline(
         profiler?.end(GpuStage.SPATIAL_SORT)
     }
 
+    /**
+     * Follows the active body count. The spectral kernel holds 1/mass, so it
+     * is rebuilt (two forward FFTs) only when the count changes, e.g. when a
+     * projectile is fired. An empty screen keeps a unit mass.
+     */
+    private fun normalizeTo(activeBodies: Int) {
+        val mass = max(1, activeBodies).toFloat()
+        if (mass == normalizationMass) return
+        normalizationMass = mass
+        initializeKernel()
+    }
+
     private fun inverse(base: Int) {
         transform(base, inverse = true)
     }
@@ -1038,7 +1058,7 @@ class GravityPipeline(
         kernelInit.int("uPhysicalHeight", physicalGridHeight)
         kernelInit.float("uDomainAspect", domainAspect)
         kernelInit.float("uGravity", config.gravity.gravitationalConstant)
-        kernelInit.float("uInitialTotalMass", normalizationMass)
+        kernelInit.float("uTotalMass", normalizationMass)
         kernelInit.float("uSigmaCells", config.gravity.softeningCells)
         dispatch(meshCells)
         barrier()
@@ -1140,6 +1160,16 @@ class GravityPipeline(
                 bodies = mappedBodies,
                 count = config.particles.initialBodies,
                 widthPixels = side,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                seed = initialState.seed,
+            )
+        }
+        config.particles.discTestRadiusPixels?.let { radius ->
+            UniformParticleInitializer.placeRandomDisc(
+                bodies = mappedBodies,
+                count = config.particles.initialBodies,
+                radiusPixels = radius,
                 viewportWidth = viewportWidth,
                 viewportHeight = viewportHeight,
                 seed = initialState.seed,

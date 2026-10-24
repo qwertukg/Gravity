@@ -58,6 +58,13 @@ zero-padding. Both dimensions must be powers of two. Twiddle factors are
 computed once per simulation; one table serves every transform length. The
 spectral kernel is recomputed when the space mode changes.
 
+Gravity is normalized to the number of bodies currently simulated: the total
+mass stays the same and is shared by all of them. A projectile therefore
+redistributes that mass instead of adding to it, and the kernel is rebuilt
+(two forward FFTs) whenever the body count changes. 250,000 bodies attract
+each other equally whether they were created with `--bodies=250000` or fired
+as projectiles into a 50,000-body start.
+
 ### Uniform field and clearing
 
 Each arrow key toggles a uniform gravity field in its direction: the first
@@ -73,9 +80,8 @@ grid, FFT and near-field passes are skipped; collisions, walls and the
 uniform field still act, and the trajectory preview follows the field alone.
 The overlay shows it as `Gravity:`; the setting survives resets.
 
-`C` starts a fresh session with no active bodies, keeping the space mode, the
-field and the selected scenario's gravity normalization. Physics is idle until
-a projectile is fired.
+`C` starts a fresh session with no active bodies, keeping the space mode and the
+field. Physics is idle until a projectile is fired.
 
 ### Walls
 
@@ -195,7 +201,7 @@ smoothed GPU frame time, and FFT grid size.
 
 Ten buttons in the top-right corner restart the simulation in a prepared
 scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
-is normalized to the scenario's own body count. Distances and body counts are
+is normalized to the current body count (see [Gravity](#gravity)). Distances and body counts are
 authored for a `1440 px` tall screen; distances scale with its height and
 counts with its area (never above the authored counts).
 
@@ -343,6 +349,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--pressure-max=F` | `64 / S^1.2` | Pressure mapped to red, `F > 0` |
 | `--frames=N` | disabled | Exit after `N > 0` frames and print diagnostics |
 | `--square-test=W` | disabled | Place one body per pixel in a region of width `W` |
+| `--disc-test=R` | disabled | Place the bodies uniformly at random (not packed) in a centred disc of radius `R` px |
 | `--seed=N` | random | Reproducible signed 64-bit initial-state seed |
 | `--profile=true\|false` | `false` | Detailed asynchronous per-stage GPU profiler |
 | `--benchmark=calm\|projectile` | disabled | Reproducible finite benchmark; enables the profiler |
@@ -462,6 +469,14 @@ screen. The region must fit within the current resolution. After the final
 frame, the application reports cluster center, covariance area, equivalent
 diameter, 90% and 99% core-area estimates, maximum and average speed, and the
 number of non-finite bodies.
+
+`--disc-test=R` instead scatters the bodies uniformly at random in a disc of
+radius `R` px at the screen centre, at rest. They start apart, and gravity
+pulls them into one dense cluster within seconds:
+
+```powershell
+.\gradlew.bat run --args="--bodies=250000 --disc-test=650 --seed=20260730"
+```
 
 Build a runnable distribution:
 

@@ -101,6 +101,7 @@ data class GravityConfig(
             "preview-period-px",
             "frames",
             "square-test",
+            "disc-test",
             "seed",
             "profile",
             "benchmark",
@@ -220,6 +221,12 @@ data class GravityConfig(
                     it.toIntOrNull()
                         ?: throw IllegalArgumentException(
                             "Invalid integer for --square-test: $it",
+                        )
+                },
+                discTestRadiusPixels = values["disc-test"]?.let {
+                    it.toIntOrNull()
+                        ?: throw IllegalArgumentException(
+                            "Invalid integer for --disc-test: $it",
                         )
                 },
                 seed = longValue("seed", defaults.particles.seed),
@@ -531,6 +538,8 @@ data class ParticleConfig(
     val capacity: Int = 400_000,
     val initialBodies: Int = 50_000,
     val squareTestPixels: Int? = null,
+    /** Radius in px of a centred disc holding the initial bodies at random. */
+    val discTestRadiusPixels: Int? = null,
     val seed: Long? = null,
     /**
      * Physics steps between spatial reorderings of the body arrays; 0 disables
@@ -546,6 +555,12 @@ data class ParticleConfig(
         }
         require(squareTestPixels == null || squareTestPixels > 0) {
             "square test size must be positive"
+        }
+        require(discTestRadiusPixels == null || discTestRadiusPixels > 0) {
+            "disc test radius must be positive"
+        }
+        require(squareTestPixels == null || discTestRadiusPixels == null) {
+            "--square-test and --disc-test cannot be used together"
         }
     }
 }
