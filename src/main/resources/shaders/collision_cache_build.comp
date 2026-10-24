@@ -1,24 +1,31 @@
 #version 430 core
 layout(local_size_x = 256) in;
+#include "collision_cache_layout.glsl"
 layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) buffer Heads { uint heads[]; };
-layout(std430, binding = 2) writeonly buffer Next { uint collisionNext[]; };
+layout(std430, binding = 2) writeonly buffer Nodes { GridNode nodes[]; };
 layout(std430, binding = 3) writeonly buffer References { vec2 references[]; };
-layout(std430, binding = 4) readonly buffer CacheState { uint cacheState[]; };
+layout(std430, binding = 4) buffer Cache { uint cache[]; };
 layout(std430, binding = 5) readonly buffer AdaptiveState { uint adaptiveState[]; };
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
+uniform int uEpoch;
 void main() {
     if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
-    if (cacheState[0] == 0u) return;
+    if (cache[stateOffset(STATE_REBUILD)] == 0u) return;
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
+    uint epoch = uint(uEpoch);
+    if (id == 0u) cache[stateOffset(STATE_GRID_EPOCH)] = epoch;
     vec2 position = bodies[id].xy;
     references[id] = position;
     ivec2 cell = ivec2(floor(position * vec2(uGridWidth, uGridHeight)));
     cell = clamp(cell, ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
-    collisionNext[id] = atomicExchange(heads[cell.x + cell.y * uGridWidth], id + 1u);
+    uint previous = atomicExchange(heads[cell.x + cell.y * uGridWidth], (epoch << uint(uIdBits)) | (id + 1u));
+    // The node also keeps the position, so traversing this grid in the same
+    // pass needs one load per visited body instead of two.
+    nodes[id] = GridNode(position, headBody(previous, epoch), 0u);
 }

@@ -6,7 +6,6 @@ layout(std430, binding = 1) buffer Density { uint density[]; };
 layout(std430, binding = 2) buffer Heads { int heads[]; };
 layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
 layout(std430, binding = 4) buffer CellCounts { int cellCounts[]; };
-layout(std430, binding = 5) buffer CellMass { uint cellMass[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -66,6 +65,6 @@ void main() {
     ivec2 home = ivec2(floor(p * vec2(uPhysicalWidth, uPhysicalHeight)));
     uint homeIndex = cellIndex(home);
     nextBody[id] = atomicExchange(heads[homeIndex], int(id));
+    // Bodies have unit mass: a cell's count is its exact aggregate mass.
     atomicAdd(cellCounts[homeIndex], 1);
-    atomicAdd(cellMass[homeIndex], uint(uMassScale));
 }

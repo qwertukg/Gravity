@@ -161,11 +161,23 @@ class GravityPipeline(
 
     private var bodies = buffer(bodyBytes)
     private var collisionBodies = buffer(bodyBytes)
-    private val acceleration = buffer(accelerationBytes)
+    private var acceleration = buffer(accelerationBytes)
+    // Spatial reordering writes into the free ping-pong body buffer and this
+    // spare, then swaps them in.
+    private var spareAcceleration = buffer(accelerationBytes)
+    private val sortWidthBits = sortAxisBits(viewportWidth)
+    private val sortHeightBits = sortAxisBits(viewportHeight)
+    private val sortTiles = 1 shl (sortWidthBits + sortHeightBits)
+    private val sortBlocks = (sortTiles + SORT_SCAN_BLOCK - 1) / SORT_SCAN_BLOCK
+    private val sortCounts = buffer(sortTiles.toLong() * Int.SIZE_BYTES)
+    private val sortOffsets = buffer(sortTiles.toLong() * Int.SIZE_BYTES)
+    private val sortBlockTotals = buffer(sortBlocks.toLong() * Int.SIZE_BYTES)
+    private val sortBlockOffsets = buffer(sortBlocks.toLong() * Int.SIZE_BYTES)
+    private val sortTotal = buffer(Int.SIZE_BYTES.toLong())
+    private var physicsSteps = 0L
     private val density = buffer(maximumMeshCells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
-    private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody =
         buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
@@ -216,6 +228,9 @@ class GravityPipeline(
         GlProgram.compute("/shaders/collision_adaptive_finalize.comp")
     private val stopBodiesProgram = GlProgram.compute("/shaders/stop_bodies.comp")
     private val trajectoryCompute = GlProgram.compute("/shaders/trajectory.comp")
+    private val sortCount = GlProgram.compute("/shaders/spatial_sort_count.comp")
+    private val sortScan = GlProgram.compute("/shaders/spatial_sort_scan.comp")
+    private val sortScatter = GlProgram.compute("/shaders/spatial_sort_scatter.comp")
     private val normalizationMass = config.particles.initialBodies.toFloat()
     private val neighborCache = if (
         config.collisions.neighborCache && CollisionNeighborCache.cacheBytes(config.particles.capacity) <=
@@ -228,9 +243,7 @@ class GravityPipeline(
             gridWidth = collisionGridWidth,
             gridHeight = collisionGridHeight,
             heads = collisionHeads,
-            next = collisionNext,
             contacts = collisionContactCounts,
-            acceleration = acceleration,
             pressures = pressures,
             adaptive = collisionAdaptiveState,
             bind = ::bind,
@@ -249,6 +262,14 @@ class GravityPipeline(
         clearUnsignedIntBuffer(collisionHeads)
         clearUnsignedIntBuffer(collisionAdaptiveState)
         clearUnsignedIntBuffer(collisionDispatchCommands)
+        // The scatter counts every tile back down to zero, so this is the
+        // only clear the tile counts ever need.
+        clearUnsignedIntBuffer(sortCounts)
+        listOf(sortCount, sortScatter).forEach { program ->
+            program.use()
+            program.int("uSortWidthBits", sortWidthBits)
+            program.int("uSortHeightBits", sortHeightBits)
+        }
         initializeTwiddles()
         initializeKernel()
     }
@@ -333,6 +354,8 @@ class GravityPipeline(
 
     fun step(activeBodies: Int) {
         profiler?.begin(GpuStage.PHYSICS_STEP)
+        val sortInterval = config.particles.spatialSortInterval
+        if (sortInterval > 0 && physicsSteps++ % sortInterval == 0L) sortBodies(activeBodies)
         if (config.collisions.adaptive) {
             profiler?.begin(GpuStage.COLLISION_ADAPTIVE)
             prepareAdaptiveCollisions(activeBodies)
@@ -378,7 +401,6 @@ class GravityPipeline(
         profiler?.begin(GpuStage.TRAJECTORY)
         val wrappedOriginX = placeX(originX)
         val wrappedOriginY = placeY(originY)
-        val totalMass = activeBodies.toFloat()
 
         trajectoryCompute.use()
         bind(0, trajectory)
@@ -387,7 +409,6 @@ class GravityPipeline(
         bind(3, cellHeads)
         bind(4, nextBody)
         bind(5, cellCounts)
-        bind(6, cellMass)
         bind(7, bodies)
         trajectoryCompute.int("uStepCount", config.trajectory.steps)
         trajectoryCompute.int("uMeshWidth", meshWidth)
@@ -450,7 +471,6 @@ class GravityPipeline(
         )
         trajectoryCompute.float("uDomainAspect", domainAspect)
         trajectoryCompute.float("uInitialTotalMass", normalizationMass)
-        trajectoryCompute.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         dispatch(1)
         barrier()
         profiler?.end(GpuStage.TRAJECTORY)
@@ -652,7 +672,6 @@ class GravityPipeline(
         bind(0, density)
         bind(1, cellHeads)
         bind(2, cellCounts)
-        bind(3, cellMass)
         clear.int("uMeshCells", meshCells)
         clear.int("uParticleCells", physicalCells)
         dispatch(maxOf(meshCells, physicalCells))
@@ -664,7 +683,6 @@ class GravityPipeline(
         bind(2, cellHeads)
         bind(3, nextBody)
         bind(4, cellCounts)
-        bind(5, cellMass)
         build.int("uCount", activeBodies)
         build.int("uMeshWidth", meshWidth)
         build.int("uMeshHeight", meshHeight)
@@ -720,7 +738,7 @@ class GravityPipeline(
         substepIndex: Int?,
     ) {
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded)
+            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
@@ -910,7 +928,6 @@ class GravityPipeline(
 
     private fun applyKick(activeBodies: Int, initial: Boolean) {
         profiler?.begin(GpuStage.GRAVITY_KICK)
-        val totalMass = activeBodies.toFloat()
         kick.use()
         bind(0, bodies)
         bind(1, acceleration)
@@ -919,10 +936,8 @@ class GravityPipeline(
         bind(4, cellHeads)
         bind(5, nextBody)
         bind(6, cellCounts)
-        bind(7, cellMass)
         kick.int("uCount", activeBodies)
         kick.float("uInitialTotalMass", normalizationMass)
-        kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
         kick.int("uMeshWidth", meshWidth)
         kick.int("uMeshHeight", meshHeight)
         kick.int("uBounded", if (bounded) 1 else 0)
@@ -956,6 +971,53 @@ class GravityPipeline(
         dispatchBodies(activeBodies)
         barrier()
         profiler?.end(GpuStage.GRAVITY_KICK)
+    }
+
+    /**
+     * Reorders bodies along a Morton curve of screen tiles, so bodies that are
+     * close on screen get close IDs and every neighbor search reads nearby
+     * memory. A pure permutation: positions, velocities and accelerations are
+     * copied bit for bit, and no contact or force depends on an ID's value.
+     */
+    private fun sortBodies(activeBodies: Int) {
+        profiler?.begin(GpuStage.SPATIAL_SORT)
+        sortCount.use()
+        bind(0, bodies)
+        bind(1, sortCounts)
+        sortCount.int("uCount", activeBodies)
+        dispatchBodies(activeBodies)
+        barrier()
+
+        sortScan.use()
+        bind(0, sortCounts)
+        bind(1, sortOffsets)
+        bind(2, sortBlockTotals)
+        sortScan.int("uLength", sortTiles)
+        glDispatchCompute(sortBlocks, 1, 1)
+        barrier()
+        bind(0, sortBlockTotals)
+        bind(1, sortBlockOffsets)
+        bind(2, sortTotal)
+        sortScan.int("uLength", sortBlocks)
+        glDispatchCompute(1, 1, 1)
+        barrier()
+
+        sortScatter.use()
+        bind(0, bodies)
+        bind(1, acceleration)
+        bind(2, collisionBodies)
+        bind(3, spareAcceleration)
+        bind(4, sortCounts)
+        bind(5, sortOffsets)
+        bind(6, sortBlockOffsets)
+        sortScatter.int("uCount", activeBodies)
+        dispatchBodies(activeBodies)
+        barrier()
+        bodies = collisionBodies.also { collisionBodies = bodies }
+        acceleration = spareAcceleration.also { spareAcceleration = acceleration }
+        // Cached candidate lists and linked grids name the old IDs.
+        neighborCache?.invalidate() ?: clearUnsignedIntBuffer(collisionHeads)
+        profiler?.end(GpuStage.SPATIAL_SORT)
     }
 
     private fun inverse(base: Int) {
@@ -1179,16 +1241,24 @@ class GravityPipeline(
             collisionAdaptiveFinalize,
             stopBodiesProgram,
             trajectoryCompute,
+            sortCount,
+            sortScan,
+            sortScatter,
         )
             .forEach(GlProgram::close)
         intArrayOf(
             bodies,
             collisionBodies,
             acceleration,
+            spareAcceleration,
+            sortCounts,
+            sortOffsets,
+            sortBlockTotals,
+            sortBlockOffsets,
+            sortTotal,
             density,
             cellHeads,
             cellCounts,
-            cellMass,
             nextBody,
             collisionHeads,
             collisionNext,
@@ -1213,5 +1283,16 @@ class GravityPipeline(
         private const val MAXIMUM_FFT_AXIS = 2048
         /** Largest float below 1, as in the collision shaders. */
         private const val MAXIMUM_UNIT = 0.99999994f
+        /** Values scanned per workgroup by spatial_sort_scan.comp. */
+        private const val SORT_SCAN_BLOCK = 1024
+        /** Target reordering tile edge; a tile holds a few dozen dense bodies. */
+        private const val SORT_TILE_PIXELS = 4
+
+        /**
+         * Power-of-two tiles per axis, at most 1024: two scan levels of 1024
+         * values then cover every tile.
+         */
+        private fun sortAxisBits(extent: Int): Int =
+            (31 - Integer.numberOfLeadingZeros(max(1, extent / SORT_TILE_PIXELS))).coerceAtMost(10)
     }
 }

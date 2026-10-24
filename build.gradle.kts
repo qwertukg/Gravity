@@ -52,6 +52,7 @@ tasks.test {
     useJUnitPlatform()
     exclude("**/CollisionShaderIntegrationTest.class")
     exclude("**/ParticleRendererTest.class")
+    exclude("**/SpatialSortIntegrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -62,6 +63,7 @@ tasks.register<Test>("gpuTest") {
     useJUnitPlatform()
     include("**/CollisionShaderIntegrationTest.class")
     include("**/ParticleRendererTest.class")
+    include("**/SpatialSortIntegrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

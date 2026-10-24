@@ -115,6 +115,10 @@ scenario changes.
   are checked on every substep and passed directly to the solver. Overflow
   uses complete linked-list traversal; fast scenes rebuild the ordinary grid.
   All 16 substeps and the final contact pass are retained.
+- Every second step the body arrays are reordered along a Morton curve of
+  small screen tiles, so neighbouring bodies have neighbouring IDs and every
+  neighbor search reads nearby memory. It is a pure permutation and costs
+  about 0.1 ms at 400k bodies.
 - Bodies are modeled as smooth circles with a restitution coefficient of `0`.
 - A symmetric Jacobi correction removes penetration and approaching normal
   velocity. Position correction is converted to velocity with
@@ -348,6 +352,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
 | `--collision-cache=true\|false` | `true` | Reuse exact broad-phase candidates and current contacts; no substeps or contacts removed |
 | `--collision-skin=F` | `0.5 × S` | Neighbor-cache distance reserve in pixels, `F > 0`; affects search cost only |
+| `--sort-interval=N` | `2` | Physics steps between spatial reorderings of the body arrays, `N ≥ 0`; `0` disables it |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
 | `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
@@ -438,7 +443,9 @@ correctness checks and paired benchmarks run without opening a visible window:
 ```
 
 See [`docs/performance-neighbor-cache.md`](docs/performance-neighbor-cache.md)
-for its guarantees, measured results, and memory cost. The older baseline and
+for its guarantees, measured results, and memory cost, and
+[`docs/performance-spatial-sort.md`](docs/performance-spatial-sort.md) for the
+spatial reordering and leaner collision passes (up to 7.4× faster physics). The older baseline and
 adaptive scripts explicitly disable this cache to keep those experiments separate.
 
 The baseline methodology, hardware, and results are documented in

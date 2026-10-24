@@ -7,7 +7,6 @@ layout(std430, binding = 2) readonly buffer ForceY { vec2 forceY[]; };
 layout(std430, binding = 3) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 4) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 5) readonly buffer CellCounts { int cellCounts[]; };
-layout(std430, binding = 6) readonly buffer CellMass { uint cellMass[]; };
 layout(std430, binding = 7) readonly buffer Bodies { vec4 bodies[]; };
 
 uniform int uStepCount;
@@ -37,7 +36,6 @@ uniform float uGravity;
 uniform float uSigmaCells;
 uniform float uDomainAspect;
 uniform float uInitialTotalMass;
-uniform float uInverseMassScale;
 uniform int uExactCellThreshold;
 uniform int uMaximumHomeInteractions;
 uniform float uMinimumDashPixels;
@@ -134,8 +132,8 @@ vec2 accelerationAt(vec2 position) {
             if (!homeCell && count > uExactCellThreshold) {
                 vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
-                float aggregateMass =
-                    float(cellMass[index]) * uInverseMassScale;
+                // Unit masses: the count is the exact aggregate mass.
+                float aggregateMass = float(count);
                 result += localAcceleration(
                     center,
                     position,

@@ -2,6 +2,7 @@
 // contact limits: overflowing bodies traverse the complete reference grid.
 const uint NEIGHBOR_SLOTS = 32u;
 const uint CONTACT_SLOTS = 8u;
+const uint CACHE_PLANES = 2u + NEIGHBOR_SLOTS + CONTACT_SLOTS;
 const uint DIRECT_GRID = 0xffffffffu;
 uniform int uCapacity;
 
@@ -9,22 +10,30 @@ uint cacheOffset(uint plane, uint id) {
     return plane * uint(uCapacity) + id;
 }
 
-ivec2 wrapCell(ivec2 cell) {
-    if (cell.x < 0) cell.x += uGridWidth;
-    else if (cell.x >= uGridWidth) cell.x -= uGridWidth;
-    if (cell.y < 0) cell.y += uGridHeight;
-    else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
-    return cell;
+// Control words follow the per-body planes, so every pass can reach them
+// within OpenGL 4.3's eight storage bindings.
+const uint STATE_REBUILD = 0u;        // this pass rebuilds the broad phase
+const uint STATE_POPULATION = 1u;     // bodies in the last build; 0 forces a rebuild
+const uint STATE_REBUILDS = 2u;       // rebuild counter (diagnostics)
+const uint STATE_DIRECT = 3u;         // this pass uses the ordinary contact grid
+const uint STATE_DENSE_SAMPLES = 4u;  // sampled dense bodies of the current count
+const uint STATE_GRID_EPOCH = 5u;     // tag of the retained linked grid
+
+uint stateOffset(uint word) {
+    return CACHE_PLANES * uint(uCapacity) + word;
 }
 
-ivec2 stencilOrigin(ivec2 home, int radius) {
-    // Bound offsets to a single wrap even when the stencil covers the complete
-    // tiny periodic grid. GLSL signed remainder is undefined for negatives.
-    return home - min(ivec2(radius), ivec2(uGridWidth - 1, uGridHeight - 1));
-}
+// Grid node of the last build: its position and the next body in its cell.
+struct GridNode {
+    vec2 position;
+    uint next;
+    uint unused;
+};
 
-// Enumerate each periodic cell once even for a viewport smaller than the stencil.
-ivec2 stencilSize(int radius) {
-    return min(ivec2(2 * radius + 1), ivec2(uGridWidth, uGridHeight));
-}
+// Heads hold (epoch << uIdBits) | (id + 1). A head written by an older build is
+// an empty list, so the grid never needs a clearing pass.
+uniform int uIdBits;
 
+uint headBody(uint head, uint epoch) {
+    return (head >> uint(uIdBits)) == epoch ? head & ((1u << uint(uIdBits)) - 1u) : 0u;
+}

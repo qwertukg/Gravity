@@ -13,17 +13,32 @@ object CollisionBenchmark {
         val measured = args.getOrNull(1)?.toInt() ?: 240
         val filter = args.getOrNull(2)?.split(',')?.toSet()
         val repetitions = args.getOrNull(3)?.toInt() ?: 1
-        require(warmup >= 0 && measured > 0 && repetitions > 0)
+        // "cached" skips the slow reference pipeline when only the default
+        // path is being compared between revisions.
+        val variants = args.getOrNull(4) ?: "both"
+        val sortInterval = args.getOrNull(5)?.toInt()
+        require(warmup >= 0 && measured > 0 && repetitions > 0 && variants in setOf("both", "cached"))
         val output = Path.of("build", "performance-lossless")
         Files.createDirectories(output)
         CollisionGpuContext().use {
-            for (scenario in listOf("calm-050k", "calm-100k", "calm-400k", "square-400k", "projectile-100k", "projectile-400k")) {
+            for (scenario in listOf("calm-050k", "calm-100k", "calm-400k", "square-400k", "projectile-100k", "projectile-400k", "impact", "galaxy")) {
                 if (filter != null && scenario !in filter) continue
                 repeat(repetitions) { repetition ->
-                    for (cached in if (repetition % 2 == 0) listOf(false, true) else listOf(true, false)) {
-                        val bodies = scenario.substringAfter('-').removeSuffix("k").toInt() * 1000
+                    val order = if (repetition % 2 == 0) listOf(false, true) else listOf(true, false)
+                    for (cached in order.filter { variants == "both" || it }) {
+                        // Real scenarios: dense planets and a packed bulge,
+                        // bodies stored in the scenario's shuffled order.
+                        val scenarioState = when (scenario) {
+                            "impact" -> Scenario.PLANETARY_IMPACT
+                            "galaxy" -> Scenario.GALAXY
+                            else -> null
+                        }?.bodies(ScenarioSpace(3440f, 1440f, GravityFieldConfig().gravitationalConstant, CollisionConfig.REFERENCE_DIAMETER_PIXELS), 20260730)
+                        val bodies = scenarioState?.let { it.size / 4 }
+                            ?: (scenario.substringAfter('-').removeSuffix("k").toInt() * 1000)
+                        var particles = ParticleConfig(420_000, bodies, if (scenario.startsWith("square")) 632 else null, 20260730)
+                        if (sortInterval != null) particles = particles.copy(spatialSortInterval = sortInterval)
                         val config = GravityConfig(
-                            particles = ParticleConfig(420_000, bodies, if (scenario.startsWith("square")) 632 else null, 20260730),
+                            particles = particles,
                             collisions = CollisionConfig(adaptive = false, neighborCache = cached),
                         )
                         // A hidden compute-only run has no swap-chain pacing.
@@ -31,7 +46,7 @@ object CollisionBenchmark {
                         // dropping frames when the CPU submits ahead of the GPU.
                         val profiler = GpuProfiler(measured + 1, 128, measured + 16)
                         profiler.use {
-                            GravityPipeline(config, 3440, 1440, profiler).use { pipeline ->
+                            GravityPipeline(config, 3440, 1440, profiler, scenarioState).use { pipeline ->
                                 pipeline.initializeAcceleration(bodies)
                                 var active = bodies
                                 repeat(warmup) { pipeline.step(active) }

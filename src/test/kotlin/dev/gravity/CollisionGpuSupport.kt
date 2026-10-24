@@ -46,6 +46,7 @@ internal object CollisionGpuAccess {
         it.get(target)
     }
     fun buffer(pipeline: GravityPipeline, name: String): Int = field(pipeline, name) as Int
+    fun intField(pipeline: GravityPipeline, name: String): Int = field(pipeline, name) as Int
 
     fun upload(pipeline: GravityPipeline, bodies: FloatArray, clearHeads: Boolean = false) {
         (field(pipeline, "boundStorageBuffers") as IntArray).fill(-1)
@@ -81,6 +82,32 @@ internal object CollisionGpuAccess {
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT or GL_COMMAND_BARRIER_BIT)
     }
 
+    fun uploadFloats(pipeline: GravityPipeline, name: String, values: FloatArray) {
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer(pipeline, name))
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, values)
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
+    }
+
+    fun sort(pipeline: GravityPipeline, count: Int) {
+        (field(pipeline, "boundStorageBuffers") as IntArray).fill(-1)
+        val method = GravityPipeline::class.java.declaredMethods.single { it.name == "sortBodies" }
+        method.isAccessible = true
+        method.invoke(pipeline, count)
+    }
+
+    /** Moves the grid epoch of the neighbor cache, e.g. right before it wraps. */
+    fun setEpoch(pipeline: GravityPipeline, epoch: Int): Int {
+        val cache = field(pipeline, "neighborCache") ?: error("Cache was not allocated")
+        cache.javaClass.getDeclaredField("epoch").let { it.isAccessible = true; it.setInt(cache, epoch) }
+        return field(cache, "maximumEpoch") as Int
+    }
+
+    fun epoch(pipeline: GravityPipeline): Int {
+        val cache = field(pipeline, "neighborCache") ?: error("Cache was not allocated")
+        return field(cache, "epoch") as Int
+    }
+
     fun floats(pipeline: GravityPipeline, name: String, length: Int): FloatArray = floats(buffer(pipeline, name), length)
     fun floats(buffer: Int, length: Int): FloatArray {
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
@@ -103,14 +130,16 @@ internal object CollisionGpuAccess {
         return result
     }
 
-    fun rebuilds(pipeline: GravityPipeline): Int {
-        val cache = field(pipeline, "neighborCache") ?: error("Cache was not allocated")
-        return ints(field(cache, "state") as Int, 3)[2]
-    }
+    fun rebuilds(pipeline: GravityPipeline): Int = cacheState(pipeline)[CollisionNeighborCache.STATE_REBUILDS]
 
-    fun directGrid(pipeline: GravityPipeline): Boolean {
+    /** Broad phase scheduled for the NEXT pass by the last solve. */
+    fun directGrid(pipeline: GravityPipeline): Boolean = cacheState(pipeline)[CollisionNeighborCache.STATE_DIRECT] != 0
+
+    private fun cacheState(pipeline: GravityPipeline): IntArray {
         val cache = field(pipeline, "neighborCache") ?: error("Cache was not allocated")
-        return ints(field(cache, "state") as Int, 5)[3] != 0
+        val capacity = field(cache, "capacity") as Int
+        val words = CollisionNeighborCache.cacheBytes(capacity).toInt() / 4
+        return ints(field(cache, "cache") as Int, words).copyOfRange(words - CollisionNeighborCache.STATE_WORDS, words)
     }
 
     fun cachedContacts(pipeline: GravityPipeline, capacity: Int, count: Int): Array<IntArray> {

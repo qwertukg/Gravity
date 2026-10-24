@@ -69,6 +69,7 @@ data class GravityConfig(
             "adaptive-collisions",
             "collision-cache",
             "collision-skin",
+            "sort-interval",
             "adaptive-displacement-fraction",
             "adaptive-penetration-fraction",
             "adaptive-dense-contact-count",
@@ -222,6 +223,10 @@ data class GravityConfig(
                         )
                 },
                 seed = longValue("seed", defaults.particles.seed),
+                spatialSortInterval = intValue(
+                    "sort-interval",
+                    defaults.particles.spatialSortInterval,
+                ),
             )
             return GravityConfig(
                 particles = particleConfig,
@@ -527,9 +532,15 @@ data class ParticleConfig(
     val initialBodies: Int = 50_000,
     val squareTestPixels: Int? = null,
     val seed: Long? = null,
+    /**
+     * Physics steps between spatial reorderings of the body arrays; 0 disables
+     * it. Reordering only permutes body IDs, so every contact and force stays.
+     */
+    val spatialSortInterval: Int = 2,
 ) {
     init {
         require(capacity > 0) { "capacity must be positive" }
+        require(spatialSortInterval >= 0) { "sort interval must be non-negative" }
         require(initialBodies in 1..capacity) {
             "initial body count must be in 1..capacity"
         }

@@ -178,7 +178,10 @@ class CollisionShaderIntegrationTest {
                         CollisionGpuAccess.collide(reference, 4096)
                         assertContentEquals(expected, CollisionGpuAccess.ints(optimized, "collisionContactCounts", 4096))
                         compare("dense direct $pass", optimized, reference, 4096)
-                        assertEquals(pass > 0, CollisionGpuAccess.directGrid(optimized))
+                        // Each dense pass schedules the direct grid for the next
+                        // one; a direct pass leaves no list, so all rebuild.
+                        assertTrue(CollisionGpuAccess.directGrid(optimized), "dense pass $pass schedules the direct grid")
+                        assertEquals(pass + 1, CollisionGpuAccess.rebuilds(optimized))
                     }
                 }
             }

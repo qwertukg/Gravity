@@ -1,5 +1,8 @@
 # Fixed-substep neighbor and contact cache
 
+> Later stage: spatial reordering, epoch-tagged grid heads and four dispatches
+> per pass are described in [performance-spatial-sort.md](performance-spatial-sort.md).
+
 The default collision path now reuses broad-phase candidates and passes found
 contacts directly to the solver. `--adaptive-collisions` remains **false**.
 The default still executes 16 drift/contact substeps and the final zero-drift

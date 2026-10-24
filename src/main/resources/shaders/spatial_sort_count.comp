@@ -1,0 +1,12 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer TileCounts { uint tileCounts[]; };
+uniform int uCount;
+#include "spatial_sort_key.glsl"
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    atomicAdd(tileCounts[sortKey(bodies[id].xy)], 1u);
+}

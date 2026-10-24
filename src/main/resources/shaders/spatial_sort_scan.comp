@@ -1,0 +1,35 @@
+#version 430 core
+// Exclusive prefix sum of one 1024-value block per workgroup. The same program
+// scans the tile counts and then, as a single workgroup, the block totals.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Values { uint values[]; };
+layout(std430, binding = 1) writeonly buffer Prefixes { uint prefixes[]; };
+layout(std430, binding = 2) writeonly buffer BlockTotals { uint blockTotals[]; };
+uniform int uLength;
+const uint VALUES_PER_INVOCATION = 4u;
+const uint BLOCK = 256u * VALUES_PER_INVOCATION;
+shared uint partial[256];
+
+void main() {
+    uint local = gl_LocalInvocationID.x;
+    uint base = gl_WorkGroupID.x * BLOCK + local * VALUES_PER_INVOCATION;
+    uint prefix[VALUES_PER_INVOCATION];
+    uint sum = 0u;
+    for (uint i = 0u; i < VALUES_PER_INVOCATION; i++) {
+        prefix[i] = sum;
+        if (base + i < uint(uLength)) sum += values[base + i];
+    }
+    partial[local] = sum;
+    barrier();
+    for (uint stride = 1u; stride < 256u; stride <<= 1u) {
+        uint add = local >= stride ? partial[local - stride] : 0u;
+        barrier();
+        partial[local] += add;
+        barrier();
+    }
+    uint before = partial[local] - sum;
+    for (uint i = 0u; i < VALUES_PER_INVOCATION; i++) {
+        if (base + i < uint(uLength)) prefixes[base + i] = before + prefix[i];
+    }
+    if (local == 255u) blockTotals[gl_WorkGroupID.x] = partial[255];
+}

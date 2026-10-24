@@ -167,4 +167,12 @@ class GravityConfigTest {
             assertFailsWith<IllegalArgumentException> { CollisionConfig(neighborSkinPixels = skin) }
         }
     }
+
+    @Test
+    fun `spatial reordering runs every second step unless disabled`() {
+        assertEquals(2, GravityConfig.parse(emptyArray(), emptyMap()).particles.spatialSortInterval)
+        assertEquals(0, GravityConfig.parse(arrayOf("--sort-interval=0"), emptyMap()).particles.spatialSortInterval)
+        assertEquals(5, GravityConfig.parse(arrayOf("--sort-interval=5"), emptyMap()).particles.spatialSortInterval)
+        assertFailsWith<IllegalArgumentException> { GravityConfig.parse(arrayOf("--sort-interval=-1"), emptyMap()) }
+    }
 }

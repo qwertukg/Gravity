@@ -1,0 +1,25 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Accelerations { vec2 acceleration[]; };
+layout(std430, binding = 2) writeonly buffer SortedBodies { vec4 sortedBodies[]; };
+layout(std430, binding = 3) writeonly buffer SortedAccelerations { vec2 sortedAcceleration[]; };
+layout(std430, binding = 4) buffer TileCounts { uint tileCounts[]; };
+layout(std430, binding = 5) readonly buffer TileOffsets { uint tileOffsets[]; };
+layout(std430, binding = 6) readonly buffer BlockOffsets { uint blockOffsets[]; };
+uniform int uCount;
+#include "spatial_sort_key.glsl"
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 body = bodies[id];
+    uint key = sortKey(body.xy);
+    // Counting down hands out every slot of the tile exactly once and leaves
+    // the counts at zero for the next reordering.
+    uint rank = atomicAdd(tileCounts[key], 0xffffffffu) - 1u;
+    uint target = blockOffsets[key >> 10] + tileOffsets[key] + rank;
+    // A pure permutation: state is copied bit for bit, nothing is recomputed.
+    sortedBodies[target] = body;
+    sortedAcceleration[target] = acceleration[id];
+}

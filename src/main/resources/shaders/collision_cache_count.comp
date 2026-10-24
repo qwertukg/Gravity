@@ -1,12 +1,12 @@
 #version 430 core
 layout(local_size_x = 256) in;
+#include "collision_cache_layout.glsl"
 layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Heads { uint heads[]; };
-layout(std430, binding = 2) readonly buffer Next { uint collisionNext[]; };
+layout(std430, binding = 2) readonly buffer Nodes { GridNode nodes[]; };
 layout(std430, binding = 3) writeonly buffer ContactCounts { uint contactCounts[]; };
 layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 5) buffer Cache { uint cache[]; };
-layout(std430, binding = 6) buffer CacheState { uint cacheState[]; };
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
@@ -18,15 +18,17 @@ uniform float uCandidateRadiusSquared;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
 uniform int uBounded;
-#include "collision_cache_layout.glsl"
+#include "collision_cache_grid.glsl"
 
-float pairDistanceSquared(uint id, uint other) {
+float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition) {
     // The reference counter evaluates an unordered pair in ascending ID order
     // and increments BOTH counts. Preserve that orientation here as well:
     // reversing an expression that the driver contracts into an FMA can change
-    // its last bit at the strict contact threshold.
-    vec2 firstPixels = bodies[min(id, other)].xy * uViewport;
-    precise vec2 delta = firstPixels - bodies[max(id, other)].xy * uViewport;
+    // its last bit at the strict contact threshold. The own position comes from
+    // a register instead of a reload; the operands are the same floats.
+    bool ownFirst = id < other;
+    vec2 firstPixels = (ownFirst ? position : otherPosition) * uViewport;
+    precise vec2 delta = firstPixels - (ownFirst ? otherPosition : position) * uViewport;
     // Walls: no minimum image, bodies across an edge never touch.
     if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
     precise float distanceSquared = dot(delta, delta);
@@ -44,13 +46,14 @@ void main() {
     if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
-    bool rebuild = cacheState[0] != 0u;
-    bool direct = cacheState[3] != 0u;
-    // [1] isn't read by any invocation in this dispatch. [0] stays immutable
-    // until the next reset dispatch (a global barrier separates those passes).
+    bool rebuild = cache[stateOffset(STATE_REBUILD)] != 0u;
+    bool direct = cache[stateOffset(STATE_DIRECT)] != 0u;
+    // Population and rebuild counter aren't read by any invocation in this
+    // dispatch. The flags stay immutable until this pass's solve schedules
+    // the next pass (a global barrier separates those passes).
     if (id == 0u && rebuild) {
-        cacheState[1] = uint(uCount);
-        cacheState[2]++;
+        cache[stateOffset(STATE_POPULATION)] = uint(uCount);
+        cache[stateOffset(STATE_REBUILDS)]++;
     }
     vec2 position = bodies[id].xy;
     uint neighbors = rebuild ? 0u : cache[cacheOffset(0u, id)];
@@ -58,7 +61,7 @@ void main() {
     if (!rebuild && neighbors <= NEIGHBOR_SLOTS) {
         for (uint i = 0u; i < neighbors; i++) {
             uint other = cache[cacheOffset(2u + i, id)];
-            countContact(id, other, pairDistanceSquared(id, other), contacts);
+            countContact(id, other, pairDistanceSquared(id, position, other, bodies[other].xy), contacts);
         }
     } else {
         uint referenceCell;
@@ -69,17 +72,22 @@ void main() {
         } else {
             referenceCell = cache[cacheOffset(1u, id)];
         }
+        uint epoch = cache[stateOffset(STATE_GRID_EPOCH)];
         ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
         int radius = direct ? uNeighborCellRadius : uSearchRadius;
         ivec2 size = stencilSize(radius);
         for (int y = 0; y < size.y; y++) {
             for (int x = 0; x < size.x; x++) {
                 ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
-                uint encoded = heads[cell.x + cell.y * uGridWidth];
+                uint encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
                 while (encoded != 0u) {
                     uint other = encoded - 1u;
+                    GridNode node = nodes[other];
                     if (other != id) {
-                        float distanceSquared = pairDistanceSquared(id, other);
+                        // A grid built in this pass holds exactly the positions
+                        // read here; a retained grid holds older ones.
+                        vec2 otherPosition = rebuild ? node.position : bodies[other].xy;
+                        float distanceSquared = pairDistanceSquared(id, position, other, otherPosition);
                         if (rebuild && !direct) {
                             if (distanceSquared <= uCandidateRadiusSquared) {
                                 if (neighbors < NEIGHBOR_SLOTS) cache[cacheOffset(2u + neighbors, id)] = other;
@@ -88,7 +96,7 @@ void main() {
                         }
                         countContact(id, other, distanceSquared, contacts);
                     }
-                    encoded = collisionNext[other];
+                    encoded = node.next;
                 }
             }
         }
@@ -102,5 +110,5 @@ void main() {
     // Vary the sampled lane to avoid aliasing row-major lattice boundaries.
     uint sampledLane = min((gl_WorkGroupID.x * 73u + 17u) & 255u,
         uint(uCount) - gl_WorkGroupID.x * 256u - 1u);
-    if (gl_LocalInvocationID.x == sampledLane && contacts >= 4u) atomicAdd(cacheState[4], 1u);
+    if (gl_LocalInvocationID.x == sampledLane && contacts >= 4u) atomicAdd(cache[stateOffset(STATE_DENSE_SAMPLES)], 1u);
 }
