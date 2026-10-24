@@ -4,6 +4,8 @@ A fullscreen two-dimensional N-body simulator built with Kotlin/JVM and
 OpenGL 4.3. Gravity, collisions, integration, and trajectory prediction are
 computed by GPU compute shaders.
 
+![Planetary impact: a smaller body grazes a planet, splashes a debris tail and merges](docs/impact.gif)
+
 ## Technical model
 
 | Parameter | Default value |
