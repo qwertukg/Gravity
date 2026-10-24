@@ -26,12 +26,16 @@ data class ScenarioSpace(
     fun scaled(pixelsAt1440: Float) = pixelsAt1440 * heightPixels / 1440f
 
     /**
-     * Body counts are authored for a 1440 px tall screen and scale with its
-     * area, so packed bodies shrink with the distances around them. Larger
-     * screens keep the authored counts (the limit) and are simply sparser.
+     * Body counts are authored for a 1440 px tall screen and reference-size
+     * bodies. They scale with the screen area and inversely with the body
+     * area, so planets and discs keep their size on screen. Larger screens or
+     * smaller bodies keep the authored counts (the limit) and are sparser.
      */
-    fun bodies(countAt1440: Int): Int =
-        (countAt1440 * minOf(1f, (heightPixels / 1440f) * (heightPixels / 1440f))).roundToInt()
+    fun bodies(countAt1440: Int): Int {
+        val screen = (heightPixels / 1440f) * (heightPixels / 1440f)
+        val body = CollisionConfig.REFERENCE_DIAMETER_PIXELS / contactDiameterPixels
+        return maxOf(1, (countAt1440 * minOf(1f, screen * body * body)).roundToInt())
+    }
 
     /**
      * Circular speed in px/s around an axisymmetric mass that holds

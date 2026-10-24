@@ -142,6 +142,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             viewportWidth,
             viewportHeight,
             config.presentation,
+            config.collisions.contactDiameterPixels,
         )
         trajectoryProgram = GlProgram.graphics(
             "/shaders/trajectory.vert",

@@ -1,6 +1,9 @@
 package dev.gravity
 
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * Complete runtime configuration for the application.
@@ -40,6 +43,9 @@ data class GravityConfig(
     }
 
     companion object {
+        /** Cluster pressure ∝ point size^-1.2, measured at point sizes 1 and 3. */
+        private const val PRESSURE_SIZE_EXPONENT = 1.2f
+
         private val supportedKeys = setOf(
             "bodies",
             "capacity",
@@ -173,6 +179,20 @@ data class GravityConfig(
                     }
                 } ?: default
 
+            // --point-size is the one body-size knob. Every size-dependent
+            // default follows it; options given explicitly still win.
+            val pointSize = floatValue(
+                "point-size",
+                defaults.presentation.bodyPointSizePixels,
+            )
+            require(pointSize > 0f && pointSize.isFinite()) {
+                "Invalid --point-size: $pointSize"
+            }
+            val sizeScale = pointSize / defaults.presentation.bodyPointSizePixels
+            // Counts shrink with body area so clusters keep their screen size.
+            fun scaledCount(count: Int) =
+                max(1, (count / (sizeScale * sizeScale)).roundToInt())
+
             val grid = stringValue("grid", "GRAVITY_GRID")
             val (gridWidth, gridHeight) = parseGrid(
                 grid,
@@ -190,7 +210,7 @@ data class GravityConfig(
                 initialBodies = min(
                     intValue(
                         "bodies",
-                        defaults.particles.initialBodies,
+                        scaledCount(defaults.particles.initialBodies),
                         "GRAVITY_BODIES",
                     ),
                     capacity,
@@ -264,7 +284,7 @@ data class GravityConfig(
                     ),
                     contactDiameterPixels = floatValue(
                         "diameter",
-                        defaults.collisions.contactDiameterPixels,
+                        defaults.collisions.contactDiameterPixels * sizeScale,
                         "GRAVITY_DIAMETER",
                     ),
                     neighborCellRadius = intValue(
@@ -289,7 +309,7 @@ data class GravityConfig(
                     ),
                     neighborSkinPixels = floatValue(
                         "collision-skin",
-                        defaults.collisions.neighborSkinPixels,
+                        defaults.collisions.neighborSkinPixels * sizeScale,
                     ),
                     allowedDisplacementFraction = floatValue(
                         "adaptive-displacement-fraction",
@@ -358,7 +378,7 @@ data class GravityConfig(
                     ),
                     plusKeyBodyCount = intValue(
                         "projectile-plus-bodies",
-                        defaults.projectiles.plusKeyBodyCount,
+                        scaledCount(defaults.projectiles.plusKeyBodyCount),
                     ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
@@ -386,9 +406,13 @@ data class GravityConfig(
                     ),
                 ),
                 presentation = PresentationConfig(
+                    // Fewer, larger bodies: a column holds 1/s as many layers.
+                    // Measured cluster pressure falls as about s^-1.2 (p99 is
+                    // 3.65x lower at s = 3), so the colours stay the same.
                     maximumVisualPressure = floatValue(
                         "pressure-max",
-                        defaults.presentation.maximumVisualPressure,
+                        defaults.presentation.maximumVisualPressure /
+                            sizeScale.pow(PRESSURE_SIZE_EXPONENT),
                         "GRAVITY_PRESSURE_MAX",
                     ),
                     targetGpuMillis = doubleValue(
@@ -415,10 +439,7 @@ data class GravityConfig(
                         "gpu-smoothing",
                         defaults.presentation.gpuTimeSmoothing,
                     ),
-                    bodyPointSizePixels = floatValue(
-                        "point-size",
-                        defaults.presentation.bodyPointSizePixels,
-                    ),
+                    bodyPointSizePixels = pointSize,
                     overlayMaximumCharacters = intValue(
                         "overlay-characters",
                         defaults.presentation.overlayMaximumCharacters,
@@ -556,7 +577,8 @@ data class GravityFieldConfig(
 data class CollisionConfig(
     val timeStep: Float = 1f / 120f,
     val maximumSubsteps: Int = 16,
-    val contactDiameterPixels: Float = 1.12838f,
+    /** Contact diameter of a body; a disc of this size has the area of a 1 px point. */
+    val contactDiameterPixels: Float = REFERENCE_DIAMETER_PIXELS,
     val neighborCellRadius: Int = 1,
     val restitutionCoefficient: Float = 0f,
     val coincidentDistanceSquaredEpsilon: Float = 1e-12f,
@@ -575,8 +597,8 @@ data class CollisionConfig(
         require(maximumSubsteps in 1..16) {
             "collision substeps must be in 1..16"
         }
-        require(contactDiameterPixels in 0.5f..4f) {
-            "contact diameter must be in 0.5..4 pixels"
+        require(contactDiameterPixels in 0.5f..MAXIMUM_DIAMETER_PIXELS) {
+            "contact diameter must be in 0.5..$MAXIMUM_DIAMETER_PIXELS pixels"
         }
         require(neighborCellRadius in 1..4)
         require(restitutionCoefficient in 0f..1f)
@@ -589,6 +611,12 @@ data class CollisionConfig(
         require(denseContactThreshold >= 1)
         require(denseBodyFraction in 0f..1f)
         require(minimumDenseBodies >= 1)
+    }
+
+    companion object {
+        /** 2/√π: the diameter whose disc covers one pixel, at --point-size=1. */
+        const val REFERENCE_DIAMETER_PIXELS = 1.12838f
+        const val MAXIMUM_DIAMETER_PIXELS = 16f
     }
 }
 

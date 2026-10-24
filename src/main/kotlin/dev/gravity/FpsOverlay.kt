@@ -1,26 +1,5 @@
 package dev.gravity
 
-import org.lwjgl.BufferUtils
-import org.lwjgl.opengl.GL11.GL_FLOAT
-import org.lwjgl.opengl.GL11.GL_TRIANGLES
-import org.lwjgl.opengl.GL11.GL_UNSIGNED_INT
-import org.lwjgl.opengl.GL11.glDrawElements
-import org.lwjgl.opengl.GL15.GL_ARRAY_BUFFER
-import org.lwjgl.opengl.GL15.GL_DYNAMIC_DRAW
-import org.lwjgl.opengl.GL15.GL_ELEMENT_ARRAY_BUFFER
-import org.lwjgl.opengl.GL15.GL_STATIC_DRAW
-import org.lwjgl.opengl.GL15.glBindBuffer
-import org.lwjgl.opengl.GL15.glBufferData
-import org.lwjgl.opengl.GL15.glBufferSubData
-import org.lwjgl.opengl.GL15.glDeleteBuffers
-import org.lwjgl.opengl.GL15.glGenBuffers
-import org.lwjgl.opengl.GL20.glEnableVertexAttribArray
-import org.lwjgl.opengl.GL20.glVertexAttribPointer
-import org.lwjgl.opengl.GL30.glBindVertexArray
-import org.lwjgl.opengl.GL30.glDeleteVertexArrays
-import org.lwjgl.opengl.GL30.glGenVertexArrays
-import org.lwjgl.stb.STBEasyFont.stb_easy_font_print
-import java.nio.ByteBuffer
 import java.util.Locale
 
 class FpsOverlay(
@@ -43,42 +22,19 @@ class FpsOverlay(
             "G: gravity between bodies on / off\n" +
             "R: reset\n" +
             "Esc: exit"
-    private val controlLines = controlText.lineSequence().count()
-    private val maximumCharacters = config.overlayMaximumCharacters
-    private val maximumQuads = maximumCharacters * 16
-    private val vertexData = BufferUtils.createByteBuffer(maximumQuads * 4 * 16)
-    private val program = GlProgram.graphics("/shaders/overlay.vert", "/shaders/overlay.frag")
-    private val vao = glGenVertexArrays()
-    private val vertexBuffer = glGenBuffers()
-    private val indexBuffer = glGenBuffers()
+    private val layer = UiLayer(
+        viewportWidth,
+        viewportHeight,
+        config.overlayMaximumCharacters * 16,
+    )
     private var renderedFpsBits = Long.MIN_VALUE
     private var renderedActiveBodies = -1
     private var renderedProjectileBodies = -1
     private var renderedTimeScaleBits = Long.MIN_VALUE
     private var renderedFutureSpeedBits = Long.MIN_VALUE
-    private var renderedQuads = 0
     private var renderedBounded = false
     private var renderedField = ""
     private var renderedMutualGravity = true
-
-    init {
-        val indices = BufferUtils.createIntBuffer(maximumQuads * 6)
-        repeat(maximumQuads) { quad ->
-            val base = quad * 4
-            indices.put(base).put(base + 1).put(base + 2)
-            indices.put(base + 2).put(base + 3).put(base)
-        }
-        indices.flip()
-
-        glBindVertexArray(vao)
-        glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer)
-        glBufferData(GL_ARRAY_BUFFER, vertexData.capacity().toLong(), GL_DYNAMIC_DRAW)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices, GL_STATIC_DRAW)
-        glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 2, GL_FLOAT, false, 16, 0L)
-        glBindVertexArray(0)
-    }
 
     fun render(
         fps: Double,
@@ -117,29 +73,27 @@ class FpsOverlay(
                 field,
                 if (mutualGravity) "on" else "off",
             )
-            vertexData.clear()
-            val informationQuads = stb_easy_font_print(
-                0f,
-                0f,
-                text,
-                null as ByteBuffer?,
-                vertexData,
+            val margin = config.overlayMarginPixels
+            val lineHeight = config.overlayLineHeightPixels
+            layer.begin()
+            // Information block in the top-left corner.
+            layer.panel(
+                margin,
+                margin,
+                margin + UiLayer.panelWidth(text),
+                margin + UiLayer.panelHeight(text, lineHeight),
             )
-            vertexData.position(informationQuads * BYTES_PER_QUAD)
-            val controlsQuads = stb_easy_font_print(
-                0f,
-                viewportHeight.toFloat() -
-                    2f * config.overlayMarginPixels -
-                    controlLines * config.overlayLineHeightPixels,
-                controlText,
-                null as ByteBuffer?,
-                vertexData,
+            layer.text(text, margin, margin)
+            // Controls block in the bottom-left corner.
+            val controlsTop = viewportHeight - margin - UiLayer.panelHeight(controlText, lineHeight)
+            layer.panel(
+                margin,
+                controlsTop,
+                margin + UiLayer.panelWidth(controlText),
+                viewportHeight - margin,
             )
-            renderedQuads = informationQuads + controlsQuads
-            vertexData.position(0)
-            vertexData.limit(renderedQuads * BYTES_PER_QUAD)
-            glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer)
-            glBufferSubData(GL_ARRAY_BUFFER, 0, vertexData)
+            layer.text(controlText, margin, controlsTop)
+            layer.end()
             renderedFpsBits = fpsBits
             renderedActiveBodies = activeBodies
             renderedProjectileBodies = projectileBodies
@@ -150,22 +104,12 @@ class FpsOverlay(
             renderedMutualGravity = mutualGravity
         }
 
-        program.use()
-        program.vec2("uViewport", viewportWidth.toFloat(), viewportHeight.toFloat())
-        program.float("uMarginPixels", config.overlayMarginPixels)
-        glBindVertexArray(vao)
-        glDrawElements(GL_TRIANGLES, renderedQuads * 6, GL_UNSIGNED_INT, 0L)
+        layer.draw()
     }
 
-    override fun close() {
-        glDeleteBuffers(vertexBuffer)
-        glDeleteBuffers(indexBuffer)
-        glDeleteVertexArrays(vao)
-        program.close()
-    }
+    override fun close() = layer.close()
 
     private companion object {
-        const val BYTES_PER_QUAD = 4 * 16
         const val NO_SPEED_BITS = Long.MIN_VALUE + 1
     }
 }

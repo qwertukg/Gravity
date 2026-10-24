@@ -51,6 +51,7 @@ application {
 tasks.test {
     useJUnitPlatform()
     exclude("**/CollisionShaderIntegrationTest.class")
+    exclude("**/ParticleRendererTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -60,6 +61,7 @@ tasks.register<Test>("gpuTest") {
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform()
     include("**/CollisionShaderIntegrationTest.class")
+    include("**/ParticleRendererTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

@@ -9,6 +9,8 @@ uniform sampler2D uHorizontal;
 // grid. Such a hole has most of its 8 neighbours occupied; pixels just outside
 // a cluster edge or next to an isolated body have far fewer.
 const int INTERIOR_NEIGHBOURS = 5;
+// Neighbour distance for the hole test: about half the point size.
+uniform int uGapPixels;
 
 #include "particles_smoothing.glsl"
 
@@ -85,28 +87,32 @@ vec2 accumulated(ivec2 pixel, ivec2 size) {
 void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 size = textureSize(uAccumulation, 0);
-    if (accumulated(pixel, size).y <= 0.0) {
+    // Bodies add the fraction of each pixel they cover; it sets brightness,
+    // so disc edges and small bodies are antialiased.
+    float coverage = min(accumulated(pixel, size).y, 1.0);
+    if (coverage < 1.0) {
         int occupied = 0;
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
-                if (accumulated(pixel + ivec2(dx, dy), size).y > 0.0) ++occupied;
+                if (accumulated(pixel + ivec2(dx, dy) * uGapPixels, size).y >= 0.5) ++occupied;
             }
         }
-        if (occupied < INTERIOR_NEIGHBOURS) {
-            color = vec4(0.0, 0.0, 0.0, 1.0);
-            return;
-        }
+        if (occupied >= INTERIOR_NEIGHBOURS) coverage = 1.0;
+    }
+    if (coverage <= 0.0) {
+        color = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
     }
 
     // Vertical pass of the normalised Gaussian mean of per-body pressure:
     // independent of how many bodies happen to fall into each pixel.
     vec2 sum = vec2(0.0);
-    for (int dy = -SMOOTHING_RADIUS; dy <= SMOOTHING_RADIUS; ++dy) {
-        int y = pixel.y + dy;
+    for (int tap = -SMOOTHING_RADIUS; tap <= SMOOTHING_RADIUS; ++tap) {
+        int y = pixel.y + tap * uSampleStep;
         if (y < 0 || y >= size.y) continue;
-        sum += smoothingWeight(dy) *
+        sum += smoothingWeight(tap) *
             texelFetch(uHorizontal, ivec2(pixel.x, y), 0).rg;
     }
     float pressure = sum.x / sum.y;
-    color = vec4(pressureColor(pressure), 1.0);
+    color = vec4(coverage * pressureColor(pressure), 1.0);
 }

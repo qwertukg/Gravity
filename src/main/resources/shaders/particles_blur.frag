@@ -11,10 +11,10 @@ void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     int lastColumn = textureSize(uAccumulation, 0).x - 1;
     vec2 sum = vec2(0.0);
-    for (int dx = -SMOOTHING_RADIUS; dx <= SMOOTHING_RADIUS; ++dx) {
-        int x = pixel.x + dx;
+    for (int tap = -SMOOTHING_RADIUS; tap <= SMOOTHING_RADIUS; ++tap) {
+        int x = pixel.x + tap * uSampleStep;
         if (x < 0 || x > lastColumn) continue;
-        sum += smoothingWeight(dx) *
+        sum += smoothingWeight(tap) *
             texelFetch(uAccumulation, ivec2(x, pixel.y), 0).rg;
     }
     blurred = sum;

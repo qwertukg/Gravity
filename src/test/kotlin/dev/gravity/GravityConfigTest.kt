@@ -62,6 +62,22 @@ class GravityConfigTest {
     }
 
     @Test
+    fun `point size alone scales every size-dependent default`() {
+        val base = GravityConfig()
+        val config = GravityConfig.parse(arrayOf("--point-size=3"), emptyMap())
+        assertEquals(3f, config.presentation.bodyPointSizePixels)
+        assertEquals(base.collisions.contactDiameterPixels * 3f, config.collisions.contactDiameterPixels, 1e-5f)
+        assertEquals(base.collisions.neighborSkinPixels * 3f, config.collisions.neighborSkinPixels, 1e-5f)
+        assertTrue(kotlin.math.abs(base.particles.initialBodies / 9 - config.particles.initialBodies) <= 1)
+        assertTrue(kotlin.math.abs(base.projectiles.plusKeyBodyCount / 9 - config.projectiles.plusKeyBodyCount) <= 1)
+        assertTrue(config.presentation.maximumVisualPressure < base.presentation.maximumVisualPressure / 3f)
+        // Options given explicitly still win over the derived defaults.
+        val explicit = GravityConfig.parse(arrayOf("--point-size=3", "--diameter=2", "--bodies=1000"), emptyMap())
+        assertEquals(2f, explicit.collisions.contactDiameterPixels)
+        assertEquals(1000, explicit.particles.initialBodies)
+    }
+
+    @Test
     fun `body count is clipped to capacity`() {
         val config = GravityConfig.parse(
             arrayOf("--bodies=900", "--capacity=500"),

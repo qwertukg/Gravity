@@ -183,8 +183,8 @@ The upper-left overlay shows:
 - time scale as a percentage;
 - future projectile speed while the left mouse button is held.
 
-Controls are shown in the lower-left corner. Both blocks use STB Easy Font and
-a shared GPU buffer. Every two seconds the console reports body count, FPS,
+Controls are shown in the lower-left corner. Both blocks and the scenario
+buttons share one UI layer: STB Easy Font text on the same translucent panels. Every two seconds the console reports body count, FPS,
 smoothed GPU frame time, and FFT grid size.
 
 ### Scenarios
@@ -284,6 +284,38 @@ Run with options:
 
 Only `--key=value` syntax is supported.
 
+### Body size
+
+`--point-size=S` is the single body-size option, for example
+`--args="--point-size=3"`. Every size-dependent default follows it, while
+options given explicitly still win:
+
+| Derived default | At point size `S` |
+|---|---|
+| Contact diameter (`--diameter`) | `1.12838 × S`: a disc with the area of the `S×S` point |
+| Neighbor-cache skin (`--collision-skin`) | `0.5 × S` px |
+| Initial bodies (`--bodies`) | `50000 / S²` |
+| `+` bullet bodies (`--projectile-plus-bodies`) | `50000 / S²` |
+| Red pressure (`--pressure-max`) | `64 / S^1.2` (measured cluster pressure scaling) |
+| Scenario body counts | scaled by `1 / S²` (capped at the authored counts) |
+| Colour smoothing and hole filling | taps and neighbour tests spaced by `S` px |
+| Body shape | antialiased disc of the contact diameter (same area as the point) |
+
+Every body is drawn as an antialiased disc of its contact diameter, matching
+the circular collisions. Edge pixels store the fraction of the pixel inside
+the disc (8×8 subsamples, only for pixels on the edge), and that coverage
+sets the brightness. Each body therefore adds exactly its area wherever it
+sits: small bodies never vanish between pixel centres or flicker as they
+move; at `S = 1` a lone body is a soft dot spread over up to four pixels.
+Rendering costs about 0.13 ms more per frame at `S = 1` (200k bodies) and
+about 0.02 ms at `S = 3` or `S = 6` compared with square points.
+
+Counts shrink with body area, so clusters, planets, discs and bullets keep
+their size on screen with fewer, larger bodies; physics gets faster
+accordingly (a galaxy step drops from ~6 ms to ~1 ms at `S = 3`). Gravity is
+normalized to the body count, so dynamics are unchanged. The contact diameter
+may reach `16 px`.
+
 All runtime tuning is defined in the typed
 [`GravityConfig`](src/main/kotlin/dev/gravity/GravityConfig.kt) object. It is
 split into `particles`, `gravity`, `collisions`, `trajectory`, `projectiles`,
@@ -295,7 +327,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 
 | Option | Default | Constraints and purpose |
 |---|---:|---|
-| `--bodies=N` | `50000` | Initial body count; clamped to `capacity` |
+| `--bodies=N` | `50000 / S²` | Initial body count; clamped to `capacity` |
 | `--capacity=N` | `400000` | GPU buffer capacity, `N > 0` |
 | `--grid=WxH` | `512x256` | FFT grid; dimensions are powers of two in `128–2048` |
 | `--grid=N` | — | Square `N × N` FFT grid |
@@ -303,8 +335,8 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--softening=F` | `0.85` | Ewald softening in cells, `F > 0` |
 | `--dt=F` | `0.008333...` | Constant physics time step, `F > 0` |
 | `--collisions=N` | `16` | Maximum collision substeps, `1–16` |
-| `--diameter=F` | `1.12838` | Body contact diameter, `0.5–4 px` |
-| `--pressure-max=F` | `64` | Pressure mapped to red, `F > 0` |
+| `--diameter=F` | `1.12838 × S` | Body contact diameter, `0.5–16 px` |
+| `--pressure-max=F` | `64 / S^1.2` | Pressure mapped to red, `F > 0` |
 | `--frames=N` | disabled | Exit after `N > 0` frames and print diagnostics |
 | `--square-test=W` | disabled | Place one body per pixel in a region of width `W` |
 | `--seed=N` | random | Reproducible signed 64-bit initial-state seed |
@@ -315,7 +347,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--fft-validate=true\|false` | `false` | Blocking diagnostic GPU FFT comparison with a double reference |
 | `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
 | `--collision-cache=true\|false` | `true` | Reuse exact broad-phase candidates and current contacts; no substeps or contacts removed |
-| `--collision-skin=F` | `0.5` | Neighbor-cache distance reserve in pixels, `F > 0`; affects search cost only |
+| `--collision-skin=F` | `0.5 × S` | Neighbor-cache distance reserve in pixels, `F > 0`; affects search cost only |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
 | `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
@@ -343,7 +375,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-min-drag-px=F` | `2` | Minimum drag distance that creates a projectile |
 | `--projectile-size-step=F` | `10` | Diameter increment selected by keys `1–9` |
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
-| `--projectile-plus-bodies=N` | `50000` | Projectile body count selected by key `+` |
+| `--projectile-plus-bodies=N` | `50000 / S²` | Projectile body count selected by key `+` |
 | `--preview-period-px=F` | `6` | Projectile-preview dash period |
 | `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
 | `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |
@@ -356,7 +388,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--fps-update-ms=N` | `250` | Overlay FPS update interval |
 | `--console-report-ms=N` | `2000` | Console statistics interval |
 | `--gpu-smoothing=F` | `0.08` | Exponential GPU-time smoothing factor, `0–1` |
-| `--point-size=F` | `1` | Rendered body point size in pixels |
+| `--point-size=S` | `1` | Body size in pixels; scales every size-dependent default (see [Body size](#body-size)) |
 | `--overlay-characters=N` | `256` | Maximum overlay character capacity |
 | `--overlay-margin-px=F` | `8` | Overlay margin in pixels |
 | `--overlay-line-height-px=F` | `12` | Overlay line height in pixels |

@@ -17,6 +17,7 @@ import org.lwjgl.opengl.GL11.glGenTextures
 import org.lwjgl.opengl.GL13.GL_TEXTURE0
 import org.lwjgl.opengl.GL13.GL_TEXTURE1
 import org.lwjgl.opengl.GL13.glActiveTexture
+import org.lwjgl.opengl.GL32.GL_PROGRAM_POINT_SIZE
 import org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT0
 import org.lwjgl.opengl.GL30.GL_FRAMEBUFFER
 import org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_COMPLETE
@@ -30,6 +31,9 @@ import org.lwjgl.opengl.GL30.glFramebufferTexture2D
 import org.lwjgl.opengl.GL30.glGenFramebuffers
 import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.opengl.GL42.glTexStorage2D
+import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Draws bodies as points into a float target holding (sum of pressures,
@@ -40,7 +44,13 @@ class ParticleRenderer(
     viewportWidth: Int,
     viewportHeight: Int,
     private val config: PresentationConfig,
+    bodyDiameterPixels: Float,
 ) : AutoCloseable {
+    // Bodies are antialiased discs of their contact diameter (the area of the
+    // S×S point). The splat square also holds the partly covered edge pixels.
+    private val radius = 0.5f * bodyDiameterPixels
+    private val splatSize = ceil(bodyDiameterPixels) + 2f
+
     private val splatProgram =
         GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
     private val blurProgram = GlProgram.graphics(
@@ -63,6 +73,14 @@ class ParticleRenderer(
         resolveProgram.use()
         resolveProgram.int("uAccumulation", 0)
         resolveProgram.int("uHorizontal", 1)
+        // Touching discs leave holes of ~0.15 diameter only ~0.58 diameter
+        // apart: a longer neighbour test would land in the next hole.
+        val pointSize = config.bodyPointSizePixels
+        resolveProgram.int("uGapPixels", max(1, (0.25f * bodyDiameterPixels).roundToInt()))
+        val sampleStep = max(1, pointSize.roundToInt())
+        resolveProgram.int("uSampleStep", sampleStep)
+        blurProgram.use()
+        blurProgram.int("uSampleStep", sampleStep)
     }
 
     fun render(pipeline: GravityPipeline, activeBodies: Int) {
@@ -72,10 +90,13 @@ class ParticleRenderer(
         glBlendFunc(GL_ONE, GL_ONE)
         splatProgram.use()
         splatProgram.float("uMaximumPressure", config.maximumVisualPressure)
-        splatProgram.float("uPointSizePixels", config.bodyPointSizePixels)
+        splatProgram.float("uSplatSizePixels", splatSize)
+        splatProgram.float("uRadiusPixels", radius)
         pipeline.bindBodiesForRender()
         glBindVertexArray(vao)
+        glEnable(GL_PROGRAM_POINT_SIZE)
         glDrawArrays(GL_POINTS, 0, activeBodies)
+        glDisable(GL_PROGRAM_POINT_SIZE)
         glDisable(GL_BLEND)
 
         glBindFramebuffer(GL_FRAMEBUFFER, horizontalFramebuffer)

@@ -67,6 +67,21 @@ class ScenarioTest {
     }
 
     @Test
+    fun `scenarios keep their screen size for larger bodies`() {
+        for (pointSize in listOf(2f, 3f, 6f)) {
+            val diameter = CollisionConfig.REFERENCE_DIAMETER_PIXELS * pointSize
+            val reference = ScenarioSpace(3440f, 1440f, 0.035f, CollisionConfig.REFERENCE_DIAMETER_PIXELS)
+            val space = ScenarioSpace(3440f, 1440f, 0.035f, diameter)
+            for (scenario in Scenario.entries) {
+                val expected = scenario.bodies(reference, 3L).size / 4 / (pointSize * pointSize)
+                val count = scenario.bodies(space, 3L).size / 4
+                // Packing rounds per disc, so allow a few percent.
+                assertEquals(expected, count.toFloat(), expected * 0.05f, "${scenario.title} at point size $pointSize")
+            }
+        }
+    }
+
+    @Test
     fun `scenarios are reproducible from their seed`() {
         val space = ScenarioSpace(3440f, 1440f, 0.035f, 1.12838f)
         for (scenario in Scenario.entries) {
