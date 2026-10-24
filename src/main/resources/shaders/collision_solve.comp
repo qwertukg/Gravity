@@ -80,9 +80,10 @@ void main() {
                 uint otherId = encoded - 1u;
                 if (otherId != id) {
                     vec4 other = inputBodies[otherId];
-                    vec2 delta = positionPixels - other.xy * uViewport;
+                    // Match the counter's rounded contact predicate exactly.
+                    precise vec2 delta = positionPixels - other.xy * uViewport;
                     delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
-                    float distanceSquared = dot(delta, delta);
+                    precise float distanceSquared = dot(delta, delta);
                     if (distanceSquared < diameterSquared) {
                         float distance = sqrt(max(
                             distanceSquared,

@@ -18,10 +18,12 @@ import org.lwjgl.opengl.GL30.GL_RED_INTEGER
 import org.lwjgl.opengl.GL31.GL_COPY_READ_BUFFER
 import org.lwjgl.opengl.GL31.GL_COPY_WRITE_BUFFER
 import org.lwjgl.opengl.GL31.glCopyBufferSubData
+import org.lwjgl.opengl.GL32.glGetInteger64
 import org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT
 import org.lwjgl.opengl.GL42.GL_COMMAND_BARRIER_BIT
 import org.lwjgl.opengl.GL42.glMemoryBarrier
 import org.lwjgl.opengl.GL43.GL_DISPATCH_INDIRECT_BUFFER
+import org.lwjgl.opengl.GL43.GL_MAX_SHADER_STORAGE_BLOCK_SIZE
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
@@ -176,8 +178,32 @@ class GravityPipeline(
     private val stopBodiesProgram = GlProgram.compute("/shaders/stop_bodies.comp")
     private val trajectoryCompute = GlProgram.compute("/shaders/trajectory.comp")
     private val normalizationMass = config.particles.initialBodies.toFloat()
+    private val neighborCache = if (
+        config.collisions.neighborCache && CollisionNeighborCache.cacheBytes(config.particles.capacity) <=
+        glGetInteger64(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
+    ) {
+        CollisionNeighborCache(
+            config = config,
+            width = viewportWidth,
+            height = viewportHeight,
+            gridWidth = collisionGridWidth,
+            gridHeight = collisionGridHeight,
+            heads = collisionHeads,
+            next = collisionNext,
+            contacts = collisionContactCounts,
+            acceleration = acceleration,
+            pressures = pressures,
+            adaptive = collisionAdaptiveState,
+            bind = ::bind,
+            dispatch = ::dispatchCollisionBodies,
+            profiler = profiler,
+        )
+    } else null
 
     init {
+        if (config.collisions.neighborCache && neighborCache == null) {
+            System.err.println("Neighbor cache exceeds GPU buffer limit; using complete linked-grid collisions")
+        }
         seedBodies()
         clearFloatBuffer(acceleration)
         clearFloatBuffer(pressures)
@@ -633,6 +659,13 @@ class GravityPipeline(
         writePressure: Boolean,
         substepIndex: Int?,
     ) {
+        neighborCache?.let {
+            it.resolve(bodies, collisionBodies, activeBodies, kickDt, driftDt, writePressure, substepIndex)
+            val swap = bodies
+            bodies = collisionBodies
+            collisionBodies = swap
+            return
+        }
         // collisionBodies is the input buffer used to build the current heads
         // list. Clearing only its occupied cells is exact and avoids scanning
         // millions of empty screen-sized cells on every substep.
@@ -1055,6 +1088,7 @@ class GravityPipeline(
     }
 
     override fun close() {
+        neighborCache?.close()
         listOf(
             clear,
             build,

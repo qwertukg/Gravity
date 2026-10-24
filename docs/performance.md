@@ -1,5 +1,10 @@
 # Performance optimization results
 
+This is the historical adaptive-substep experiment. The current default
+preserves all configured substeps and uses an exact neighbor/contact cache;
+see [the fixed-substep results](performance-neighbor-cache.md). The two
+optimization modes are independent; adaptive substeps remain opt-in.
+
 ## Result
 
 The final optional adaptive mode reaches the mandatory 2× target at 100k and

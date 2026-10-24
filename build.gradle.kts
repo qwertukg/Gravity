@@ -50,6 +50,27 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    exclude("**/CollisionShaderIntegrationTest.class")
+}
+
+tasks.register<Test>("gpuTest") {
+    description = "Run collision shaders against the reference on a real OpenGL 4.3 GPU (hidden window)."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    include("**/CollisionShaderIntegrationTest.class")
+    outputs.upToDateWhen { false }
+    testLogging.showStandardStreams = true
+}
+
+tasks.register<JavaExec>("collisionBenchmark") {
+    description = "Compare fixed-substep GPU pipelines without opening a visible window."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.CollisionBenchmark"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
 }
 
 tasks.named<JavaExec>("run") {

@@ -1,0 +1,153 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer InputBodies { vec4 inputBodies[]; };
+layout(std430, binding = 1) writeonly buffer OutputBodies { vec4 outputBodies[]; };
+layout(std430, binding = 2) readonly buffer Heads { uint heads[]; };
+layout(std430, binding = 3) readonly buffer Next { uint collisionNext[]; };
+layout(std430, binding = 4) readonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 5) writeonly buffer Pressures { float pressures[]; };
+layout(std430, binding = 6) buffer AdaptiveState { uint adaptiveState[]; };
+layout(std430, binding = 7) readonly buffer Cache { uint cache[]; };
+uniform int uCount;
+uniform int uGridWidth;
+uniform int uGridHeight;
+uniform int uSearchRadius;
+uniform int uNeighborCellRadius;
+uniform vec2 uViewport;
+uniform float uDiameterPixels;
+uniform int uDenseContactThreshold;
+uniform float uRestitutionCoefficient;
+uniform float uCoincidentDistanceSquaredEpsilon;
+uniform float uSubstepDt;
+uniform float uTimeStep;
+uniform int uWritePressure;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
+#include "collision_cache_layout.glsl"
+vec2 fallbackNormal(uint first, uint second) {
+    uint low = min(first, second);
+    uint high = max(first, second);
+    uint hash = low * 1664525u + high * 1013904223u;
+    float angle = float(hash & 65535u) * (6.28318530718 / 65536.0);
+    vec2 normal = vec2(cos(angle), sin(angle));
+    return first < second ? normal : -normal;
+}
+
+void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocityPixels,
+    uint ownContacts, float effectiveSubstepDt, inout vec2 positionCorrection,
+    inout vec2 velocityCorrection, inout float pressure) {
+    float diameterSquared = uDiameterPixels * uDiameterPixels;
+    vec4 other = inputBodies[otherId];
+    precise vec2 delta = positionPixels - other.xy * uViewport;
+    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+    precise float distanceSquared = dot(delta, delta);
+    if (distanceSquared < diameterSquared) {
+        float distance = sqrt(max(
+            distanceSquared,
+            uCoincidentDistanceSquaredEpsilon
+        ));
+        vec2 normal =
+            distanceSquared > uCoincidentDistanceSquaredEpsilon
+            ? delta / distance
+            : fallbackNormal(id, otherId);
+        float penetration = uDiameterPixels - distance;
+        float pairWeight = 1.0 / float(max(
+            max(ownContacts, contactCounts[otherId]),
+            1u
+        ));
+
+        // Symmetric weights keep every correction equal and
+        // opposite, including crowded multi-body contacts.
+        positionCorrection +=
+            normal * (0.5 * penetration * pairWeight);
+
+        vec2 otherVelocityPixels = other.zw * uViewport;
+        vec2 relativeVelocity =
+            velocityPixels - otherVelocityPixels;
+        float relativeNormalSpeed =
+            dot(relativeVelocity, normal);
+        if (relativeNormalSpeed < 0.0) {
+            // Smooth circular bodies, e=0: the approaching
+            // normal components meet at their pair average.
+            velocityCorrection -= normal *
+                (
+                    0.5 *
+                    (1.0 + uRestitutionCoefficient) *
+                    relativeNormalSpeed *
+                    pairWeight
+                );
+        }
+        if (uWritePressure != 0) {
+            if (uAdaptive != 0) {
+                atomicMax(
+                    adaptiveState[1],
+                    floatBitsToUint(penetration)
+                );
+            }
+            pressure += 0.5 * pairWeight * (
+                penetration / effectiveSubstepDt +
+                max(-relativeNormalSpeed, 0.0)
+            );
+        }
+
+    }
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
+    vec4 body = inputBodies[id];
+    vec2 positionPixels = body.xy * uViewport;
+    vec2 velocityPixels = body.zw * uViewport;
+    vec2 positionCorrection = vec2(0.0);
+    vec2 velocityCorrection = vec2(0.0);
+    float pressure = 0.0;
+    uint ownContacts = contactCounts[id];
+    float effectiveSubstepDt = uAdaptive != 0
+        ? uTimeStep / float(max(adaptiveState[2], 1u)) : uSubstepDt;
+    if (uWritePressure != 0 && uAdaptive != 0) {
+        atomicMax(adaptiveState[3], ownContacts);
+        if (ownContacts >= uint(uDenseContactThreshold)) atomicAdd(adaptiveState[4], 1u);
+    }
+    if (ownContacts <= CONTACT_SLOTS) {
+        // The empty case runs zero iterations; retain the original epilogue
+        // rather than copying body and changing floating-point round trips.
+        for (uint i = 0u; i < ownContacts; i++) {
+            uint other = cache[cacheOffset(2u + NEIGHBOR_SLOTS + i, id)];
+            accumulateContact(id, other, positionPixels, velocityPixels, ownContacts,
+                effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+        }
+    } else {
+        uint neighbors = cache[cacheOffset(0u, id)];
+        if (neighbors <= NEIGHBOR_SLOTS) {
+            for (uint i = 0u; i < neighbors; i++) {
+                uint other = cache[cacheOffset(2u + i, id)];
+                accumulateContact(id, other, positionPixels, velocityPixels, ownContacts,
+                    effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+            }
+        } else {
+            uint referenceCell = cache[cacheOffset(1u, id)];
+            ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
+            int radius = neighbors == DIRECT_GRID ? uNeighborCellRadius : uSearchRadius;
+            ivec2 size = stencilSize(radius);
+            for (int y = 0; y < size.y; y++) {
+                for (int x = 0; x < size.x; x++) {
+                    ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
+                    uint encoded = heads[cell.x + cell.y * uGridWidth];
+                    while (encoded != 0u) {
+                        uint other = encoded - 1u;
+                        if (other != id) accumulateContact(id, other, positionPixels, velocityPixels,
+                            ownContacts, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+                        encoded = collisionNext[other];
+                    }
+                }
+            }
+        }
+    }
+    positionPixels += positionCorrection;
+    velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
+    positionPixels = mod(positionPixels, uViewport);
+    outputBodies[id] = vec4(positionPixels / uViewport, velocityPixels / uViewport);
+    if (uWritePressure != 0) pressures[id] = pressure;
+}

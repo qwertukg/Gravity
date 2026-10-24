@@ -60,6 +60,8 @@ data class GravityConfig(
             "restitution",
             "coincident-distance-epsilon",
             "adaptive-collisions",
+            "collision-cache",
+            "collision-skin",
             "adaptive-displacement-fraction",
             "adaptive-penetration-fraction",
             "adaptive-dense-contact-count",
@@ -274,6 +276,14 @@ data class GravityConfig(
                     adaptive = booleanValue(
                         "adaptive-collisions",
                         defaults.collisions.adaptive,
+                    ),
+                    neighborCache = booleanValue(
+                        "collision-cache",
+                        defaults.collisions.neighborCache,
+                    ),
+                    neighborSkinPixels = floatValue(
+                        "collision-skin",
+                        defaults.collisions.neighborSkinPixels,
                     ),
                     allowedDisplacementFraction = floatValue(
                         "adaptive-displacement-fraction",
@@ -538,6 +548,8 @@ data class CollisionConfig(
     val restitutionCoefficient: Float = 0f,
     val coincidentDistanceSquaredEpsilon: Float = 1e-12f,
     val adaptive: Boolean = false,
+    val neighborCache: Boolean = true,
+    val neighborSkinPixels: Float = 0.5f,
     val allowedDisplacementFraction: Float = 0.25f,
     val allowedPenetrationFraction: Float = 0.125f,
     val denseContactThreshold: Int = 4,
@@ -546,6 +558,7 @@ data class CollisionConfig(
 ) {
     init {
         require(timeStep > 0f && timeStep.isFinite())
+        require(neighborSkinPixels > 0f && neighborSkinPixels.isFinite())
         require(maximumSubsteps in 1..16) {
             "collision substeps must be in 1..16"
         }

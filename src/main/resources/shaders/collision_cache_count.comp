@@ -1,0 +1,104 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Heads { uint heads[]; };
+layout(std430, binding = 2) readonly buffer Next { uint collisionNext[]; };
+layout(std430, binding = 3) writeonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
+layout(std430, binding = 5) buffer Cache { uint cache[]; };
+layout(std430, binding = 6) buffer CacheState { uint cacheState[]; };
+uniform int uCount;
+uniform int uGridWidth;
+uniform int uGridHeight;
+uniform int uSearchRadius;
+uniform int uNeighborCellRadius;
+uniform vec2 uViewport;
+uniform float uDiameterPixels;
+uniform float uCandidateRadiusSquared;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
+#include "collision_cache_layout.glsl"
+
+float pairDistanceSquared(uint id, uint other) {
+    // The reference counter evaluates an unordered pair in ascending ID order
+    // and increments BOTH counts. Preserve that orientation here as well:
+    // reversing an expression that the driver contracts into an FMA can change
+    // its last bit at the strict contact threshold.
+    vec2 firstPixels = bodies[min(id, other)].xy * uViewport;
+    precise vec2 delta = firstPixels - bodies[max(id, other)].xy * uViewport;
+    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+    precise float distanceSquared = dot(delta, delta);
+    return distanceSquared;
+}
+
+void countContact(uint id, uint other, float distanceSquared, inout uint contacts) {
+    if (distanceSquared < uDiameterPixels * uDiameterPixels) {
+        if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
+        contacts++;
+    }
+}
+
+void main() {
+    if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    bool rebuild = cacheState[0] != 0u;
+    bool direct = cacheState[3] != 0u;
+    // [1] isn't read by any invocation in this dispatch. [0] stays immutable
+    // until the next reset dispatch (a global barrier separates those passes).
+    if (id == 0u && rebuild) {
+        cacheState[1] = uint(uCount);
+        cacheState[2]++;
+    }
+    vec2 position = bodies[id].xy;
+    uint neighbors = rebuild ? 0u : cache[cacheOffset(0u, id)];
+    uint contacts = 0u;
+    if (!rebuild && neighbors <= NEIGHBOR_SLOTS) {
+        for (uint i = 0u; i < neighbors; i++) {
+            uint other = cache[cacheOffset(2u + i, id)];
+            countContact(id, other, pairDistanceSquared(id, other), contacts);
+        }
+    } else {
+        uint referenceCell;
+        if (rebuild) {
+            ivec2 home = clamp(ivec2(floor(position * vec2(uGridWidth, uGridHeight))), ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+            referenceCell = uint(home.x + home.y * uGridWidth);
+            cache[cacheOffset(1u, id)] = referenceCell;
+        } else {
+            referenceCell = cache[cacheOffset(1u, id)];
+        }
+        ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
+        int radius = direct ? uNeighborCellRadius : uSearchRadius;
+        ivec2 size = stencilSize(radius);
+        for (int y = 0; y < size.y; y++) {
+            for (int x = 0; x < size.x; x++) {
+                ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
+                uint encoded = heads[cell.x + cell.y * uGridWidth];
+                while (encoded != 0u) {
+                    uint other = encoded - 1u;
+                    if (other != id) {
+                        float distanceSquared = pairDistanceSquared(id, other);
+                        if (rebuild && !direct) {
+                            if (distanceSquared <= uCandidateRadiusSquared) {
+                                if (neighbors < NEIGHBOR_SLOTS) cache[cacheOffset(2u + neighbors, id)] = other;
+                                neighbors++;
+                            }
+                        }
+                        countContact(id, other, distanceSquared, contacts);
+                    }
+                    encoded = collisionNext[other];
+                }
+            }
+        }
+        if (rebuild) cache[cacheOffset(0u, id)] = direct ? DIRECT_GRID : neighbors;
+    }
+    // Each invocation owns its count and ordered contact cache. No atomics,
+    // scan, global sort or truncated list is needed.
+    contactCounts[id] = contacts;
+    // Cheap density sampling steers the NEXT pass to the ordinary grid when
+    // an expanded candidate stencil is expensive. Both paths remain exhaustive.
+    // Vary the sampled lane to avoid aliasing row-major lattice boundaries.
+    uint sampledLane = min((gl_WorkGroupID.x * 73u + 17u) & 255u,
+        uint(uCount) - gl_WorkGroupID.x * 256u - 1u);
+    if (gl_LocalInvocationID.x == sampledLane && contacts >= 4u) atomicAdd(cacheState[4], 1u);
+}

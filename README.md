@@ -64,6 +64,11 @@ are computed once when the simulation is created or reset.
   least the contact diameter, and a `3 × 3` neighborhood is searched.
 - Collision-cell linked lists are traversed completely; there is no per-cell
   body limit.
+- By default, a GPU neighbor cache reuses the broad phase while every body
+  stays within a conservative half-skin displacement bound. Actual contacts
+  are checked on every substep and passed directly to the solver. Overflow
+  uses complete linked-list traversal; fast scenes rebuild the ordinary grid.
+  All 16 substeps and the final contact pass are retained.
 - Bodies are modeled as smooth circles with a restitution coefficient of `0`.
 - A symmetric Jacobi correction removes penetration and approaching normal
   velocity. Position correction is converted to velocity with
@@ -217,6 +222,8 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--benchmark-frames=N` | `240` | Measured benchmark frames, `N > 0` |
 | `--fft-validate=true\|false` | `false` | Blocking diagnostic GPU FFT comparison with a double reference |
 | `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
+| `--collision-cache=true\|false` | `true` | Reuse exact broad-phase candidates and current contacts; no substeps or contacts removed |
+| `--collision-skin=F` | `0.5` | Neighbor-cache distance reserve in pixels, `F > 0`; affects search cost only |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
 | `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
@@ -297,6 +304,17 @@ Run the final matrix with adaptive collision substeps:
 Results and quality comparison:
 [`docs/performance.md`](docs/performance.md).
 
+The current default cache preserves the fixed substep budget. Its GPU
+correctness checks and paired benchmarks run without opening a visible window:
+
+```powershell
+.\scripts\run-performance-lossless.ps1
+```
+
+See [`docs/performance-neighbor-cache.md`](docs/performance-neighbor-cache.md)
+for its guarantees, measured results, and memory cost. The older baseline and
+adaptive scripts explicitly disable this cache to keep those experiments separate.
+
 The baseline methodology, hardware, and results are documented in
 [`docs/performance-baseline.md`](docs/performance-baseline.md).
 
@@ -344,6 +362,12 @@ automatically as `natives-windows`, `natives-linux`, or `natives-macos`.
 
 ```powershell
 .\gradlew.bat test
+```
+
+Actual OpenGL collision-shader comparisons (requires an OpenGL 4.3 GPU):
+
+```powershell
+.\gradlew.bat gpuTest
 ```
 
 Tests cover:

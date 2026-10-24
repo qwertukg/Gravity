@@ -15,6 +15,7 @@ import java.util.ArrayDeque
 import kotlin.math.ceil
 
 enum class GpuStage(val displayName: String) {
+    COLLISION_DRIFT("collision drift + cache validation"),
     COLLISION_CLEAR("collision clear"),
     COLLISION_BUILD("collision build"),
     COLLISION_COUNT("collision count"),

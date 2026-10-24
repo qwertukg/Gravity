@@ -101,8 +101,7 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
             )
 
         private fun compile(type: Int, resource: String): Int {
-            val source = GlProgram::class.java.getResource(resource)?.readText()
-                ?: error("Missing shader resource: $resource")
+            val source = shaderSource(resource)
             val shader = glCreateShader(type)
             glShaderSource(shader, source)
             glCompileShader(shader)
@@ -110,6 +109,15 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
                 "Shader $resource failed:\n${glGetShaderInfoLog(shader)}"
             }
             return shader
+        }
+
+        private fun shaderSource(resource: String, parents: Set<String> = emptySet()): String {
+            check(resource !in parents) { "Cyclic shader include: $resource" }
+            val source = GlProgram::class.java.getResource(resource)?.readText()
+                ?: error("Missing shader resource: $resource")
+            return Regex("(?m)^#include \"([^\"]+)\"\\s*$").replace(source) { match ->
+                shaderSource(resource.substringBeforeLast('/') + "/" + match.groupValues[1], parents + resource)
+            }
         }
 
         private fun link(vararg shaders: Int): GlProgram {

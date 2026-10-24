@@ -33,6 +33,8 @@ foreach ($case in $cases) {
         "--benchmark=$($case.Scenario)",
         "--warmup-frames=$WarmupFrames",
         "--benchmark-frames=$BenchmarkFrames"
+        "--collision-cache=false"
+        "--adaptive-collisions=false"
     ) + $case.Extra
     $log = Join-Path $resolvedOutput "$($case.Name).log"
     Write-Host "Running $($case.Name) -> $log"

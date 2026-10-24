@@ -1,0 +1,47 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer References { vec2 references[]; };
+layout(std430, binding = 2) buffer CacheState { uint cacheState[]; };
+layout(std430, binding = 3) readonly buffer Accelerations { vec2 acceleration[]; };
+layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
+uniform int uCount;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
+uniform float uKickDt;
+uniform float uDriftDt;
+uniform float uTimeStep;
+uniform float uSubstepDt;
+uniform vec2 uViewport;
+uniform float uReuseDistanceSquared;
+void main() {
+    if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 body = bodies[id];
+    float driftDt = uAdaptive != 0 && uDriftDt != 0.0
+        ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
+    // Keep the reference integrator's operations and rounding, including its
+    // zero-drift final pass. No collision iteration is skipped.
+    if (uKickDt != 0.0 || driftDt != 0.0) {
+        body.zw += acceleration[id] * (0.5 * uKickDt);
+        body.xy += body.zw * driftDt;
+        body.xy = fract(body.xy);
+        bodies[id] = body;
+    }
+    float probeDt = uAdaptive != 0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uSubstepDt;
+    vec2 stepDisplacement = body.zw * uViewport * probeDt;
+    if (dot(stepDisplacement, stepDisplacement) >= uReuseDistanceSquared) {
+        // Fast scenes cannot amortize an expanded neighbor list. Build the
+        // ordinary contact grid instead, still caching contacts for the solver.
+        // This changes only broad-phase cost, never substeps or contact reach.
+        atomicOr(cacheState[0], 1u);
+        atomicOr(cacheState[3], 1u);
+    }
+    if (id >= cacheState[1]) return; // reset already invalidated a changed population
+    vec2 delta = body.xy * uViewport - references[id] * uViewport;
+    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+    // Check actual positions AFTER drift, hence previous Jacobi corrections
+    // and the current kick are included. NaNs conservatively invalidate too.
+    if (!(dot(delta, delta) < uReuseDistanceSquared)) atomicOr(cacheState[0], 1u);
+}

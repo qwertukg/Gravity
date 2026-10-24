@@ -135,4 +135,18 @@ class GravityConfigTest {
             GravityConfig.parse(arrayOf("--typo=1"), emptyMap())
         }
     }
+
+    @Test
+    fun `neighbor cache changes search storage without enabling adaptive substeps`() {
+        val defaults = GravityConfig.parse(emptyArray(), emptyMap())
+        assertTrue(defaults.collisions.neighborCache)
+        assertEquals(false, defaults.collisions.adaptive)
+        assertEquals(16, defaults.collisions.maximumSubsteps)
+        val disabled = GravityConfig.parse(arrayOf("--collision-cache=false", "--collision-skin=0.75"), emptyMap())
+        assertEquals(false, disabled.collisions.neighborCache)
+        assertEquals(0.75f, disabled.collisions.neighborSkinPixels)
+        for (skin in listOf(0f, -1f, Float.NaN, Float.POSITIVE_INFINITY)) {
+            assertFailsWith<IllegalArgumentException> { CollisionConfig(neighborSkinPixels = skin) }
+        }
+    }
 }

@@ -46,10 +46,13 @@ void main() {
             while (encoded != 0u) {
                 uint otherId = encoded - 1u;
                 if (otherId > id) {
-                    vec2 delta =
+                    // The solver and cached counter must agree at the strict
+                    // cutoff; prevent context-dependent FMA contraction here.
+                    precise vec2 delta =
                         positionPixels - bodies[otherId].xy * uViewport;
                     delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
-                    if (dot(delta, delta) < diameterSquared) {
+                    precise float distanceSquared = dot(delta, delta);
+                    if (distanceSquared < diameterSquared) {
                         atomicAdd(contactCounts[id], 1u);
                         atomicAdd(contactCounts[otherId], 1u);
                     }
