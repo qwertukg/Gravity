@@ -185,6 +185,125 @@ class CollisionShaderIntegrationTest {
         }
     }
 
+    @Test
+    fun `walls keep cache and reference identical and never contact across an edge`() {
+        CollisionGpuContext().use {
+            val count = 64
+            val config = config(count)
+            // Bodies pressed into every wall and corner, plus pairs that touch
+            // only through the torus seam and must stay apart with walls.
+            val input = scene(count) { i ->
+                when (i % 4) {
+                    0 -> floatArrayOf(0.2f + (i / 4) * 3f, 0.3f, -30f, 0f)
+                    1 -> floatArrayOf(width - 0.2f, 0.2f + (i / 4) * 3f, 25f, 10f)
+                    2 -> floatArrayOf(0.1f + (i / 4) * 0.8f, height - 0.1f, 0f, 40f)
+                    else -> floatArrayOf(if (i % 8 == 3) 0.05f else width - 0.05f, 700f + i, 0f, -5f)
+                }
+            }
+            GravityPipeline(config, width, height, bounded = true).use { optimized ->
+                GravityPipeline(config.copy(collisions = config.collisions.copy(neighborCache = false)), width, height, bounded = true).use { reference ->
+                    var state = input
+                    repeat(12) { pass ->
+                        CollisionGpuAccess.upload(optimized, state)
+                        CollisionGpuAccess.upload(reference, state, clearHeads = true)
+                        CollisionGpuAccess.collide(optimized, count, config.collisions.timeStep / 16)
+                        CollisionGpuAccess.collide(reference, count, config.collisions.timeStep / 16)
+                        compare("walls/$pass", optimized, reference, count)
+                        state = CollisionGpuAccess.floats(optimized, "bodies", count * 4)
+                        for (i in 0 until count) {
+                            assertTrue(state[i * 4] in 0f..<1f && state[i * 4 + 1] in 0f..<1f, "walls/$pass body $i left the screen")
+                        }
+                    }
+                    // Seam pairs (x = 0.05 and x = W - 0.05) never count as contacts.
+                    val counts = CollisionGpuAccess.ints(optimized, "collisionContactCounts", count)
+                    for (i in 3 until count step 4) assertEquals(0, counts[i], "seam body $i")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a wall acts exactly like a mirror-image body`() {
+        CollisionGpuContext().use {
+            val config = config(3)
+            // Small coordinates keep float positions fine enough to compare.
+            val mirror = 20f
+            GravityPipeline(config, width, height, bounded = true).use { pipeline ->
+                // Body 0 flies into the left wall. Bodies 1 and 2 are its
+                // mirror pair about x = mirror, clear of every wall: the wall
+                // must give body 0 the same motion that body 2 gives body 1.
+                var state = scene(3) { i ->
+                    when (i) {
+                        0 -> floatArrayOf(2f, 300f, -400f, 50f)
+                        1 -> floatArrayOf(mirror + 2f, 900f, -400f, 50f)
+                        else -> floatArrayOf(mirror - 2f, 900f, 400f, 50f)
+                    }
+                }
+                var touched = false
+                repeat(64) {
+                    CollisionGpuAccess.upload(pipeline, state)
+                    CollisionGpuAccess.collide(pipeline, 3, config.collisions.timeStep / 16)
+                    state = CollisionGpuAccess.floats(pipeline, "bodies", 12)
+                    val wallX = state[0] * width
+                    val pairX = state[4] * width - mirror
+                    // The solver leaves no penetration behind; the rebound shows the hit.
+                    if (state[2] > 0f) touched = true
+                    assertTrue(abs(wallX - pairX) < 5e-3f, "x: wall $wallX, mirror pair $pairX")
+                    assertTrue(abs(state[2] - state[6]) * width < 2f, "vx: wall ${state[2] * width}, mirror pair ${state[6] * width}")
+                }
+                assertTrue(touched, "the body never reached the wall")
+                assertTrue(state[0] in 0f..<1f, "the body left the screen")
+            }
+        }
+    }
+
+    @Test
+    fun `wall gravity is isolated while torus gravity acts across the edge`() {
+        CollisionGpuContext().use {
+            val count = 2
+            val config = config(count)
+            // Two bodies 20 px from the left and right edges: on the torus they
+            // are 40 px apart through the edge, with walls 3400 px apart.
+            val input = scene(count) { i -> floatArrayOf(if (i == 0) 20f else width - 20f, 720f, 0f, 0f) }
+            for (bounded in listOf(false, true)) {
+                GravityPipeline(config, width, height, bounded = bounded).use { pipeline ->
+                    CollisionGpuAccess.upload(pipeline, input)
+                    pipeline.initializeAcceleration(count)
+                    val acceleration = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                    // Left body: on the torus pulled left (towards the seam).
+                    if (bounded) assertTrue(acceleration[0] > 0f, "walls: left body ax = ${acceleration[0]}")
+                    else assertTrue(acceleration[0] < 0f, "torus: left body ax = ${acceleration[0]}")
+                    // Mirror symmetry up to the mesh's small self-force (~2e-5),
+                    // which both space modes share.
+                    assertEquals(-acceleration[0], acceleration[2], 5e-5f)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `switching to walls and back restores the periodic gravity exactly`() {
+        CollisionGpuContext().use {
+            val count = 256
+            val config = config(count)
+            val random = Random(91)
+            val input = scene(count) { floatArrayOf(random.nextFloat() * width, random.nextFloat() * height, 0f, 0f) }
+            GravityPipeline(config, width, height).use { pipeline ->
+                CollisionGpuAccess.upload(pipeline, input)
+                pipeline.initializeAcceleration(count)
+                val before = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                pipeline.bounded = true
+                pipeline.initializeAcceleration(count)
+                val walls = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                pipeline.bounded = false
+                pipeline.initializeAcceleration(count)
+                val after = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                assertContentEquals(before, after)
+                assertTrue(!before.contentEquals(walls))
+            }
+        }
+    }
+
     private fun compareReplay(name: String, initial: FloatArray, passes: Int) {
         val count = initial.size / 4
         val config = config(count)

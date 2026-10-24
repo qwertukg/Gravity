@@ -15,6 +15,10 @@ uniform float uDriftDt;
 uniform float uTimeStep;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
+uniform int uBounded;
+
+// Largest float below 1: a body clamped to a wall stays in the last grid cell.
+const float MAXIMUM_UNIT = 0.99999994;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -40,7 +44,9 @@ void main() {
     if (uKickDt != 0.0 || driftDt != 0.0) {
         body.zw += acceleration[id] * (0.5 * uKickDt);
         body.xy += body.zw * driftDt;
-        body.xy = fract(body.xy);
+        body.xy = uBounded != 0
+            ? clamp(body.xy, vec2(0.0), vec2(MAXIMUM_UNIT))
+            : fract(body.xy);
         bodies[id] = body;
     }
 

@@ -12,6 +12,12 @@ layout(std430, binding = 7) readonly buffer Bodies { vec4 bodies[]; };
 
 uniform int uStepCount;
 uniform int uMeshWidth;
+uniform int uMeshHeight;
+uniform int uBounded;
+uniform float uRestitutionCoefficient;
+
+// Largest float below 1: a point clamped to a wall stays inside the grid.
+const float MAXIMUM_UNIT = 0.99999994;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform int uNeighborRadiusX;
@@ -48,8 +54,18 @@ int cellIndex(ivec2 cell) {
     return cell.x + cell.y * uPhysicalWidth;
 }
 
+ivec2 wrapMesh(ivec2 cell) {
+    // Periodic: mesh == physical grid. Walls: cells beyond an edge land in the
+    // zero padding of the doubled mesh, so no mass leaks across the walls.
+    if (cell.x < 0) cell.x += uMeshWidth;
+    else if (cell.x >= uMeshWidth) cell.x -= uMeshWidth;
+    if (cell.y < 0) cell.y += uMeshHeight;
+    else if (cell.y >= uMeshHeight) cell.y -= uMeshHeight;
+    return cell;
+}
+
 int forceIndex(ivec2 physicalCell) {
-    ivec2 meshCell = wrapCell(physicalCell);
+    ivec2 meshCell = wrapMesh(physicalCell);
     return meshCell.x + meshCell.y * uMeshWidth;
 }
 
@@ -59,7 +75,7 @@ vec2 localAcceleration(
     float sourceMass
 ) {
     vec2 deltaNormalized = sourcePosition - targetPosition;
-    deltaNormalized -= floor(deltaNormalized + vec2(0.5));
+    if (uBounded == 0) deltaNormalized -= floor(deltaNormalized + vec2(0.5));
     vec2 deltaPhysical = deltaNormalized * vec2(uDomainAspect, 1.0);
     float rSquared = dot(deltaPhysical, deltaPhysical);
     float sigma = uSigmaCells / float(uPhysicalHeight);
@@ -104,6 +120,9 @@ vec2 accelerationAt(vec2 position) {
     for (int dy = -uNeighborRadiusY; dy <= uNeighborRadiusY; ++dy) {
         for (int dx = -uNeighborRadiusX; dx <= uNeighborRadiusX; ++dx) {
             ivec2 neighborCell = home + ivec2(dx, dy);
+            // Walls: there is nothing beyond an edge to attract.
+            if (uBounded != 0 && (any(lessThan(neighborCell, ivec2(0))) ||
+                any(greaterThanEqual(neighborCell, ivec2(uPhysicalWidth, uPhysicalHeight))))) continue;
             int index = cellIndex(neighborCell);
             int count = cellCounts[index];
             bool homeCell = dx == 0 && dy == 0;
@@ -247,6 +266,19 @@ void main() {
         float dt = integrationDt(velocity, acceleration);
         vec2 halfStepVelocity = velocity + acceleration * (0.5 * dt);
         vec2 delta = halfStepVelocity * dt;
+        if (uBounded != 0) {
+            // Walls act like body contacts: the normal motion stops, and
+            // rebounds by the restitution coefficient.
+            vec2 next = position + delta;
+            vec2 clamped = clamp(next, vec2(0.0), vec2(MAXIMUM_UNIT));
+            bvec2 hit = notEqual(next, clamped);
+            halfStepVelocity = mix(
+                halfStepVelocity,
+                -uRestitutionCoefficient * halfStepVelocity,
+                vec2(hit)
+            );
+            delta = clamped - position;
+        }
         float stepDistancePixels = length(delta * uViewport);
         float remainingDistancePixels =
             uMaximumPathPixels - pathDistancePixels;
@@ -271,7 +303,7 @@ void main() {
         );
         pathDistancePixels += stepDistancePixels;
         dashCoordinatePixels += stepDashCoordinatePixels;
-        position = fract(position + delta);
+        position = uBounded != 0 ? position + delta : fract(position + delta);
         if (pathDistancePixels >= uMaximumPathPixels - 1e-4) {
             finished = true;
             continue;

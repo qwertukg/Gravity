@@ -114,6 +114,7 @@ internal class CollisionNeighborCache(
         driftDt: Float,
         writePressure: Boolean,
         substep: Int?,
+        bounded: Boolean,
     ) {
         // The application only inserts bodies; reset creates a new pipeline.
         // Sparse clearing dispatches over the current (never smaller) population.
@@ -134,6 +135,7 @@ internal class CollisionNeighborCache(
         drift.int("uCount", active)
         drift.float("uKickDt", kickDt)
         drift.float("uDriftDt", driftDt)
+        drift.int("uBounded", if (bounded) 1 else 0)
         bind(0, input)
         bind(1, references)
         bind(2, state)
@@ -169,6 +171,7 @@ internal class CollisionNeighborCache(
         profiler?.begin(GpuStage.COLLISION_COUNT)
         iteration(count, substep)
         count.int("uCount", active)
+        count.int("uBounded", if (bounded) 1 else 0)
         bind(0, input)
         bind(1, heads)
         bind(2, next)
@@ -184,6 +187,7 @@ internal class CollisionNeighborCache(
         iteration(solve, substep)
         solve.int("uCount", active)
         solve.int("uWritePressure", if (writePressure) 1 else 0)
+        solve.int("uBounded", if (bounded) 1 else 0)
         bind(0, input)
         bind(1, output)
         bind(2, heads)

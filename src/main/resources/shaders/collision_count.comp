@@ -15,6 +15,7 @@ uniform float uDiameterPixels;
 uniform int uNeighborCellRadius;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
+uniform int uBounded;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -50,7 +51,8 @@ void main() {
                     // cutoff; prevent context-dependent FMA contraction here.
                     precise vec2 delta =
                         positionPixels - bodies[otherId].xy * uViewport;
-                    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+                    // Walls: no minimum image, bodies across an edge never touch.
+                    if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     precise float distanceSquared = dot(delta, delta);
                     if (distanceSquared < diameterSquared) {
                         atomicAdd(contactCounts[id], 1u);

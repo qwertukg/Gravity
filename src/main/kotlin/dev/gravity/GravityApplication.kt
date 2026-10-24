@@ -13,6 +13,7 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ADD
 import org.lwjgl.glfw.GLFW.GLFW_KEY_P
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
 import org.lwjgl.glfw.GLFW.GLFW_KEY_S
+import org.lwjgl.glfw.GLFW.GLFW_KEY_B
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
@@ -88,6 +89,12 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var trajectoryProgram: GlProgram? = null
     private var projectilePreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
+    private var scenarioMenu: ScenarioMenu? = null
+    private var scenario: Scenario? = null
+    private var requestedScenario: Scenario? = null
+    private var sessionConfig = config
+    /** Screen-edge walls instead of the torus; kept across resets. */
+    private var bounded = false
     private var vao = 0
     private var timer: GpuTimer? = null
     private var profiler: GpuProfiler? = null
@@ -121,12 +128,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     fun run() {
         initWindow()
         profiler = createProfiler()
-        var simulation = GravityPipeline(
-            config,
-            viewportWidth = viewportWidth,
-            viewportHeight = viewportHeight,
-            profiler = profiler,
-        )
+        var simulation = createSimulation()
         pipeline = simulation
         projectileBodyCount = simulation.projectileBodyCount(projectileDiameterPixels)
         particleRenderer = ParticleRenderer(
@@ -149,13 +151,14 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             config.presentation,
             config.projectiles,
         )
+        scenarioMenu = ScenarioMenu(viewportWidth, viewportHeight, config.presentation)
         timer = if (profiler == null) {
             GpuTimer(config.diagnostics.timerRingSlots)
         } else {
             null
         }
 
-        var active = config.particles.initialBodies
+        var active = sessionConfig.particles.initialBodies
         initializeSimulation(simulation, active)
         activateFullscreenWindow()
         render(
@@ -186,7 +189,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
-                active = config.particles.initialBodies
+                requestedScenario?.let { scenario = it }
+                requestedScenario = null
                 // A reset starts a new GPU session, just like application
                 // startup, instead of retaining resources and timer queries
                 // from the previous simulation.
@@ -197,13 +201,9 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 profiler = createProfiler()
                 simulation.close()
                 pipeline = null
-                simulation = GravityPipeline(
-                    config,
-                    viewportWidth = viewportWidth,
-                    viewportHeight = viewportHeight,
-                    profiler = profiler,
-                )
+                simulation = createSimulation()
                 pipeline = simulation
+                active = sessionConfig.particles.initialBodies
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
                 timer = if (profiler == null) {
@@ -437,6 +437,17 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             if (key == GLFW_KEY_P && action == GLFW_PRESS) paused = !paused
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
             if (key == GLFW_KEY_S && action == GLFW_PRESS) stopRequested = true
+            if (key == GLFW_KEY_B && action == GLFW_PRESS) {
+                pipeline?.let {
+                    if (it.boundedSpaceSupported) {
+                        bounded = !bounded
+                        it.bounded = bounded
+                        System.err.println("space=${if (bounded) "walls" else "torus"}")
+                    } else {
+                        System.err.println("Walls need an FFT grid of at most 1024 cells per axis")
+                    }
+                }
+            }
             val selectedDiameter = when {
                 action != GLFW_PRESS -> null
                 key in GLFW_KEY_0..GLFW_KEY_9 ->
@@ -464,6 +475,12 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             val physicsY = viewportHeight - cursorY.toFloat()
             when (action) {
                 GLFW_PRESS -> {
+                    val clicked = scenarioMenu?.scenarioAt(cursorX, cursorY)
+                    if (clicked != null) {
+                        requestedScenario = clicked
+                        resetRequested = true
+                        return@glfwSetMouseButtonCallback
+                    }
                     dragOriginX = physicsX
                     dragOriginY = physicsY
                     draggingProjectile = true
@@ -539,6 +556,44 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
     }
 
+    /**
+     * Starts the selected scenario, or the configured uniform start when none
+     * is selected. Gravity is normalised to the session's initial body count.
+     */
+    private fun createSimulation(): GravityPipeline {
+        val current = scenario
+        val state = current?.bodies(
+            ScenarioSpace(
+                widthPixels = viewportWidth.toFloat(),
+                heightPixels = viewportHeight.toFloat(),
+                gravitationalConstant = config.gravity.gravitationalConstant,
+                contactDiameterPixels = config.collisions.contactDiameterPixels,
+            ),
+            seed = config.particles.seed ?: java.security.SecureRandom().nextLong(),
+        )
+        sessionConfig = if (state == null) {
+            config
+        } else {
+            val bodies = state.size / 4
+            System.err.printf(Locale.ROOT, "scenario=%s bodies=%,d%n", current.title, bodies)
+            config.copy(
+                particles = config.particles.copy(
+                    capacity = maxOf(config.particles.capacity, bodies),
+                    initialBodies = bodies,
+                    squareTestPixels = null,
+                ),
+            )
+        }
+        return GravityPipeline(
+            sessionConfig,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            profiler = profiler,
+            scenarioState = state,
+            bounded = bounded,
+        )
+    }
+
     private fun initializeSimulation(simulation: GravityPipeline, activeBodies: Int) {
         simulation.initializeAcceleration(activeBodies)
         if (config.diagnostics.validateFft) {
@@ -610,12 +665,14 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             )
         }
         fpsOverlay!!.render(
+            bounded = bounded,
             fps = fps,
             activeBodies = activeBodies,
             projectileBodies = projectileBodyCount,
             timeScale = simulationSpeed.scale,
             futureProjectileSpeed = futureProjectileSpeed,
         )
+        scenarioMenu!!.render(scenario, cursorX, cursorY)
     }
 
     private fun reportProfile(
@@ -691,6 +748,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         profiler?.close()
         if (vao != 0) glDeleteVertexArrays(vao)
         fpsOverlay?.close()
+        scenarioMenu?.close()
         projectilePreviewProgram?.close()
         trajectoryProgram?.close()
         particleRenderer?.close()

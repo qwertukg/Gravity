@@ -20,9 +20,10 @@ computed by GPU compute shaders.
 | Projectile diameter | `50 px` |
 
 - The simulation domain matches the primary display resolution.
-- Space is toroidal: the left edge connects to the right edge and the top
-  connects to the bottom. Coordinates wrap periodically without reflection or
-  velocity changes.
+- Space is toroidal by default: the left edge connects to the right edge and
+  the top connects to the bottom. Coordinates wrap periodically without
+  reflection or velocity changes. Key `B` switches to walls at the screen
+  edges and back, without restarting (see [Walls](#walls)).
 - Each body's position and velocity are stored in an SSBO as
   `vec4(x, y, vx, vy)` in normalized coordinates. Every body has unit mass.
 - Initial positions are uniformly random across the screen and initial
@@ -52,9 +53,35 @@ each axis. Up to two bodies in a neighboring cell are evaluated exactly; a
 denser neighboring cell is represented by its mass monopole. No more than
 eight bodies are checked in the home cell.
 
-The FFT grid covers the entire physical domain and does not use zero-padding.
-Both dimensions must be powers of two. Twiddle factors and the spectral kernel
-are computed once when the simulation is created or reset.
+On the torus the FFT grid covers the entire physical domain and does not use
+zero-padding. Both dimensions must be powers of two. Twiddle factors are
+computed once per simulation; one table serves every transform length. The
+spectral kernel is recomputed when the space mode changes.
+
+### Walls
+
+Key `B` toggles between the torus and a box bounded by the screen edges. The
+current mode is shown as `Space:` in the overlay and survives resets and
+scenario changes.
+
+- A wall is treated as an immovable body. A body touching it takes the whole
+  correction that a pair of bodies would split: the same penetration
+  correction, the same restitution coefficient on the approaching normal
+  velocity, the same `Δv = Δx/Δt` conversion and the same pressure. A body
+  hitting a wall therefore moves exactly like a body hitting its mirror image;
+  a GPU test checks this. The wall counts as one extra contact in the Jacobi
+  weight, so body pairs keep their symmetric weights.
+- Bodies never touch across an edge, positions are clamped instead of
+  wrapped, and the trajectory preview stops at walls with the same
+  restitution.
+- Gravity is isolated: the FFT mesh doubles on both axes and the density
+  occupies one quadrant (Hockney zero padding), so nothing attracts across
+  the walls. The physical resolution is unchanged; the larger FFT costs about
+  1 ms per step at `3440×1440`. Walls need a grid of at most `1024` cells per
+  axis.
+- Without the periodic background subtraction, a uniformly filled box
+  collapses towards its centre as a whole. Scenario orbital speeds assume the
+  torus and are slightly off with walls.
 
 ### Integration and collisions
 
@@ -141,19 +168,59 @@ Controls are shown in the lower-left corner. Both blocks use STB Easy Font and
 a shared GPU buffer. Every two seconds the console reports body count, FPS,
 smoothed GPU frame time, and FFT grid size.
 
+### Scenarios
+
+Ten buttons in the top-right corner restart the simulation in a prepared
+scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
+is normalized to the scenario's own body count. Distances and body counts are
+authored for a `1440 px` tall screen; distances scale with its height and
+counts with its area (never above the authored counts).
+
+| Scenario | Bodies | Setup |
+|---|---|---|
+| Turbulent cloud | 140k | Spinning cloud with random eddies; fragments into arms and clumps that merge |
+| Spiral galaxy | 200k | Heavy packed bulge and a light disc with seeded arms; winds for many orbits |
+| Galaxy collision | ~180k | Two disc galaxies on a long elliptical orbit; tidal tails, then a merger |
+| Spinning planet | ~170k | Planet spinning past break-up; the equator sheds spiral streams |
+| Planetary impact | ~180k | Grazing giant impact; debris disc around the merged planet |
+| Ringed planet | 200k | Heavy planet inside a light ring; the ring winds into spiral wakes |
+| Binary stars | 190k | Two stars inside a circumbinary disc; streams, accretion, a final merger |
+| Galaxy flyby | ~200k | Two companions sweep past a disc; tidal bridges and tails |
+| Planetary system | ~99k | Star, two planets and an asteroid belt stirred into waves |
+| Cosmic web | ~200k | Zel'dovich-displaced lattice folding into filaments and halos |
+
+Collisions are perfectly inelastic, so every scenario eventually condenses;
+rotation and a dominant central mass are what keep structure alive. Three
+rules came out of 60-second runs of every scenario:
+
+- Structures stay within `480 px` of the centre. Beyond about a third of the
+  screen height, the periodic images above and below distort discs.
+- Free bodies are placed on a jittered hexagonal lattice (spacing `1.3`
+  diameters) instead of independently at random. Random starts overlap, and
+  the collision solver pushes overlapping pairs apart at hundreds of px/s.
+- Discs must be much lighter than the mass they orbit; a self-gravitating
+  disc collapses within one orbit.
+
+Orbital speeds use the 2D circular speed `v = H·sqrt(G·f)`, where `f` is the
+enclosed mass fraction minus the uniform background removed by the periodic
+solver. One physics step takes about 3–10 ms per scenario on a `3440×1440`
+screen.
+
 ## Controls
 
 | Input | Action |
 |---|---|
 | Hold and drag LMB | Select projectile direction and speed; show prediction |
 | Release LMB | Spawn a projectile at the initial press position |
+| LMB on a top-right button | Restart in that scenario |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |
 | `+` | Select a projectile of `50000` bodies |
 | Mouse wheel down/up | Decrease/increase time scale by 5% |
 | `P` | Pause or resume without changing state |
 | `S` | Set the velocity of every active body to zero |
-| `R` | Create a new GPU session and random initial state |
+| `B` | Toggle between the torus and walls at the screen edges |
+| `R` | Create a new GPU session and restart the current scenario |
 | `Esc` | Exit |
 
 ## Requirements

@@ -23,6 +23,10 @@ uniform float uTimeStep;
 uniform int uWritePressure;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
+uniform int uBounded;
+
+// Largest float below 1: a body clamped to a wall stays in the last grid cell.
+const float MAXIMUM_UNIT = 0.99999994;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -30,6 +34,43 @@ ivec2 wrapCell(ivec2 cell) {
     if (cell.y < 0) cell.y += uGridHeight;
     else if (cell.y >= uGridHeight) cell.y -= uGridHeight;
     return cell;
+}
+
+// A wall is an immovable body: the moving body takes the whole correction
+// that a pair would split, with the same restitution and position-to-velocity
+// conversion as body-body contacts.
+void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
+    float effectiveSubstepDt, inout vec2 positionCorrection,
+    inout vec2 velocityCorrection, inout float pressure) {
+    float penetration = 0.5 * uDiameterPixels - distance;
+    if (penetration <= 0.0) return;
+    positionCorrection += normal * (penetration * weight);
+    float normalSpeed = dot(velocityPixels, normal);
+    if (normalSpeed < 0.0) {
+        velocityCorrection -= normal *
+            ((1.0 + uRestitutionCoefficient) * normalSpeed * weight);
+    }
+    if (uWritePressure != 0) {
+        pressure += weight * (
+            penetration / effectiveSubstepDt + max(-normalSpeed, 0.0)
+        );
+    }
+}
+
+void wallContacts(vec2 positionPixels, vec2 velocityPixels, uint ownContacts,
+    float effectiveSubstepDt, inout vec2 positionCorrection,
+    inout vec2 velocityCorrection, inout float pressure) {
+    if (uBounded == 0) return;
+    // Counted as one more contact so body pairs keep their symmetric weights.
+    float weight = 1.0 / float(ownContacts + 1u);
+    wallContact(positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
+        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+    wallContact(uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
+        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+    wallContact(positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
+        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+    wallContact(uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
+        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
 }
 
 vec2 fallbackNormal(uint first, uint second) {
@@ -82,7 +123,8 @@ void main() {
                     vec4 other = inputBodies[otherId];
                     // Match the counter's rounded contact predicate exactly.
                     precise vec2 delta = positionPixels - other.xy * uViewport;
-                    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+                    // Walls: no minimum image, bodies across an edge never touch.
+                    if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     precise float distanceSquared = dot(delta, delta);
                     if (distanceSquared < diameterSquared) {
                         float distance = sqrt(max(
@@ -140,10 +182,18 @@ void main() {
         }
     }
 
+    wallContacts(positionPixels, velocityPixels, ownContacts, effectiveSubstepDt,
+        positionCorrection, velocityCorrection, pressure);
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
-    positionPixels = mod(positionPixels, uViewport);
+    vec2 position;
+    if (uBounded != 0) {
+        position = clamp(positionPixels / uViewport, vec2(0.0), vec2(MAXIMUM_UNIT));
+    } else {
+        positionPixels = mod(positionPixels, uViewport);
+        position = positionPixels / uViewport;
+    }
 
-    outputBodies[id] = vec4(positionPixels / uViewport, velocityPixels / uViewport);
+    outputBodies[id] = vec4(position, velocityPixels / uViewport);
     if (uWritePressure != 0) pressures[id] = pressure;
 }

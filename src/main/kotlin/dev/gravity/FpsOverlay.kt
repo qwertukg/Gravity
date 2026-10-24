@@ -37,6 +37,7 @@ class FpsOverlay(
             "Mouse wheel: time speed\n" +
             "P: pause / resume\n" +
             "S: stop all bodies\n" +
+            "B: walls / torus\n" +
             "R: reset\n" +
             "Esc: exit"
     private val controlLines = controlText.lineSequence().count()
@@ -53,6 +54,7 @@ class FpsOverlay(
     private var renderedTimeScaleBits = Long.MIN_VALUE
     private var renderedFutureSpeedBits = Long.MIN_VALUE
     private var renderedQuads = 0
+    private var renderedBounded = false
 
     init {
         val indices = BufferUtils.createIntBuffer(maximumQuads * 6)
@@ -79,6 +81,7 @@ class FpsOverlay(
         projectileBodies: Int,
         timeScale: Double,
         futureProjectileSpeed: Double?,
+        bounded: Boolean,
     ) {
         val fpsBits = fps.toRawBits()
         val timeScaleBits = timeScale.toRawBits()
@@ -87,19 +90,21 @@ class FpsOverlay(
             activeBodies != renderedActiveBodies ||
             projectileBodies != renderedProjectileBodies ||
             timeScaleBits != renderedTimeScaleBits ||
-            futureSpeedBits != renderedFutureSpeedBits
+            futureSpeedBits != renderedFutureSpeedBits ||
+            bounded != renderedBounded
         ) {
             val projectileSpeed = futureProjectileSpeed?.let {
                 String.format(Locale.ROOT, "%.1f px/s", it)
             } ?: "-"
             val text = String.format(
                 Locale.ROOT,
-                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s",
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nSpace: %s",
                 fps,
                 activeBodies,
                 projectileBodies,
                 timeScale * 100.0,
                 projectileSpeed,
+                if (bounded) "walls" else "torus",
             )
             vertexData.clear()
             val informationQuads = stb_easy_font_print(
@@ -129,6 +134,7 @@ class FpsOverlay(
             renderedProjectileBodies = projectileBodies
             renderedTimeScaleBits = timeScaleBits
             renderedFutureSpeedBits = futureSpeedBits
+            renderedBounded = bounded
         }
 
         program.use()

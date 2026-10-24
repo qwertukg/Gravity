@@ -35,6 +35,7 @@ import org.lwjgl.system.MemoryUtil.memFree
 import java.nio.ByteBuffer
 import java.util.Arrays
 import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sqrt
 
@@ -69,14 +70,39 @@ class GravityPipeline(
     private val viewportWidth: Int,
     private val viewportHeight: Int,
     private val profiler: GpuProfiler? = null,
+    /** Normalised (x, y, vx, vy) of the first bodies, e.g. from a [Scenario]. */
+    private val scenarioState: FloatArray? = null,
+    bounded: Boolean = false,
 ) : AutoCloseable {
     private val gridWidth = config.gravity.gridWidth
     private val gridHeight = config.gravity.gridHeight
-    // A cyclic FFT is the natural convolution for a torus. The entire mesh is
-    // physical; no zero-padding or central sub-domain is required.
     private val physicalGridWidth = gridWidth
     private val physicalGridHeight = gridHeight
     private val cells = gridWidth * gridHeight
+
+    /** Walls need a doubled FFT axis, which must fit one shared-memory line. */
+    val boundedSpaceSupported =
+        2 * maxOf(gridWidth, gridHeight) <= MAXIMUM_FFT_AXIS
+
+    /**
+     * Screen edges are walls instead of the periodic torus. A cyclic FFT is
+     * the natural convolution for the torus, with mesh == physical grid. With
+     * walls the mesh doubles on both axes and the density occupies one
+     * quadrant (Hockney zero padding), so gravity does not act across edges.
+     */
+    var bounded = bounded
+        set(value) {
+            if (field == value) return
+            require(!value || boundedSpaceSupported) {
+                "Walls need an FFT grid of at most ${MAXIMUM_FFT_AXIS / 2} cells per axis"
+            }
+            field = value
+            initializeKernel()
+        }
+    private val meshWidth get() = if (bounded) 2 * gridWidth else gridWidth
+    private val meshHeight get() = if (bounded) 2 * gridHeight else gridHeight
+    private val meshCells get() = meshWidth * meshHeight
+    private val maximumMeshCells = if (boundedSpaceSupported) 4 * cells else cells
     private val physicalCells = physicalGridWidth * physicalGridHeight
     private val collisionGridWidth =
         ToroidalSpace.collisionGridCells(
@@ -115,7 +141,7 @@ class GravityPipeline(
         config.particles.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes =
         config.particles.capacity.toLong() * 2 * Float.SIZE_BYTES
-    private val complexBytes = cells.toLong() * 2 * Float.SIZE_BYTES
+    private val complexBytes = maximumMeshCells.toLong() * 2 * Float.SIZE_BYTES
     private val projectileOffsets = HashMap<Float, List<PixelOffset>>()
     private val boundStorageBuffers = IntArray(8) { -1 }
 
@@ -125,7 +151,7 @@ class GravityPipeline(
     private var bodies = buffer(bodyBytes)
     private var collisionBodies = buffer(bodyBytes)
     private val acceleration = buffer(accelerationBytes)
-    private val density = buffer(cells.toLong() * Int.SIZE_BYTES)
+    private val density = buffer(maximumMeshCells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellMass = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
@@ -148,8 +174,10 @@ class GravityPipeline(
     private val forceY = buffer(complexBytes)
     private val kernelX = buffer(complexBytes)
     private val kernelY = buffer(complexBytes)
+    private val maximumFftAxis =
+        maxOf(gridWidth, gridHeight) * if (boundedSpaceSupported) 2 else 1
     private val twiddles = buffer(
-        (gridWidth + gridHeight - 2).toLong() * 4 * Float.SIZE_BYTES,
+        (maximumFftAxis - 1).toLong() * 4 * Float.SIZE_BYTES,
     )
     val trajectoryVertexCount =
         config.trajectory.steps * TRAJECTORY_VERTICES_PER_STEP
@@ -226,6 +254,7 @@ class GravityPipeline(
      * JTransforms by Radix2FftLayoutTest.
      */
     fun validateFft(activeBodies: Int): FftValidationResult {
+        check(!bounded) { "FFT validation covers the periodic mesh only" }
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, density)
         val densityMap = glMapBuffer(
@@ -336,8 +365,8 @@ class GravityPipeline(
         velocityY: Float,
     ) {
         profiler?.begin(GpuStage.TRAJECTORY)
-        val wrappedOriginX = ToroidalSpace.wrapPixels(originX, viewportWidth)
-        val wrappedOriginY = ToroidalSpace.wrapPixels(originY, viewportHeight)
+        val wrappedOriginX = placeX(originX)
+        val wrappedOriginY = placeY(originY)
         val totalMass = activeBodies.toFloat()
 
         trajectoryCompute.use()
@@ -350,7 +379,13 @@ class GravityPipeline(
         bind(6, cellMass)
         bind(7, bodies)
         trajectoryCompute.int("uStepCount", config.trajectory.steps)
-        trajectoryCompute.int("uMeshWidth", gridWidth)
+        trajectoryCompute.int("uMeshWidth", meshWidth)
+        trajectoryCompute.int("uMeshHeight", meshHeight)
+        trajectoryCompute.int("uBounded", if (bounded) 1 else 0)
+        trajectoryCompute.float(
+            "uRestitutionCoefficient",
+            config.collisions.restitutionCoefficient,
+        )
         trajectoryCompute.int("uPhysicalWidth", physicalGridWidth)
         trajectoryCompute.int("uPhysicalHeight", physicalGridHeight)
         trajectoryCompute.int("uNeighborRadiusX", neighborRadiusX)
@@ -431,17 +466,15 @@ class GravityPipeline(
             return 0
         }
 
+        val radius = offsets.maxOf { hypot(it.x, it.y) } +
+            0.5f * config.collisions.contactDiameterPixels
+        val insideX = if (bounded) centerX.coerceIn(radius, viewportWidthFloat - radius) else centerX
+        val insideY = if (bounded) centerY.coerceIn(radius, viewportHeightFloat - radius) else centerY
         val upload = memAllocFloat(offsets.size * 4)
         try {
             offsets.forEach { offset ->
-                upload.put(
-                    ToroidalSpace.wrapPixels(centerX + offset.x, viewportWidth) /
-                        viewportWidth,
-                )
-                upload.put(
-                    ToroidalSpace.wrapPixels(centerY + offset.y, viewportHeight) /
-                        viewportHeight,
-                )
+                upload.put(placeX(insideX + offset.x) / viewportWidth)
+                upload.put(placeY(insideY + offset.y) / viewportHeight)
                 upload.put(velocityX / viewportWidth)
                 upload.put(velocityY / viewportHeight)
             }
@@ -458,6 +491,15 @@ class GravityPipeline(
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
         return offsets.size
     }
+
+    /** A screen coordinate wrapped onto the torus, or clamped inside the walls. */
+    private fun placeX(pixels: Float) =
+        if (bounded) pixels.coerceIn(0f, viewportWidthFloat * MAXIMUM_UNIT)
+        else ToroidalSpace.wrapPixels(pixels, viewportWidth)
+
+    private fun placeY(pixels: Float) =
+        if (bounded) pixels.coerceIn(0f, viewportHeightFloat * MAXIMUM_UNIT)
+        else ToroidalSpace.wrapPixels(pixels, viewportHeight)
 
     private fun projectileOffsets(diameterPixels: Float): List<PixelOffset> =
         projectileOffsets.getOrPut(diameterPixels) {
@@ -594,9 +636,9 @@ class GravityPipeline(
         bind(1, cellHeads)
         bind(2, cellCounts)
         bind(3, cellMass)
-        clear.int("uMeshCells", cells)
+        clear.int("uMeshCells", meshCells)
         clear.int("uParticleCells", physicalCells)
-        dispatch(cells)
+        dispatch(maxOf(meshCells, physicalCells))
         barrier()
 
         build.use()
@@ -607,7 +649,8 @@ class GravityPipeline(
         bind(4, cellCounts)
         bind(5, cellMass)
         build.int("uCount", activeBodies)
-        build.int("uMeshWidth", gridWidth)
+        build.int("uMeshWidth", meshWidth)
+        build.int("uMeshHeight", meshHeight)
         build.int("uPhysicalWidth", physicalGridWidth)
         build.int("uPhysicalHeight", physicalGridHeight)
         build.int("uMassScale", massScale)
@@ -617,10 +660,10 @@ class GravityPipeline(
         fftInit.use()
         bind(0, density)
         bind(1, fft)
-        fftInit.int("uGridWidth", gridWidth)
-        fftInit.int("uGridHeight", gridHeight)
+        fftInit.int("uGridWidth", meshWidth)
+        fftInit.int("uGridHeight", meshHeight)
         fftInit.float("uInverseMassScale", 1f / massScale)
-        dispatch(cells)
+        dispatch(meshCells)
         barrier()
         profiler?.end(GpuStage.GRAVITY_GRID)
         profiler?.begin(GpuStage.FORWARD_FFT)
@@ -634,13 +677,13 @@ class GravityPipeline(
         bind(2, forceY)
         bind(3, kernelX)
         bind(4, kernelY)
-        convolve.int("uGridWidth", gridWidth)
-        convolve.int("uGridHeight", gridHeight)
+        convolve.int("uGridWidth", meshWidth)
+        convolve.int("uGridHeight", meshHeight)
         convolve.float(
             "uMinimumAssignmentWindowPower",
             config.gravity.minimumAssignmentWindowPower,
         )
-        dispatch(cells)
+        dispatch(meshCells)
         barrier()
         profiler?.end(GpuStage.CONVOLUTION)
 
@@ -660,7 +703,7 @@ class GravityPipeline(
         substepIndex: Int?,
     ) {
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, activeBodies, kickDt, driftDt, writePressure, substepIndex)
+            it.resolve(bodies, collisionBodies, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
@@ -705,6 +748,7 @@ class GravityPipeline(
             if (config.collisions.adaptive) 1 else 0,
         )
         collisionBuild.int("uSubstepIndex", substepIndex ?: -1)
+        collisionBuild.int("uBounded", if (bounded) 1 else 0)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_BUILD)
@@ -733,6 +777,7 @@ class GravityPipeline(
             if (config.collisions.adaptive) 1 else 0,
         )
         collisionCount.int("uSubstepIndex", substepIndex ?: -1)
+        collisionCount.int("uBounded", if (bounded) 1 else 0)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_COUNT)
@@ -778,6 +823,7 @@ class GravityPipeline(
         )
         collisionSolve.int("uWritePressure", if (writePressure) 1 else 0)
         collisionSolve.int("uSubstepIndex", substepIndex ?: -1)
+        collisionSolve.int("uBounded", if (bounded) 1 else 0)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_SOLVE)
@@ -860,7 +906,9 @@ class GravityPipeline(
         kick.int("uCount", activeBodies)
         kick.float("uInitialTotalMass", normalizationMass)
         kick.float("uInverseMassScale", 1f / massScaleFor(totalMass))
-        kick.int("uMeshWidth", gridWidth)
+        kick.int("uMeshWidth", meshWidth)
+        kick.int("uMeshHeight", meshHeight)
+        kick.int("uBounded", if (bounded) 1 else 0)
         kick.int("uPhysicalWidth", physicalGridWidth)
         kick.int("uPhysicalHeight", physicalGridHeight)
         kick.int("uInitial", if (initial) 1 else 0)
@@ -899,33 +947,30 @@ class GravityPipeline(
         kernelInit.use()
         bind(0, kernelX)
         bind(1, kernelY)
-        kernelInit.int("uGridWidth", gridWidth)
-        kernelInit.int("uGridHeight", gridHeight)
+        kernelInit.int("uGridWidth", meshWidth)
+        kernelInit.int("uGridHeight", meshHeight)
         kernelInit.int("uPhysicalWidth", physicalGridWidth)
         kernelInit.int("uPhysicalHeight", physicalGridHeight)
         kernelInit.float("uDomainAspect", domainAspect)
         kernelInit.float("uGravity", config.gravity.gravitationalConstant)
         kernelInit.float("uInitialTotalMass", normalizationMass)
         kernelInit.float("uSigmaCells", config.gravity.softeningCells)
-        dispatch(cells)
+        dispatch(meshCells)
         barrier()
         forward(kernelX)
         forward(kernelY)
     }
 
     private fun initializeTwiddles() {
-        var offset = 0
-        for (axisSize in intArrayOf(gridWidth, gridHeight)) {
-            var halfWidth = 1
-            while (halfWidth < axisSize) {
-                twiddleInit.use()
-                bind(0, twiddles)
-                twiddleInit.int("uOffset", offset)
-                twiddleInit.int("uHalfWidth", halfWidth)
-                dispatch(halfWidth)
-                offset += halfWidth
-                halfWidth *= 2
-            }
+        // One table for every axis length: entries for halfWidth h start at h - 1.
+        var halfWidth = 1
+        while (halfWidth < maximumFftAxis) {
+            twiddleInit.use()
+            bind(0, twiddles)
+            twiddleInit.int("uOffset", halfWidth - 1)
+            twiddleInit.int("uHalfWidth", halfWidth)
+            dispatch(halfWidth)
+            halfWidth *= 2
         }
         barrier()
     }
@@ -934,14 +979,14 @@ class GravityPipeline(
         sharedFft.use()
         bind(0, base)
         bind(1, twiddles)
-        sharedFft.int("uGridWidth", gridWidth)
-        sharedFft.int("uGridHeight", gridHeight)
+        sharedFft.int("uGridWidth", meshWidth)
+        sharedFft.int("uGridHeight", meshHeight)
         sharedFft.int("uInverse", if (inverse) 1 else 0)
         sharedFft.int("uAxis", 0)
-        glDispatchCompute(gridHeight, 1, 1)
+        glDispatchCompute(meshHeight, 1, 1)
         barrier()
         sharedFft.int("uAxis", 1)
-        glDispatchCompute(gridWidth, 1, 1)
+        glDispatchCompute(meshWidth, 1, 1)
         barrier()
     }
 
@@ -1014,6 +1059,10 @@ class GravityPipeline(
                 viewportHeight = viewportHeight,
                 seed = initialState.seed,
             )
+        }
+        scenarioState?.let { state ->
+            require(state.size <= config.particles.capacity * 4)
+            mappedBodies.put(0, state)
         }
         System.err.println(
             "Particle seed: ${java.lang.Long.toUnsignedString(initialState.seed)}"
@@ -1137,5 +1186,9 @@ class GravityPipeline(
 
     companion object {
         const val TRAJECTORY_VERTICES_PER_STEP = 6
+        /** Longest line the shared-memory FFT holds (fft_shared.comp). */
+        private const val MAXIMUM_FFT_AXIS = 2048
+        /** Largest float below 1, as in the collision shaders. */
+        private const val MAXIMUM_UNIT = 0.99999994f
     }
 }

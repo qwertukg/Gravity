@@ -17,6 +17,7 @@ uniform float uDiameterPixels;
 uniform float uCandidateRadiusSquared;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
+uniform int uBounded;
 #include "collision_cache_layout.glsl"
 
 float pairDistanceSquared(uint id, uint other) {
@@ -26,7 +27,8 @@ float pairDistanceSquared(uint id, uint other) {
     // its last bit at the strict contact threshold.
     vec2 firstPixels = bodies[min(id, other)].xy * uViewport;
     precise vec2 delta = firstPixels - bodies[max(id, other)].xy * uViewport;
-    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+    // Walls: no minimum image, bodies across an edge never touch.
+    if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
     precise float distanceSquared = dot(delta, delta);
     return distanceSquared;
 }

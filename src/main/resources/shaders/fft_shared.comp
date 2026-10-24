@@ -38,7 +38,9 @@ void main() {
     }
     barrier();
 
-    uint twiddleBase = uAxis == 0 ? 0u : width - 1u;
+    // One table serves every axis size: entry halfWidth - 1 + k depends
+    // only on halfWidth, never on the transform length.
+    uint twiddleBase = 0u;
     for (uint stageWidth = 2u; stageWidth <= axisSize; stageWidth <<= 1u) {
         uint halfWidth = stageWidth >> 1u;
         uint lowerIndices[MAXIMUM_BUTTERFLIES_PER_INVOCATION];
