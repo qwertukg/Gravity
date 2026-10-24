@@ -33,6 +33,7 @@ class FpsOverlay(
         "LMB drag: aim / fire\n" +
             "1-9: bullet size step ${projectileConfig.digitDiameterStepPixels.toInt()} px\n" +
             "0: bullet size ${projectileConfig.maximumDiameterPixels.toInt()} px\n" +
+            "+: bullet of ${projectileConfig.plusKeyBodyCount} bodies\n" +
             "Mouse wheel: time speed\n" +
             "P: pause / resume\n" +
             "S: stop all bodies\n" +

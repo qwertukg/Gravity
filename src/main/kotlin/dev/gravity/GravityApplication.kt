@@ -8,6 +8,8 @@ import org.lwjgl.glfw.GLFW.GLFW_FOCUS_ON_SHOW
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE
 import org.lwjgl.glfw.GLFW.GLFW_KEY_0
 import org.lwjgl.glfw.GLFW.GLFW_KEY_9
+import org.lwjgl.glfw.GLFW.GLFW_KEY_EQUAL
+import org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ADD
 import org.lwjgl.glfw.GLFW.GLFW_KEY_P
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
 import org.lwjgl.glfw.GLFW.GLFW_KEY_S
@@ -47,7 +49,6 @@ import org.lwjgl.opengl.GL11.GL_BLEND
 import org.lwjgl.opengl.GL11.GL_FALSE
 import org.lwjgl.opengl.GL11.GL_LINES
 import org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA
-import org.lwjgl.opengl.GL11.GL_POINTS
 import org.lwjgl.opengl.GL11.GL_SRC_ALPHA
 import org.lwjgl.opengl.GL11.GL_RENDERER
 import org.lwjgl.opengl.GL11.GL_VENDOR
@@ -83,7 +84,7 @@ private data class ProjectileGesture(
 class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var window = 0L
     private var pipeline: GravityPipeline? = null
-    private var renderProgram: GlProgram? = null
+    private var particleRenderer: ParticleRenderer? = null
     private var trajectoryProgram: GlProgram? = null
     private var projectilePreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
@@ -110,6 +111,12 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var pendingProjectile: ProjectileGesture? = null
     private var projectileDiameterPixels = config.projectiles.defaultDiameterPixels
     private var projectileBodyCount = 0
+    private val plusKeyProjectileDiameterPixels by lazy {
+        CircularProjectile.diameterForBodyCount(
+            config.collisions.contactDiameterPixels,
+            config.projectiles.plusKeyBodyCount,
+        )
+    }
 
     fun run() {
         initWindow()
@@ -122,7 +129,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
         pipeline = simulation
         projectileBodyCount = simulation.projectileBodyCount(projectileDiameterPixels)
-        renderProgram = GlProgram.graphics("/shaders/particles.vert", "/shaders/particles.frag")
+        particleRenderer = ParticleRenderer(
+            viewportWidth,
+            viewportHeight,
+            config.presentation,
+        )
         trajectoryProgram = GlProgram.graphics(
             "/shaders/trajectory.vert",
             "/shaders/trajectory.frag",
@@ -426,9 +437,17 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             if (key == GLFW_KEY_P && action == GLFW_PRESS) paused = !paused
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
             if (key == GLFW_KEY_S && action == GLFW_PRESS) stopRequested = true
-            if (key in GLFW_KEY_0..GLFW_KEY_9 && action == GLFW_PRESS) {
-                projectileDiameterPixels =
+            val selectedDiameter = when {
+                action != GLFW_PRESS -> null
+                key in GLFW_KEY_0..GLFW_KEY_9 ->
                     config.projectiles.diameterForDigit(key - GLFW_KEY_0)
+                // "+" shares the "=" key on the main row; numpad "+" too.
+                key == GLFW_KEY_EQUAL || key == GLFW_KEY_KP_ADD ->
+                    plusKeyProjectileDiameterPixels
+                else -> null
+            }
+            if (selectedDiameter != null) {
+                projectileDiameterPixels = selectedDiameter
                 pipeline?.let {
                     projectileBodyCount =
                         it.projectileBodyCount(projectileDiameterPixels)
@@ -549,19 +568,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         trajectoryVisible: Boolean,
         futureProjectileSpeed: Double?,
     ) {
-        glClear(GL_COLOR_BUFFER_BIT)
-        renderProgram!!.use()
-        renderProgram!!.float(
-            "uMaximumPressure",
-            config.presentation.maximumVisualPressure,
-        )
-        renderProgram!!.float(
-            "uPointSizePixels",
-            config.presentation.bodyPointSizePixels,
-        )
-        pipeline!!.bindBodiesForRender()
+        particleRenderer!!.render(pipeline!!, activeBodies)
         glBindVertexArray(vao)
-        glDrawArrays(GL_POINTS, 0, activeBodies)
         if (trajectoryVisible) {
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -685,7 +693,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         fpsOverlay?.close()
         projectilePreviewProgram?.close()
         trajectoryProgram?.close()
-        renderProgram?.close()
+        particleRenderer?.close()
         pipeline?.close()
         if (window != 0L) {
             glfwFreeCallbacks(window)

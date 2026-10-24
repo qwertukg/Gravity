@@ -89,6 +89,7 @@ data class GravityConfig(
             "projectile-min-drag-px",
             "projectile-size-step",
             "projectile-max-diameter",
+            "projectile-plus-bodies",
             "preview-period-px",
             "frames",
             "square-test",
@@ -350,6 +351,10 @@ data class GravityConfig(
                         "projectile-max-diameter",
                         defaults.projectiles.maximumDiameterPixels,
                     ),
+                    plusKeyBodyCount = intValue(
+                        "projectile-plus-bodies",
+                        defaults.projectiles.plusKeyBodyCount,
+                    ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
                         defaults.projectiles.previewPeriodPixels,
@@ -606,6 +611,7 @@ data class ProjectileConfig(
     val minimumDragPixels: Float = 2f,
     val digitDiameterStepPixels: Float = 10f,
     val maximumDiameterPixels: Float = 100f,
+    val plusKeyBodyCount: Int = 50_000,
     val previewPeriodPixels: Float = 6f,
     val benchmarkOriginX: Float = 0.25f,
     val benchmarkOriginY: Float = 0.5f,
@@ -622,6 +628,7 @@ data class ProjectileConfig(
         require(maximumDiameterPixels >= digitDiameterStepPixels * 9f) {
             "maximum projectile diameter must cover digit 9"
         }
+        require(plusKeyBodyCount > 0)
         require(previewPeriodPixels > 0f && previewPeriodPixels.isFinite())
         require(benchmarkOriginX in 0f..1f)
         require(benchmarkOriginY in 0f..1f)

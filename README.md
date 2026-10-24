@@ -105,6 +105,8 @@ unchanged.
 ### Projectiles and trajectory prediction
 
 - Keys `1–9` select a diameter of `10–90 px`; key `0` selects `100 px`.
+  Key `+` (main row or numpad) selects the smallest diameter holding
+  `50000` bodies.
 - A projectile is made of hexagonally packed bodies with the same contact
   diameter as every other body. Offset sets are cached separately for each
   selected size.
@@ -147,6 +149,7 @@ smoothed GPU frame time, and FFT grid size.
 | Release LMB | Spawn a projectile at the initial press position |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |
+| `+` | Select a projectile of `50000` bodies |
 | Mouse wheel down/up | Decrease/increase time scale by 5% |
 | `P` | Pause or resume without changing state |
 | `S` | Set the velocity of every active body to zero |
@@ -250,6 +253,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-min-drag-px=F` | `2` | Minimum drag distance that creates a projectile |
 | `--projectile-size-step=F` | `10` | Diameter increment selected by keys `1–9` |
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
+| `--projectile-plus-bodies=N` | `50000` | Projectile body count selected by key `+` |
 | `--preview-period-px=F` | `6` | Projectile-preview dash period |
 | `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
 | `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |

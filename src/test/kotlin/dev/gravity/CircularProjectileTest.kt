@@ -33,6 +33,17 @@ class CircularProjectileTest {
     }
 
     @Test
+    fun `plus key diameter is the smallest holding the configured body count`() {
+        val bodyDiameter = 1.12838f
+        val bodies = ProjectileConfig().plusKeyBodyCount
+        val diameter = CircularProjectile.diameterForBodyCount(bodyDiameter, bodies)
+
+        assertEquals(50_000, bodies)
+        assertTrue(CircularProjectile.offsets(bodyDiameter, diameter).size >= bodies)
+        assertTrue(CircularProjectile.offsets(bodyDiameter, diameter - 0.05f).size < bodies)
+    }
+
+    @Test
     fun `digit mapping is supplied by projectile configuration`() {
         val projectile = ProjectileConfig(
             digitDiameterStepPixels = 12f,
