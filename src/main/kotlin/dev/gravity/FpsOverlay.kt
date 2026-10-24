@@ -38,6 +38,9 @@ class FpsOverlay(
             "P: pause / resume\n" +
             "S: stop all bodies\n" +
             "B: walls / torus\n" +
+            "Arrows: uniform gravity on / off\n" +
+            "C: clear all bodies\n" +
+            "G: gravity between bodies on / off\n" +
             "R: reset\n" +
             "Esc: exit"
     private val controlLines = controlText.lineSequence().count()
@@ -55,6 +58,8 @@ class FpsOverlay(
     private var renderedFutureSpeedBits = Long.MIN_VALUE
     private var renderedQuads = 0
     private var renderedBounded = false
+    private var renderedField = ""
+    private var renderedMutualGravity = true
 
     init {
         val indices = BufferUtils.createIntBuffer(maximumQuads * 6)
@@ -82,6 +87,8 @@ class FpsOverlay(
         timeScale: Double,
         futureProjectileSpeed: Double?,
         bounded: Boolean,
+        field: String,
+        mutualGravity: Boolean,
     ) {
         val fpsBits = fps.toRawBits()
         val timeScaleBits = timeScale.toRawBits()
@@ -91,20 +98,24 @@ class FpsOverlay(
             projectileBodies != renderedProjectileBodies ||
             timeScaleBits != renderedTimeScaleBits ||
             futureSpeedBits != renderedFutureSpeedBits ||
-            bounded != renderedBounded
+            bounded != renderedBounded ||
+            field != renderedField ||
+            mutualGravity != renderedMutualGravity
         ) {
             val projectileSpeed = futureProjectileSpeed?.let {
                 String.format(Locale.ROOT, "%.1f px/s", it)
             } ?: "-"
             val text = String.format(
                 Locale.ROOT,
-                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nSpace: %s",
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nSpace: %s\nField: %s\nGravity: %s",
                 fps,
                 activeBodies,
                 projectileBodies,
                 timeScale * 100.0,
                 projectileSpeed,
                 if (bounded) "walls" else "torus",
+                field,
+                if (mutualGravity) "on" else "off",
             )
             vertexData.clear()
             val informationQuads = stb_easy_font_print(
@@ -135,6 +146,8 @@ class FpsOverlay(
             renderedTimeScaleBits = timeScaleBits
             renderedFutureSpeedBits = futureSpeedBits
             renderedBounded = bounded
+            renderedField = field
+            renderedMutualGravity = mutualGravity
         }
 
         program.use()

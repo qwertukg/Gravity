@@ -58,6 +58,25 @@ zero-padding. Both dimensions must be powers of two. Twiddle factors are
 computed once per simulation; one table serves every transform length. The
 spectral kernel is recomputed when the space mode changes.
 
+### Uniform field and clearing
+
+Each arrow key toggles a uniform gravity field in its direction: the first
+press switches it on, the second off. Arrows are independent, so two
+perpendicular arrows give a diagonal field and opposite arrows cancel. The
+field (`300 px/s²` by default, scaled with the screen height) is added to
+every body's acceleration and to the trajectory preview, and survives resets.
+The overlay shows it as `Field:`. Combined with walls (`B`), bodies settle on
+the chosen floor.
+
+`G` switches gravity between bodies off and on. While it is off, the density
+grid, FFT and near-field passes are skipped; collisions, walls and the
+uniform field still act, and the trajectory preview follows the field alone.
+The overlay shows it as `Gravity:`; the setting survives resets.
+
+`C` starts a fresh session with no active bodies, keeping the space mode, the
+field and the selected scenario's gravity normalization. Physics is idle until
+a projectile is fired.
+
 ### Walls
 
 Key `B` toggles between the torus and a box bounded by the screen edges. The
@@ -220,6 +239,9 @@ screen.
 | `P` | Pause or resume without changing state |
 | `S` | Set the velocity of every active body to zero |
 | `B` | Toggle between the torus and walls at the screen edges |
+| `↑` `↓` `←` `→` | Toggle a uniform gravity field in that direction |
+| `C` | Remove all bodies; projectiles can be fired into the empty screen |
+| `G` | Toggle gravity between bodies; the uniform field and collisions stay |
 | `R` | Create a new GPU session and restart the current scenario |
 | `Esc` | Exit |
 
@@ -309,6 +331,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--near-home-bodies=N` | `8` | Maximum exact interactions in the home gravity cell |
 | `--near-min-distance-fraction=F` | `0.05` | Near-force minimum distance as a cell-size fraction |
 | `--cic-window-floor=F` | `0.08` | Minimum squared CIC assignment-window power used in deconvolution |
+| `--field-gravity=F` | `300` | Arrow-key uniform field in px/s² at a 1440 px tall screen, `F ≥ 0` |
 | `--trajectory-steps=N` | `1024` | Maximum predicted trajectory steps, `1–65536` |
 | `--trajectory-max-dt=F` | `1` | Maximum trajectory integration step in seconds |
 | `--trajectory-segment-px=F` | `6` | Target predicted segment length in pixels |

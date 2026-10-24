@@ -53,6 +53,7 @@ data class GravityConfig(
             "near-home-bodies",
             "near-min-distance-fraction",
             "cic-window-floor",
+            "field-gravity",
             "dt",
             "collisions",
             "diameter",
@@ -244,6 +245,10 @@ data class GravityConfig(
                     minimumAssignmentWindowPower = floatValue(
                         "cic-window-floor",
                         defaults.gravity.minimumAssignmentWindowPower,
+                    ),
+                    uniformFieldAcceleration = floatValue(
+                        "field-gravity",
+                        defaults.gravity.uniformFieldAcceleration,
                     ),
                 ),
                 collisions = CollisionConfig(
@@ -525,6 +530,8 @@ data class GravityFieldConfig(
     val maximumHomeBodyInteractions: Int = 8,
     val minimumDistanceCellFraction: Float = 0.05f,
     val minimumAssignmentWindowPower: Float = 0.08f,
+    /** Uniform field strength in px/s² at a 1440 px tall screen (arrow keys). */
+    val uniformFieldAcceleration: Float = 300f,
 ) {
     init {
         require(gridWidth in 128..2048 && gridWidth.countOneBits() == 1) {
@@ -542,6 +549,7 @@ data class GravityFieldConfig(
         require(maximumHomeBodyInteractions >= 1)
         require(minimumDistanceCellFraction > 0f && minimumDistanceCellFraction.isFinite())
         require(minimumAssignmentWindowPower > 0f && minimumAssignmentWindowPower <= 1f)
+        require(uniformFieldAcceleration >= 0f && uniformFieldAcceleration.isFinite())
     }
 }
 

@@ -99,6 +99,17 @@ class GravityPipeline(
             field = value
             initializeKernel()
         }
+
+    /** Uniform field in px/s² added to every body's acceleration (+y is up). */
+    var fieldAccelerationX = 0f
+    var fieldAccelerationY = 0f
+
+    /**
+     * Gravity between bodies. When off, the grid, FFT and near-field passes
+     * are skipped and only the uniform field accelerates bodies.
+     */
+    var mutualGravity = true
+
     private val meshWidth get() = if (bounded) 2 * gridWidth else gridWidth
     private val meshHeight get() = if (bounded) 2 * gridHeight else gridHeight
     private val meshCells get() = meshWidth * meshHeight
@@ -243,7 +254,7 @@ class GravityPipeline(
     }
 
     fun initializeAcceleration(activeBodies: Int) {
-        buildForce(activeBodies)
+        if (mutualGravity) buildForce(activeBodies)
         applyKick(activeBodies, initial = true)
     }
 
@@ -338,7 +349,7 @@ class GravityPipeline(
             )
         }
         profiler?.end(GpuStage.COLLISION_SUBSTEPS)
-        buildForce(activeBodies)
+        if (mutualGravity) buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
         // The final gravity kick can create new inward contact velocity in the
         // dense core. A zero-drift pass removes it before rendering/next step.
@@ -382,6 +393,12 @@ class GravityPipeline(
         trajectoryCompute.int("uMeshWidth", meshWidth)
         trajectoryCompute.int("uMeshHeight", meshHeight)
         trajectoryCompute.int("uBounded", if (bounded) 1 else 0)
+        trajectoryCompute.int("uMutualGravity", if (mutualGravity) 1 else 0)
+        trajectoryCompute.vec2(
+            "uFieldAcceleration",
+            fieldAccelerationX / viewportWidthFloat,
+            fieldAccelerationY / viewportHeightFloat,
+        )
         trajectoryCompute.float(
             "uRestitutionCoefficient",
             config.collisions.restitutionCoefficient,
@@ -909,6 +926,12 @@ class GravityPipeline(
         kick.int("uMeshWidth", meshWidth)
         kick.int("uMeshHeight", meshHeight)
         kick.int("uBounded", if (bounded) 1 else 0)
+        kick.int("uMutualGravity", if (mutualGravity) 1 else 0)
+        kick.vec2(
+            "uFieldAcceleration",
+            fieldAccelerationX / viewportWidthFloat,
+            fieldAccelerationY / viewportHeightFloat,
+        )
         kick.int("uPhysicalWidth", physicalGridWidth)
         kick.int("uPhysicalHeight", physicalGridHeight)
         kick.int("uInitial", if (initial) 1 else 0)

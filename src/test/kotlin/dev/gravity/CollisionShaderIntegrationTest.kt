@@ -304,6 +304,72 @@ class CollisionShaderIntegrationTest {
         }
     }
 
+    @Test
+    fun `a uniform field accelerates a free body at exactly its strength`() {
+        CollisionGpuContext().use {
+            val config = config(1)
+            for (bounded in listOf(false, true)) {
+                GravityPipeline(config, width, height, bounded = bounded).use { pipeline ->
+                    pipeline.fieldAccelerationX = -120f
+                    pipeline.fieldAccelerationY = 300f
+                    CollisionGpuAccess.upload(pipeline, scene(1) { floatArrayOf(1720f, 300f, 0f, 0f) })
+                    pipeline.initializeAcceleration(1)
+                    val steps = 60
+                    repeat(steps) { pipeline.step(1) }
+                    val body = CollisionGpuAccess.floats(pipeline, "bodies", 4)
+                    val elapsed = steps * config.collisions.timeStep
+                    // A lone body feels only the field (plus a ~1e-5 mesh self-force).
+                    assertEquals(-120f * elapsed, body[2] * width, 0.05f, "vx, bounded=$bounded")
+                    assertEquals(300f * elapsed, body[3] * height, 0.05f, "vy, bounded=$bounded")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a cleared session with no bodies accepts projectiles`() {
+        CollisionGpuContext().use {
+            val config = config(4096)
+            GravityPipeline(config, width, height).use { pipeline ->
+                // As after C: nothing is active, gravity and the preview still run.
+                pipeline.initializeAcceleration(0)
+                pipeline.updateTrajectory(0, 1000f, 700f, 100f, 0f)
+                val spawned = pipeline.spawnProjectile(0, 1000f, 700f, 200f, 0f, 30f)
+                assertTrue(spawned > 0)
+                repeat(30) { pipeline.step(spawned) }
+                assertEquals(0, pipeline.measureCluster(spawned).nonFiniteBodies)
+            }
+        }
+    }
+
+    @Test
+    fun `switching off mutual gravity leaves only the uniform field`() {
+        CollisionGpuContext().use {
+            val count = 256
+            val config = config(count)
+            val random = Random(17)
+            val input = scene(count) { floatArrayOf(random.nextFloat() * width, random.nextFloat() * height, 0f, 0f) }
+            GravityPipeline(config, width, height).use { pipeline ->
+                pipeline.fieldAccelerationY = -300f
+                CollisionGpuAccess.upload(pipeline, input)
+                pipeline.initializeAcceleration(count)
+                val attracted = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                pipeline.mutualGravity = false
+                CollisionGpuAccess.upload(pipeline, input)
+                pipeline.initializeAcceleration(count)
+                val free = CollisionGpuAccess.floats(pipeline, "acceleration", count * 2)
+                for (i in 0 until count) {
+                    assertEquals(0f, free[i * 2], "body $i ax")
+                    assertEquals(-300f / height, free[i * 2 + 1], "body $i ay")
+                }
+                assertTrue((0 until count).any { abs(attracted[it * 2]) > 1e-3f })
+                // Physics keeps running without the gravity passes.
+                repeat(10) { pipeline.step(count) }
+                assertEquals(0, pipeline.measureCluster(count).nonFiniteBodies)
+            }
+        }
+    }
+
     private fun compareReplay(name: String, initial: FloatArray, passes: Int) {
         val count = initial.size / 4
         val config = config(count)

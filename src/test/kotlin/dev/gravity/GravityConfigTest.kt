@@ -28,6 +28,7 @@ class GravityConfigTest {
                 "--trajectory-updates-per-second=60",
                 "--projectile-diameter=60",
                 "--projectile-drag-scale=5",
+                "--field-gravity=450",
                 "--time-scale-min=0.02",
                 "--profiler-ring=24",
                 "--near-exact-bodies=3",
@@ -51,6 +52,7 @@ class GravityConfigTest {
         assertEquals(60, config.trajectory.updatesPerSecond)
         assertEquals(60f, config.projectiles.defaultDiameterPixels)
         assertEquals(5f, config.projectiles.velocityPerDragPixel)
+        assertEquals(450f, config.gravity.uniformFieldAcceleration)
         assertEquals(80f, config.presentation.maximumVisualPressure)
         assertEquals(0.02, config.presentation.minimumTimeScale)
         assertEquals(512, config.presentation.overlayMaximumCharacters)

@@ -14,6 +14,8 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_P
 import org.lwjgl.glfw.GLFW.GLFW_KEY_R
 import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_KEY_B
+import org.lwjgl.glfw.GLFW.GLFW_KEY_C
+import org.lwjgl.glfw.GLFW.GLFW_KEY_G
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
@@ -102,6 +104,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var viewportHeight = 0
     private var resetRequested = false
     private var stopRequested = false
+    private var clearRequested = false
+    /** G: gravity between bodies; kept across resets. */
+    private var mutualGravity = true
+    /** Arrow-key fields, each toggled independently; opposite arrows cancel. */
+    private val fieldDirections = LinkedHashSet<FieldDirection>()
     private var paused = false
     private val simulationSpeed = SimulationSpeed(
         scalePerScroll = config.presentation.timeScalePerScroll,
@@ -191,6 +198,10 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             if (resetRequested) {
                 requestedScenario?.let { scenario = it }
                 requestedScenario = null
+                // C clears the screen: a fresh session with no active bodies;
+                // projectiles can be fired into it.
+                val clearing = clearRequested
+                clearRequested = false
                 // A reset starts a new GPU session, just like application
                 // startup, instead of retaining resources and timer queries
                 // from the previous simulation.
@@ -203,7 +214,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 pipeline = null
                 simulation = createSimulation()
                 pipeline = simulation
-                active = sessionConfig.particles.initialBodies
+                active = if (clearing) 0 else sessionConfig.particles.initialBodies
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
                 timer = if (profiler == null) {
@@ -288,7 +299,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 totalFrames in benchmarkStart..<benchmarkEnd
             profiler?.beginFrame(totalFrames, collect = collectProfile)
             timer?.begin()
-            if (simulationSpeed.shouldAdvance(paused)) {
+            if (simulationSpeed.shouldAdvance(paused) && active > 0) {
                 simulation.step(active)
             }
             val trajectory = if (draggingProjectile) {
@@ -437,6 +448,20 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             if (key == GLFW_KEY_P && action == GLFW_PRESS) paused = !paused
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
             if (key == GLFW_KEY_S && action == GLFW_PRESS) stopRequested = true
+            if (key == GLFW_KEY_G && action == GLFW_PRESS) {
+                mutualGravity = !mutualGravity
+                pipeline?.mutualGravity = mutualGravity
+            }
+            if (key == GLFW_KEY_C && action == GLFW_PRESS) {
+                clearRequested = true
+                resetRequested = true
+            }
+            FieldDirection.forKey(key)?.let { direction ->
+                if (action == GLFW_PRESS) {
+                    if (!fieldDirections.remove(direction)) fieldDirections += direction
+                    pipeline?.let(::applyField)
+                }
+            }
             if (key == GLFW_KEY_B && action == GLFW_PRESS) {
                 pipeline?.let {
                     if (it.boundedSpaceSupported) {
@@ -591,7 +616,17 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             profiler = profiler,
             scenarioState = state,
             bounded = bounded,
-        )
+        ).also {
+            it.mutualGravity = mutualGravity
+            applyField(it)
+        }
+    }
+
+    private fun applyField(simulation: GravityPipeline) {
+        // Authored for a 1440 px tall screen, like the scenarios.
+        val strength = config.gravity.uniformFieldAcceleration * viewportHeight / 1440f
+        simulation.fieldAccelerationX = strength * fieldDirections.sumOf { it.x }.toFloat()
+        simulation.fieldAccelerationY = strength * fieldDirections.sumOf { it.y }.toFloat()
     }
 
     private fun initializeSimulation(simulation: GravityPipeline, activeBodies: Int) {
@@ -666,6 +701,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         }
         fpsOverlay!!.render(
             bounded = bounded,
+            field = fieldDirections.joinToString(" ") { it.label }.ifEmpty { "off" },
+            mutualGravity = mutualGravity,
             fps = fps,
             activeBodies = activeBodies,
             projectileBodies = projectileBodyCount,

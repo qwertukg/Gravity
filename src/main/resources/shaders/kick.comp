@@ -14,6 +14,10 @@ uniform int uCount;
 uniform int uMeshWidth;
 uniform int uMeshHeight;
 uniform int uBounded;
+// Uniform field switched on with the arrow keys, normalized per screen axis.
+uniform vec2 uFieldAcceleration;
+// G: 0 when bodies ignore each other's gravity; the uniform field still acts.
+uniform int uMutualGravity;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform int uInitial;
@@ -100,7 +104,13 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
-    vec2 result = interpolateForce(body.xy);
+    if (uMutualGravity == 0) {
+        if (uInitial == 0) body.zw += uFieldAcceleration * (0.5 * uDt);
+        acceleration[id] = uFieldAcceleration;
+        bodies[id] = body;
+        return;
+    }
+    vec2 result = interpolateForce(body.xy) + uFieldAcceleration;
     // P3M Ewald split: the spectral mesh contains the Gaussian-smoothed
     // long-range force. Sparse cells use the exact local complement; dense
     // cells use a Barnes-Hut-style cell monopole to bound frame time.
