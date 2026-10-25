@@ -92,6 +92,8 @@ void main() {
 
     RigidGroup rigid = groups[group];
     float mass = rigid.scalars.z;
+    // Broken up entirely: the CPU frees the group (RigidBlocks.refresh).
+    if (mass <= 0.0) return;
     vec2 center = sharedA[0].xy / mass;
     vec2 velocity = sharedA[0].zw / mass;
     // Best-fit rotation of the rest shape onto the current positions.

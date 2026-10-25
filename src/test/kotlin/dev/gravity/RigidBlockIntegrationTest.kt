@@ -94,6 +94,7 @@ class RigidBlockIntegrationTest {
     private fun config() = GravityConfig(
         particles = ParticleConfig(capacity = 4096, initialBodies = 1, seed = 7235, spatialSortInterval = 1),
         gravity = GravityFieldConfig(gridWidth = 128, gridHeight = 128),
+        projectiles = ProjectileConfig(blockStrength = Float.POSITIVE_INFINITY),
     )
 
     private class RigidAccess(pipeline: GravityPipeline) {

@@ -75,6 +75,6 @@ class BuoyancyIntegrationTest {
     private fun config(count: Int, density: Float) = GravityConfig(
         particles = ParticleConfig(capacity = count + 4096, initialBodies = count, seed = 7235),
         gravity = GravityFieldConfig(gridWidth = 128, gridHeight = 128),
-        projectiles = ProjectileConfig(blockDensity = density),
+        projectiles = ProjectileConfig(blockDensity = density, blockStrength = Float.POSITIVE_INFINITY),
     )
 }

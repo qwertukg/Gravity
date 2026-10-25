@@ -1,0 +1,34 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Members { int members[]; };
+layout(std430, binding = 2) buffer Rest { vec2 rest[]; };
+layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
+layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
+layout(std430, binding = 5) readonly buffer Shifts { vec4 shifts[]; };
+layout(std430, binding = 6) buffer Broken { uint brokenCount; uint movedCount; uint broken[]; };
+uniform vec2 uViewport;
+
+// After rigid_fracture.comp: the members of a block that lost some follow
+// its new centre of mass, x = c + R r0 with r0 about it, and take their
+// share of its recoil, v += dV + dw x R r0. The broken lists are spent.
+void main() {
+    uint member = gl_GlobalInvocationID.x;
+    if (member == 0u) {
+        brokenCount = 0u;
+        movedCount = 0u;
+    }
+    int group = tileGroups[gl_WorkGroupID.x];
+    vec4 shift = shifts[2 * group];
+    float spinChange = shifts[2 * group + 1].x;
+    if (shift == vec4(0.0) && spinChange == 0.0) return;
+    vec2 offset = rest[member] - shift.xy;
+    rest[member] = offset;
+    int body = members[member];
+    if (body < 0) return;
+    vec2 rotation = groups[group].motion.zw;
+    vec2 arm = vec2(rotation.x * offset.x - rotation.y * offset.y, rotation.y * offset.x + rotation.x * offset.y);
+    vec4 state = bodies[body];
+    bodies[body] = vec4(state.xy, state.zw + (shift.zw + spinChange * vec2(-arm.y, arm.x)) / uViewport);
+}

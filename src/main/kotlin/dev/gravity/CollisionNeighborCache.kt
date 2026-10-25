@@ -132,7 +132,13 @@ internal class CollisionNeighborCache(
         rigidSolve.use()
         rigidSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
         rigidSolve.float("uRestingSpeed", restingSpeed(collision))
+        rigidSolve.float("uFractureSpeed", config.projectiles.blockStrength)
+        rigidSolve.float("uFractureEnergy", RigidBlocks.fractureEnergy(config.projectiles.blockStrength))
     }
+
+    /** The cache buffer and its word that forces a rebuild when cleared (collision_cache_layout.glsl). */
+    val cacheBuffer get() = cache
+    val populationWord get() = CACHE_PLANES * capacity + STATE_POPULATION
 
     fun resolve(
         input: Int,

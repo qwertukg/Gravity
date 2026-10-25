@@ -1,6 +1,7 @@
 // Per-body material (mass, Coulomb friction coefficient, solid, block),
 // matching the materials buffer of GravityPipeline. Block bodies are solid
-// and name their glued block.
+// and name their glued block; a body broken off a block stays solid and
+// names none (-1): a loose grain of the block's material.
 layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
 // Liquid mode: bodies that are not solid are fluid. Fluid pairs are resolved
 // by the density constraint of the liquid passes, not as hard contacts, so
@@ -17,15 +18,20 @@ bool fluidBody(uint id) {
 // without them every pass is the plain one, with none of this code: drivers
 // may load materials ahead of a branch they then skip.
 #ifdef RIGID
+// A body of a glued block; a grain broken off one is solid but no member.
+bool isMember(vec4 material) {
+    return material.z != 0.0 && material.w >= 0.0;
+}
+
 // The glued block of a body, or -1 for a loose body.
 int groupOf(uint id) {
     vec4 material = materials[id];
-    return material.z != 0.0 ? int(material.w) : -1;
+    return isMember(material) ? int(material.w) : -1;
 }
 
 // A pair with a member of a block: a contact with the block's rigid shape.
 bool rigidPair(uint first, uint second) {
-    return materials[first].z != 0.0 || materials[second].z != 0.0;
+    return isMember(materials[first]) || isMember(materials[second]);
 }
 
 // Liquid mode: the liquid passes keep fluid off a block by its pressure, and
@@ -50,7 +56,7 @@ bool hardPair(uint first, uint second) {
 #ifdef RIGID
     vec4 firstMaterial = materials[first];
     vec4 secondMaterial = materials[second];
-    if (firstMaterial.z != 0.0 && secondMaterial.z != 0.0 && firstMaterial.w == secondMaterial.w) return false;
+    if (isMember(firstMaterial) && isMember(secondMaterial) && firstMaterial.w == secondMaterial.w) return false;
 #endif
     if (uLiquid == 0) return true;
     return materials[first].z != 0.0 || materials[second].z != 0.0;

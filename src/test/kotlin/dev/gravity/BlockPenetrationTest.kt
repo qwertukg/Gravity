@@ -53,6 +53,8 @@ class BlockPenetrationTest {
                     spatialSortInterval = if (shot) 0 else 2,
                 ),
                 gravity = GravityFieldConfig(gridWidth = 128, gridHeight = 128),
+                // Solid blocks: what breaks is BlockFractureTest's.
+                projectiles = ProjectileConfig(blockStrength = Float.POSITIVE_INFINITY),
             )
             GravityPipeline(config, size, size, bounded = true).use { pipeline ->
                 pipeline.mutualGravity = false

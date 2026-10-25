@@ -1,0 +1,37 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) readonly buffer Members { int members[]; };
+layout(std430, binding = 1) buffer Materials { vec4 materials[]; };
+layout(std430, binding = 2) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    float shapes[];
+};
+uniform int uGroup;
+uniform int uFirstSlot;
+uniform int uSlots;
+
+// Group [uGroup] starts afresh (RigidBlocks): the bodies listed in its
+// slots name it, and its contact memory with every partner is forgotten,
+// whatever a block of that index met before.
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index < uint(uSlots)) {
+        int body = members[uFirstSlot + int(index)];
+        if (body >= 0) materials[body] = vec4(materials[body].xy, 1.0, float(uGroup));
+    }
+    if (index < uint(CONTACT_PARTNERS)) {
+        int partner = int(index);
+        int key = min(uGroup, partner) * CONTACT_PARTNERS + max(uGroup, partner);
+        impacts[key] = 0;
+        nextImpacts[key] = 0;
+        contactStates[key] = 0;
+        idlePasses[key] = 0;
+        pairContacts[key] = 0;
+    }
+}

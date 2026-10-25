@@ -45,9 +45,13 @@ bool meetsWall(int group, int wall, float distance) {
 float contactReachSquared(uint first, uint second) {
     vec4 firstMaterial = materials[first];
     vec4 secondMaterial = materials[second];
-    bool fluidBlock = uLiquid != 0 && (firstMaterial.z == 0.0) != (secondMaterial.z == 0.0);
+    bool firstMember = isMember(firstMaterial);
+    bool secondMember = isMember(secondMaterial);
+    // A grain broken off a block meets the liquid as a loose body does.
+    bool fluidBlock = uLiquid != 0 &&
+        (firstMember && secondMaterial.z == 0.0 || secondMember && firstMaterial.z == 0.0);
     float reach = fluidBlock ? FLUID_REACH_DIAMETERS * uDiameterPixels : uDiameterPixels;
-    if (firstMaterial.z != 0.0 && secondMaterial.z != 0.0 &&
+    if (firstMember && secondMember &&
         impacts[contactKey(int(firstMaterial.w), int(secondMaterial.w))] != 0) {
         reach += SPECULATIVE_DIAMETERS * uDiameterPixels;
     }

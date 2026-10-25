@@ -104,6 +104,7 @@ data class GravityConfig(
             "block-density",
             "block-friction",
             "block-restitution",
+            "block-strength",
             "scenario",
             "walls",
             "mutual-gravity",
@@ -421,6 +422,10 @@ data class GravityConfig(
                     blockRestitution = floatValue(
                         "block-restitution",
                         defaults.projectiles.blockRestitution,
+                    ),
+                    blockStrength = floatValue(
+                        "block-strength",
+                        defaults.projectiles.blockStrength,
                     ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
@@ -748,6 +753,12 @@ data class ProjectileConfig(
      * loose body gets off a block; slow contacts never bounce.
      */
     val blockRestitution: Float = 0.2f,
+    /**
+     * Critical impact speed of block material, px/s: a contact approaching
+     * faster chips the bodies it strikes off, and what it brings beyond that
+     * runs on as cracks. `Infinity` makes blocks unbreakable.
+     */
+    val blockStrength: Float = 400f,
     val previewPeriodPixels: Float = 6f,
     val benchmarkOriginX: Float = 0.25f,
     val benchmarkOriginY: Float = 0.5f,
@@ -770,6 +781,7 @@ data class ProjectileConfig(
         }
         require(blockFriction >= 0f && blockFriction.isFinite()) { "block friction must be non-negative" }
         require(blockRestitution in 0f..1f) { "block restitution must be in 0..1" }
+        require(blockStrength > 0f && !blockStrength.isNaN()) { "block strength must be positive" }
         require(previewPeriodPixels > 0f && previewPeriodPixels.isFinite())
         require(benchmarkOriginX in 0f..1f)
         require(benchmarkOriginY in 0f..1f)

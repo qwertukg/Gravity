@@ -257,6 +257,9 @@ void main() {
     }
 
     outputBodies[id] = vec4(position, velocityPixels / uViewport);
+#ifdef RIGID
+    storeFracture(id);
+#endif
     // Fluid pressure comes from the liquid passes.
     if (uWritePressure != 0 && !fluidBody(id)) pressures[id] = pressure;
 }

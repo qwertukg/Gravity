@@ -8,8 +8,9 @@ import org.lwjgl.opengl.GL11.GL_NO_ERROR
 import org.lwjgl.opengl.GL11.glGetError
 
 /**
- * Every block scenario of the menu runs as the application starts it, and
- * stays sound: finite, blocks out of the walls, no loose body deep in a block.
+ * Every block scenario of the menu runs as the application starts it, blocks
+ * breaking, and stays sound: finite, blocks out of the walls, no loose body
+ * (grains broken off included) deep in a block.
  */
 class BlockScenarioRunTest {
     private val width = 1920
@@ -42,7 +43,9 @@ class BlockScenarioRunTest {
                     val radius = 0.5f * diameter
                     var deepest = 0f
                     var wall = 0f
-                    val members = (0 until active).filter { materials[it * 4 + 2] != 0f }
+                    // Grains broken off a block are solid but name no block.
+                    fun member(id: Int) = materials[id * 4 + 2] != 0f && materials[id * 4 + 3] >= 0f
+                    val members = (0 until active).filter(::member)
                     for (id in members) {
                         val x = bodies[id * 4] * width
                         val y = bodies[id * 4 + 1] * height
@@ -54,7 +57,7 @@ class BlockScenarioRunTest {
                     fun key(x: Float, y: Float) = ((x / cell).toLong() shl 32) or ((y / cell).toLong() and 0xffffffffL)
                     for (id in members) grid.getOrPut(key(bodies[id * 4] * width, bodies[id * 4 + 1] * height)) { mutableListOf() } += id
                     for (id in 0 until active) {
-                        if (materials[id * 4 + 2] != 0f) continue
+                        if (member(id)) continue
                         val x = bodies[id * 4] * width
                         val y = bodies[id * 4 + 1] * height
                         for (dx in -1..1) for (dy in -1..1) {

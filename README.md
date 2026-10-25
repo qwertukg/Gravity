@@ -157,7 +157,8 @@ scenario changes.
 
 The primary arrays, FFT buffers, and spatial hashes remain in VRAM. Particle
 state is not copied to the CPU every frame. Blocking GPU readback is used only
-at the end of explicit diagnostic and benchmark runs.
+at the end of explicit diagnostic and benchmark runs, and when a block lost
+members, to split it into its pieces ([Breaking blocks](#breaking-blocks)).
 
 The average complexity of one physics step is
 `O(N + M log M + N·k)`, where `N` is the body count, `M` is the number of FFT
@@ -223,8 +224,9 @@ dropped onto a wall stays a rectangle.
   the result does not depend on scheduling.
 - Spatial sorting renames bodies; the scatter records every body's new ID and
   the member lists follow it.
-- Up to `256` blocks per session; `C`, `R` and scenario changes remove them.
-  Without blocks the passes are skipped.
+- Up to `256` blocks at a time, pieces of [broken](#breaking-blocks) blocks
+  included; the index of a block that crumbled away is reused. `C`, `R` and
+  scenario changes remove them. Without blocks the passes are skipped.
 - A GPU test checks that a block hit off centre keeps its shape to `1e-2 px`,
   moves, spins and conserves momentum.
 
@@ -294,6 +296,63 @@ finds its level where it lands, as on sand. A light block buried deep in a
 pile stays there, and a heavy one stops once the pile below can carry it. In
 [liquid mode](#liquid-mode) a light block rises from the bottom and a heavy
 one sinks to it.
+
+### Breaking blocks
+
+Blocks are brittle. A hit by a body, by another block or against a wall
+breaks a block when it is faster than the material's critical speed
+`--block-strength` (`400 px/s`): the speed at which the stress of an impact,
+about density × sound speed × approach speed, reaches the material's
+strength. Rest, slow contacts and a pile's weight therefore never break
+anything; a block dropped from low or thrown gently stays whole, one dropped
+from high or rammed hard breaks. `--block-strength=Infinity` makes blocks
+unbreakable.
+
+- **Chips.** A member struck faster than its own strength breaks off as a
+  loose grain of the block's material, if the contact brings the energy
+  that costs. Strengths scatter between members like flaws in stone
+  (Weibull modulus `6` about the critical speed), so a hit just above it
+  chips the weak spots of a face and a harder one the whole face.
+- **Cracks.** What every contact brings beyond the critical speed,
+  `μ(v² − vc²)` with `μ` its share of the pair's effective mass, pays for a
+  crack, each member `20` times its mass × `vc²`: most of an impact's
+  energy goes into heat, sound and the splash. Two blocks share the energy
+  of their contact. Each pass a block's crack starts from the member struck
+  hardest and runs from it into the block, one member a step, wandering
+  between neighbours and now and then branching, until its energy is spent
+  or it leaves the block. The members along it break off as grains.
+- **Grains** stay solid bodies with their block's mass and friction: they
+  sink in liquid as their block would and pile up as grains. A chip keeps
+  the motion of its block at its place and flies off back the way the
+  impact came at up to half its excess speed, at most the critical speed,
+  the speed the strain energy released gives it; the block recoils from it,
+  so momentum and angular momentum stay.
+- **Shape.** Where members broke off the block's shape is carved at once,
+  in the same pass: a node whose nearest member broke off lies as far from
+  the solid as the nearest member left. A projectile therefore enters the
+  crater it makes instead of hitting the block's old face. The block's
+  centre of mass, mass and inertia follow what is left, updated from what
+  broke off alone, so a large block costs no more than a small one.
+- **Pieces.** A crack through a block, one member wide, cuts it: members
+  more than `1.2` diameters apart hold no longer together. The GPU flags a
+  block whose broken member leaves its neighbours in more than one arc;
+  the CPU sees the flags in a copy behind a fence, so nothing waits, and
+  looks at such a block at once and at any other that lost members within
+  `8` steps, usually one or two steps after the hit. A look is a blocking
+  readback of which members are left. The CPU keeps every block's lattice,
+  and searches spread from the neighbours of the members gone: one that
+  runs out of members before meeting the others has gone round a piece of
+  its own, so only the pieces that came away are walked. The largest piece
+  stays the block; every other one of at least `16` bodies becomes a block
+  of its own with the same rigid motion, its own shape and its own hull,
+  and smaller ones crumble into grains, as do pieces that find no free
+  block.
+- Breaking costs about `0.15 ms` a step with a block of `145,000` bodies at
+  rest; a look at it while it is shot to pieces, a few ms. A GPU test
+  checks that a ram cracks both blocks into pieces and keeps momentum to
+  `1e-3`, that a fast ball cuts a thin plate in two, that a block dropped
+  from high cracks and one dropped low does not, and that rest, slow
+  bodies, sliding, stacking, bouncing and liquid break nothing.
 
 ### Liquid mode
 
@@ -406,7 +465,9 @@ screen.
 
 The buttons below them are the scenes [glued blocks](#rectangular-blocks)
 were checked on; the GPU tests `BlockPenetrationTest` and `BlockDynamicsTest`
-run the same scenes and `BlockScenarioRunTest` runs these buttons. Each
+run the same scenes with unbreakable blocks, and `BlockScenarioRunTest` and
+`BlockFractureTest` run these buttons as they start, blocks
+[breaking](#breaking-blocks) where they are hit hard enough. Each
 brings its own environment: walls, no gravity between bodies, the downward
 field where it needs one, and liquid mode where it says so. The walls,
 gravity, liquid and field set before come back with the next scenario above.
@@ -620,6 +681,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--block-density=F` | `0.5` | Mass of each body of an RMB block, `0.05–10`; other bodies have `1` |
 | `--block-friction=F` | `0.5` | Coulomb friction of RMB blocks against walls and blocks; with a loose body, the geometric mean with `--friction` |
 | `--block-restitution=F` | `0.2` | Restitution of RMB blocks against walls and blocks, and the least a loose body gets off one, `0–1` |
+| `--block-strength=F` | `400` | Critical impact speed of block material in px/s, `F > 0`; `Infinity` makes blocks unbreakable ([Breaking blocks](#breaking-blocks)) |
 | `--liquid=true\|false` | `true` | Start in liquid mode (key `L` toggles it); see [Start](#start) |
 | `--scenario=NAME` | `cosmic-web` | Start scenario, cosmic or [block](#block-scenarios), or `none`; see [Start](#start) |
 | `--walls=true\|false` | `true` | Start with walls at the screen edges (key `B`) |
@@ -767,4 +829,8 @@ Tests cover:
 - time-scale scheduling and trajectory update frequency;
 - projectile dimensions and packing from `10–100 px`;
 - the O(N²) CPU collision reference, coincident bodies, dense cells, and
-  symmetric Jacobi corrections.
+  symmetric Jacobi corrections;
+- the pieces a broken block falls into: cuts, cracks that stop short, chipped
+  corners, and that only the pieces that came away are walked;
+- on the GPU (`BlockFractureTest`): blocks breaking under hard hits and
+  falls, staying whole at rest and under slow contacts, and keeping momentum.

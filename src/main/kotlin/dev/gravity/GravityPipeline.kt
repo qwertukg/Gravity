@@ -302,10 +302,13 @@ class GravityPipeline(
         contactDiameterPixels = config.collisions.contactDiameterPixels,
         substepSeconds = collisionSubstep,
         friction = config.projectiles.blockFriction,
+        strength = config.projectiles.blockStrength,
         width = viewportWidth,
         height = viewportHeight,
         bind = ::bind,
-    )
+    ).also { blocks ->
+        neighborCache?.let { blocks.invalidates(it.cacheBuffer, it.populationWord) }
+    }
 
     init {
         check(
@@ -447,7 +450,22 @@ class GravityPipeline(
             writePressure = true,
             substepIndex = null,
         )
+        // Blocks that lost members are split into the pieces that hold together.
+        if (rigidBlocks.afterStep(bodies, materials, bounded)) invalidateContacts()
         profiler?.end(GpuStage.PHYSICS_STEP)
+    }
+
+    /**
+     * Splits broken blocks now instead of after the GPU next reports them, as
+     * [step] does: blocking, for diagnostics and tests.
+     */
+    internal fun settleFractures() {
+        if (rigidBlocks.refresh(bodies, materials, bounded)) invalidateContacts()
+    }
+
+    /** Bodies changed block: cached candidate lists and linked grids name stale pairs. */
+    private fun invalidateContacts() {
+        neighborCache?.invalidate() ?: clearUnsignedIntBuffer(collisionHeads)
     }
 
     fun bindBodiesForRender() {
@@ -613,7 +631,7 @@ class GravityPipeline(
         if (!rigidBlocks.canAdd(count, shape)) return 0
         val centerX = 0.5f * (minX + maxX) + meanX
         val centerY = 0.5f * (minY + maxY) + meanY
-        val spawned = uploadBodies(firstBody, centerX, centerY, velocityX, velocityY, offsets, density, group = rigidBlocks.size, spin = spin)
+        val spawned = uploadBodies(firstBody, centerX, centerY, velocityX, velocityY, offsets, density, group = rigidBlocks.nextGroup, spin = spin)
         rigidBlocks.add(firstBody, offsets, centerX, centerY, shape)
         massExcess += spawned * (density - 1f)
         return spawned
@@ -881,15 +899,17 @@ class GravityPipeline(
         writePressure: Boolean,
         substepIndex: Int?,
     ) {
-        // Both solvers read masses and friction from binding 8, blocks from 9.
+        // Both solvers read masses and friction from binding 8, blocks from 9,
+        // and record impacts on blocks in 10.
         bind(8, materials)
         bind(9, rigidBlocks.groups)
+        bind(10, rigidBlocks.fractures)
         neighborCache?.let {
             it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid, solidBodies, rigidBlocks.size)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
-            rigidBlocks.project(bodies, bounded, contacts = true)
+            rigidBlocks.project(bodies, materials, bounded, contacts = true)
             return
         }
         // collisionBodies is the input buffer used to build the current heads
@@ -1016,6 +1036,8 @@ class GravityPipeline(
             collisionSolve.float("uDriftDt", driftDt)
             collisionSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
             collisionSolve.float("uRestingSpeed", CollisionNeighborCache.restingSpeed(config.collisions))
+            collisionSolve.float("uFractureSpeed", config.projectiles.blockStrength)
+            collisionSolve.float("uFractureEnergy", RigidBlocks.fractureEnergy(config.projectiles.blockStrength))
         }
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
@@ -1024,7 +1046,7 @@ class GravityPipeline(
         val swap = bodies
         bodies = collisionBodies
         collisionBodies = swap
-        rigidBlocks.project(bodies, bounded, contacts = true)
+        rigidBlocks.project(bodies, materials, bounded, contacts = true)
     }
 
     private fun resolveLiquid(activeBodies: Int) {
@@ -1044,7 +1066,7 @@ class GravityPipeline(
         // The linked collision grid clears only the cells of the positions it
         // was built from, which the liquid passes have just replaced.
         if (neighborCache == null) clearUnsignedIntBuffer(collisionHeads)
-        rigidBlocks.project(bodies, bounded, contacts = false)
+        rigidBlocks.project(bodies, materials, bounded, contacts = false)
         profiler?.end(GpuStage.LIQUID)
     }
 
@@ -1525,8 +1547,8 @@ class GravityPipeline(
         private const val MAXIMUM_UNIT = 0.99999994f
         /** Cached binding slots, more than any shader uses. */
         private const val STORAGE_BINDINGS = 16
-        /** Bindings 0..9: the collision solvers use all ten. */
-        private const val USED_STORAGE_BINDINGS = 10
+        /** Bindings 0..10: the rigid collision solvers use all eleven. */
+        private const val USED_STORAGE_BINDINGS = 11
         /** Values scanned per workgroup by spatial_sort_scan.comp. */
         private const val SORT_SCAN_BLOCK = 1024
         /** Target reordering tile edge; a tile holds a few dozen dense bodies. */

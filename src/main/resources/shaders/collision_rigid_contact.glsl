@@ -10,6 +10,32 @@ uniform float uRestingSpeed;
 // Position-only move of this body out of blocks and walls.
 vec2 rigidShift = vec2(0.0);
 
+// Fracture (rigid_fracture.comp). A block's material breaks where an impact
+// is faster than [uFractureSpeed], the speed at which the stress of the
+// impact, about density x sound speed x approach speed, reaches the
+// material's strength; infinite for unbreakable blocks. What the contact
+// takes beyond that, (v^2 - vc^2) of the pair's effective mass, pays for
+// the crack, each member [uFractureEnergy] times its mass x vc^2.
+uniform float uFractureSpeed;
+uniform float uFractureEnergy;
+layout(std430, binding = 10) writeonly buffer Fractures { vec4 fractures[]; };
+// The hardest impact on this member this pass: its direction into the
+// member's block, the crack it pays for (members) and its approach speed.
+vec4 fractureRecord = vec4(0.0);
+
+void recordFracture(vec2 direction, float speed, float members) {
+    if (speed > fractureRecord.w) fractureRecord = vec4(direction, fractureRecord.z, speed);
+    fractureRecord.z += members;
+}
+
+// Written only when the member was struck: the rigid projection reads and
+// clears it right after the pass, in the blocks marked struck.
+void storeFracture(uint id) {
+    if (fractureRecord.w <= 0.0) return;
+    fractures[id] = fractureRecord;
+    groups[groupOf(id)].scalars.w = 1.0;
+}
+
 
 // Impulses of the contacts of a block share it (mass splitting) and reach the
 // speed they aim for over a few passes. Restitution therefore aims at the
@@ -116,7 +142,7 @@ void rigidContact(uint id, uint otherId, vec2 ownPixels, vec2 ownVelocity, vec2 
     // much lower (GlueShape.RIPPLE_DIAMETERS), or it would jostle the liquid
     // resting there pass after pass.
     float outline = outlineValue();
-    bool fluidProbe = uLiquid != 0 && probeGroup < 0;
+    bool fluidProbe = fluidBody(probe);
     float guardLevel = fluidProbe ? outline - RIPPLE_DIAMETERS * uDiameterPixels : outline;
     float probeRadius = fluidProbe ? guardLevel : 0.5 * uDiameterPixels;
     // Blocks within an impact meet a little beyond touching (meetsWall).
@@ -176,6 +202,13 @@ void rigidContact(uint id, uint otherId, vec2 ownPixels, vec2 ownVelocity, vec2 
         velocityImpulse = -(1.0 + restitution) * normalSpeed / response;
     }
     velocityCorrection += ownNormal * (velocityImpulse / ownMass);
+    // A struck member: the impact runs into its block along ownNormal. Two
+    // blocks share the energy of their contact; liquid breaks nothing.
+    if (ownGroup >= 0 && !fluidProbe && -normalSpeed > uFractureSpeed) {
+        float energy = (normalSpeed * normalSpeed - uFractureSpeed * uFractureSpeed) / response;
+        if (probeGroup >= 0) energy *= 0.5;
+        recordFracture(ownNormal, -normalSpeed, energy * uFractureEnergy / ownMass);
+    }
     // Coulomb friction: the tangential impulse stops the sliding at most, and
     // never exceeds friction times the normal impulse.
     float friction = pairFriction(probeMaterial, memberMaterial);
@@ -216,6 +249,12 @@ void rigidWallContact(uint id, int wall, vec2 positionPixels, float distance, ve
     if (normalSpeed < target) normalChange = (target - normalSpeed) / (contacts * rigidResponse(group, point, normal, driftDt));
     atomicMax(contactStates[key], normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING);
     velocityCorrection += normal * normalChange;
+    // Against a wall the member's share of its block is the effective mass.
+    if (-normalSpeed > uFractureSpeed) {
+        float energy = (normalSpeed * normalSpeed - uFractureSpeed * uFractureSpeed) /
+            (contacts * rigidResponse(group, point, normal, driftDt));
+        recordFracture(normal, -normalSpeed, energy * uFractureEnergy);
+    }
     vec2 sliding = velocityPixels - normalSpeed * normal;
     float slidingSpeed = length(sliding);
     if (friction > 0.0 && normalChange > 0.0 && slidingSpeed > 0.0) {

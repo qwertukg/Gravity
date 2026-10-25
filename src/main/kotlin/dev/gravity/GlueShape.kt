@@ -77,12 +77,19 @@ class GlueShape private constructor(
             offsets.forEach { starts[bucketX(it.x.toDouble()) + bucketY(it.y.toDouble()) * bucketWidth + 1]++ }
             for (bucket in 1 until starts.size) starts[bucket] += starts[bucket - 1]
             val filled = starts.copyOf()
-            val bucketed = IntArray(offsets.size)
-            offsets.forEachIndexed { index, it ->
-                bucketed[filled[bucketX(it.x.toDouble()) + bucketY(it.y.toDouble()) * bucketWidth]++] = index
+            // Centres in bucket order, so a bucket's members lie side by side.
+            val bucketedX = DoubleArray(offsets.size)
+            val bucketedY = DoubleArray(offsets.size)
+            offsets.forEach {
+                val slot = filled[bucketX(it.x.toDouble()) + bucketY(it.y.toDouble()) * bucketWidth]++
+                bucketedX[slot] = it.x.toDouble()
+                bucketedY[slot] = it.y.toDouble()
             }
 
             // Distance from every node to the nearest centre, exact up to [reach].
+            // Buckets are searched ring by ring out to [span]; a ring r buckets
+            // out holds no centre nearer than r - 1 diameters, so the search
+            // stops once the nearest found is nearer than that.
             val reach = margin + fill
             val span = ceil(reach / diameter).toInt()
             val nearest = DoubleArray(width * height) { reach }
@@ -93,13 +100,21 @@ class GlueShape private constructor(
                     val nodeX = minX + x * cell
                     val bx = bucketX(nodeX)
                     var best = reach * reach
-                    for (cy in max(0, by - span)..min(bucketHeight - 1, by + span)) {
-                        for (cx in max(0, bx - span)..min(bucketWidth - 1, bx + span)) {
-                            val bucket = cx + cy * bucketWidth
-                            for (k in starts[bucket] until starts[bucket + 1]) {
-                                val dx = offsets[bucketed[k]].x - nodeX
-                                val dy = offsets[bucketed[k]].y - nodeY
-                                best = min(best, dx * dx + dy * dy)
+                    for (ring in 0..span) {
+                        val bound = (ring - 1) * diameter.toDouble()
+                        if (ring > 1 && bound * bound >= best) break
+                        for (cy in max(0, by - ring)..min(bucketHeight - 1, by + ring)) {
+                            val edge = cy == by - ring || cy == by + ring
+                            var cx = max(0, bx - ring)
+                            while (cx <= min(bucketWidth - 1, bx + ring)) {
+                                val bucket = cx + cy * bucketWidth
+                                for (k in starts[bucket] until starts[bucket + 1]) {
+                                    val dx = bucketedX[k] - nodeX
+                                    val dy = bucketedY[k] - nodeY
+                                    best = min(best, dx * dx + dy * dy)
+                                }
+                                // Inside the ring only its two ends are new.
+                                cx = if (edge || cx == bx + ring) cx + 1 else max(cx + 1, bx + ring)
                             }
                         }
                     }
@@ -129,12 +144,35 @@ class GlueShape private constructor(
         }
 
         /** Andrew's monotone chain: the extreme members, which are what reaches a wall first. */
-        private fun hull(offsets: List<PixelOffset>): FloatArray {
-            val points = offsets.distinct().sortedWith(compareBy({ it.x }, { it.y }))
-            if (points.size < 3) return points.flatMap { listOf(it.x, it.y) }.toFloatArray()
-            fun turn(o: PixelOffset, a: PixelOffset, b: PixelOffset) =
-                (a.x - o.x).toDouble() * (b.y - o.y) - (a.y - o.y).toDouble() * (b.x - o.x)
-            val chain = ArrayList<PixelOffset>()
+        internal fun hull(offsets: List<PixelOffset>): FloatArray =
+            hull(FloatArray(offsets.size) { offsets[it].x }, FloatArray(offsets.size) { offsets[it].y })
+
+        /** The hull of the centres (xs, ys). */
+        internal fun hull(xs: FloatArray, ys: FloatArray): FloatArray =
+            hullIndices(xs, ys).flatMap { listOf(xs[it], ys[it]) }.toFloatArray()
+
+        /** Indices of the centres (xs, ys) on their hull, counter-clockwise. */
+        internal fun hullIndices(xs: FloatArray, ys: FloatArray): IntArray {
+            if (xs.isEmpty()) return IntArray(0)
+            // Only the ends of a row of centres at one height can be corners:
+            // rows a hundredth of a pixel apart are told apart.
+            val minY = ys.min()
+            val rows = ((ys.max() - minY) / ROW_PIXELS).toInt() + 1
+            val lowest = IntArray(rows) { -1 }
+            val highest = IntArray(rows) { -1 }
+            for (index in xs.indices) {
+                val row = ((ys[index] - minY) / ROW_PIXELS).toInt()
+                if (lowest[row] < 0 || xs[index] < xs[lowest[row]]) lowest[row] = index
+                if (highest[row] < 0 || xs[index] > xs[highest[row]]) highest[row] = index
+            }
+            val points = (0 until rows).filter { lowest[it] >= 0 }
+                .flatMap { listOf(lowest[it], highest[it]) }
+                .distinctBy { PixelOffset(xs[it], ys[it]) }
+                .sortedWith(compareBy({ xs[it] }, { ys[it] }))
+            if (points.size < 3) return points.toIntArray()
+            fun turn(o: Int, a: Int, b: Int) =
+                (xs[a] - xs[o]).toDouble() * (ys[b] - ys[o]) - (ys[a] - ys[o]).toDouble() * (xs[b] - xs[o])
+            val chain = ArrayList<Int>()
             for (pass in 0..1) {
                 val start = chain.size
                 for (point in if (pass == 0) points else points.asReversed()) {
@@ -145,8 +183,11 @@ class GlueShape private constructor(
                 }
                 chain.removeAt(chain.size - 1)
             }
-            return chain.flatMap { listOf(it.x, it.y) }.toFloatArray()
+            return chain.toIntArray()
         }
+
+        /** Height of the rows hull() looks for the ends of, px. */
+        private const val ROW_PIXELS = 0.01f
 
         /**
          * A face of members is a row of discs, rippled with their spacing: two

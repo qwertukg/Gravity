@@ -1,0 +1,358 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer Members { int members[]; };
+layout(std430, binding = 2) buffer Rest { vec2 rest[]; };
+layout(std430, binding = 3) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    float shapes[];
+};
+layout(std430, binding = 4) buffer FractureSlots { vec4 fractureSlots[]; };
+layout(std430, binding = 5) buffer FractureGroups { uvec4 fractureGroups[]; };
+layout(std430, binding = 6) buffer Materials { vec4 materials[]; };
+layout(std430, binding = 7) buffer Cache { uint cache[]; };
+// Members to break off this pass, (group << 24 | slot); from [uMovedBase] on,
+// members the CPU glued into a piece of their own (RigidBlocks.split).
+layout(std430, binding = 8) buffer Broken { uint brokenCount; uint movedCount; uint broken[]; };
+// Per group, for rigid_shift.comp: vec4(rest-frame shift (px), velocity
+// change (px/s)), vec4(spin change (rad/s), 0, 0, 0).
+layout(std430, binding = 9) buffer Shifts { vec4 shifts[]; };
+uniform vec2 uViewport;
+uniform float uDiameterPixels;
+// Varies per pass, so cracks of successive impacts take their own paths.
+uniform int uSeed;
+// Word of the neighbour cache that forces its rebuild, or -1 without one:
+// the cached candidate lists leave out pairs of members of one block.
+uniform int uCacheInvalidation;
+uniform int uMovedBase;
+
+// A crack runs from the member struck hardest into the block, one member a
+// step, as long as the impact's energy pays for it. It keeps its heading,
+// wanders between neighbours like a crack through a grain of flaws, and now
+// and then branches, each branch taking half of what is left.
+const int CRACK_STEPS = 2048;
+const int CRACK_TIPS = 8;
+const float CRACK_WANDER = 0.35;
+const float CRACK_TURN = 0.25;
+const float BRANCH_CHANCE = 0.06;
+const float BRANCH_BUDGET = 8.0;
+// Chips leave within this angle (radians) of the way the impact came.
+const float EJECTION_SPREAD = 2.6;
+// The shape is carved within this many nodes of a broken member, out to
+// this many diameters from it; beyond, the field already says "free".
+const int CARVE_NODES = 3;
+const float CARVE_REACH_DIAMETERS = 1.5;
+
+shared vec4 sharedSums[256];
+// A broken member left neighbours that may no longer hold together.
+shared uint sharedSplit;
+
+RigidGroup rigid;
+uint group;
+
+vec2 rotate(vec2 rotation, vec2 v) {
+    return vec2(rotation.x * v.x - rotation.y * v.y, rotation.y * v.x + rotation.x * v.y);
+}
+
+uint hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// Uniform in [0, 1).
+float random(uint a, uint b) {
+    return float(hash(a ^ hash(b + uint(uSeed) * 0x9e3779b9u)) >> 8) / 16777216.0;
+}
+
+// The member slot whose rest centre lies in slot-grid cell [cell], or -1.
+int slotAt(ivec2 cell) {
+    ivec4 grid = rigid.grid;
+    if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, grid.yz))) return -1;
+    return int(shapes[grid.x + grid.y * grid.z + cell.x + cell.y * grid.y]);
+}
+
+ivec2 cellOf(vec2 point) {
+    return ivec2(floor((point - rigid.shape.xy) / rigid.shape.z));
+}
+
+// Marks the member in [slot] to break off this pass.
+void markBroken(int slot) {
+    fractureSlots[slot].y = 1.0;
+    broken[atomicAdd(brokenCount, 1u)] = group << 24 | uint(slot);
+}
+
+// Marks the members along a crack from slot [nucleus], heading [direction]
+// in the rest frame, for [budget] members.
+void crack(int nucleus, vec2 direction, float budget) {
+    float diameter = uDiameterPixels;
+    vec2 tipPoints[CRACK_TIPS];
+    vec2 tipHeadings[CRACK_TIPS];
+    float tipBudgets[CRACK_TIPS];
+    tipPoints[0] = rest[nucleus];
+    tipHeadings[0] = direction;
+    tipBudgets[0] = budget;
+    int tips = 1;
+    int steps = 0;
+    while (tips > 0 && steps < CRACK_STEPS) {
+        tips--;
+        vec2 point = tipPoints[tips];
+        vec2 heading = tipHeadings[tips];
+        float left = tipBudgets[tips];
+        while (left >= 1.0 && steps < CRACK_STEPS) {
+            steps++;
+            ivec2 home = cellOf(point);
+            int best = -1;
+            float bestScore = 0.2;
+            for (int y = -3; y <= 3; y++) {
+                for (int x = -3; x <= 3; x++) {
+                    int slot = slotAt(home + ivec2(x, y));
+                    if (slot < 0 || members[slot] < 0 || fractureSlots[slot].y != 0.0) continue;
+                    vec2 delta = rest[slot] - point;
+                    float distance = length(delta);
+                    if (distance < 0.5 * diameter || distance > 1.3 * diameter) continue;
+                    float score = dot(delta / distance, heading) +
+                        CRACK_WANDER * (2.0 * random(uint(slot), uint(steps)) - 1.0);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = slot;
+                    }
+                }
+            }
+            // Out of the block, or into a crack already there.
+            if (best < 0) break;
+            markBroken(best);
+            vec2 stepDirection = normalize(rest[best] - point);
+            point = rest[best];
+            heading = normalize(heading + CRACK_TURN * stepDirection);
+            left -= 1.0;
+            if (left >= BRANCH_BUDGET && tips < CRACK_TIPS &&
+                random(uint(best), 7919u + uint(steps)) < BRANCH_CHANCE) {
+                float side = random(uint(best), 104729u) < 0.5 ? -1.0 : 1.0;
+                float angle = side * (0.6 + 0.4 * random(uint(best), 1299709u));
+                tipPoints[tips] = point;
+                tipHeadings[tips] = rotate(vec2(cos(angle), sin(angle)), heading);
+                tipBudgets[tips] = floor(0.5 * left);
+                left -= tipBudgets[tips];
+                tips++;
+            }
+        }
+    }
+}
+
+// The shape's field where the member at rest centre [point] was: a node
+// whose nearest member broke off now lies as far from the solid as the
+// nearest member left, so a body fits where the broken one was. The value
+// at a node depends only on which members are left, so lanes carving
+// overlapping windows write the same values.
+void carve(vec2 point) {
+    float reach = CARVE_REACH_DIAMETERS * uDiameterPixels;
+    ivec2 home = ivec2(floor((point - rigid.shape.xy) / rigid.shape.z + 0.5));
+    for (int y = -CARVE_NODES; y <= CARVE_NODES; y++) {
+        for (int x = -CARVE_NODES; x <= CARVE_NODES; x++) {
+            ivec2 node = home + ivec2(x, y);
+            if (any(lessThan(node, ivec2(0))) || any(greaterThanEqual(node, rigid.grid.yz))) continue;
+            vec2 at = rigid.shape.xy + vec2(node) * rigid.shape.z;
+            float nearest = reach;
+            float nearestLeft = reach;
+            for (int cy = -CARVE_NODES; cy <= CARVE_NODES; cy++) {
+                for (int cx = -CARVE_NODES; cx <= CARVE_NODES; cx++) {
+                    int slot = slotAt(node + ivec2(cx, cy));
+                    if (slot < 0) continue;
+                    float distance = length(rest[slot] - at);
+                    nearest = min(nearest, distance);
+                    if (members[slot] >= 0) nearestLeft = min(nearestLeft, distance);
+                }
+            }
+            if (nearest < nearestLeft) {
+                int index = rigid.grid.x + node.x + node.y * rigid.grid.y;
+                shapes[index] = max(shapes[index], nearestLeft - 0.5 * uDiameterPixels);
+            }
+        }
+    }
+}
+
+// Whether the members left around a broken one, at rest centre [point],
+// may have come apart: they no longer form one unbroken arc of its six
+// lattice neighbours. The CPU then checks the whole block at once; a split
+// this misses (members broken side by side across a block) it finds on its
+// periodic look (RigidBlocks.afterStep).
+bool mayHaveSplit(vec2 point) {
+    uint present = 0u;
+    ivec2 home = cellOf(point);
+    for (int y = -3; y <= 3; y++) {
+        for (int x = -3; x <= 3; x++) {
+            int slot = slotAt(home + ivec2(x, y));
+            if (slot < 0 || members[slot] < 0) continue;
+            vec2 delta = rest[slot] - point;
+            float distance = length(delta);
+            if (distance < 0.8 * uDiameterPixels || distance > 1.2 * uDiameterPixels) continue;
+            int sector = int(floor(atan(delta.y, delta.x) / 1.04719755 + 0.5));
+            present |= 1u << uint((sector + 6) % 6);
+        }
+    }
+    uint arcs = 0u;
+    for (uint k = 0u; k < 6u; k++) {
+        if ((present >> k & 1u) != 0u && (present >> ((k + 5u) % 6u) & 1u) == 0u) arcs++;
+    }
+    return arcs > 1u;
+}
+
+vec4 sumOverLanes(vec4 value) {
+    uint lane = gl_LocalInvocationID.x;
+    sharedSums[lane] = value;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (lane < stride) sharedSums[lane] += sharedSums[lane + stride];
+        barrier();
+    }
+    vec4 total = sharedSums[0];
+    barrier();
+    return total;
+}
+
+// One workgroup per block, after the rigid projection of a collision pass
+// (rigid_apply.comp FRACTURE). Members chipped off and members along the
+// crack become loose grains of the block's material: they keep the block's
+// motion at their place, chips fly off back the way the impact came, and
+// the block recoils from them. The block's shape is carved where they were,
+// and its centre of mass, mass and inertia follow what is left; its members
+// follow in rigid_shift.comp. Only the members listed broken this pass are
+// visited, so a large block costs no more than a small one. Whether what is
+// left still holds together is for the CPU (RigidBlocks.refresh).
+void main() {
+    group = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uvec4 state = fractureGroups[group];
+    rigid = groups[group];
+    if (lane == 0u) {
+        shifts[2u * group] = vec4(0.0);
+        shifts[2u * group + 1u] = vec4(0.0);
+    }
+    barrier();
+    // The pass's records are read (rigid_apply.comp).
+    if (lane == 0u && rigid.scalars.w != 0.0) groups[group].scalars.w = 0.0;
+    rigid.scalars.w = 0.0;
+    if (state.x == 0u && state.z == 0u) return;
+    if (lane == 0u) {
+        sharedSplit = 0u;
+        fractureGroups[group].xyz = uvec3(0u);
+        float budget = float(state.x) / FRACTURE_BUDGET_SCALE - float(state.z);
+        int nucleus = int(state.y & NUCLEUS_SLOT_MASK);
+        if (rigid.scalars.z > 0.0 && state.y != 0u && budget >= 1.0 && members[nucleus] >= 0) {
+            vec2 direction = fractureSlots[nucleus].zw;
+            direction = dot(direction, direction) > 0.0 ? normalize(direction) : vec2(1.0, 0.0);
+            if (fractureSlots[nucleus].y == 0.0) {
+                markBroken(nucleus);
+                budget -= 1.0;
+            }
+            crack(nucleus, direction, min(budget, rigid.scalars.z));
+        }
+    }
+    memoryBarrierBuffer();
+    barrier();
+
+    uint listed = brokenCount;
+    uint moved = movedCount;
+    vec2 rotation = rigid.motion.zw;
+    // Ejection momentum per unit member mass, its angular momentum about the
+    // old centre, members gone; their rest centres and sum |r0|^2.
+    vec4 released = vec4(0.0);
+    vec3 lost = vec3(0.0);
+    // Glued into a piece of their own, their bodies already name it.
+    for (uint index = lane; index < moved; index += 256u) {
+        uint entry = broken[uint(uMovedBase) + index];
+        if (entry >> 24 != group) continue;
+        int slot = int(entry & NUCLEUS_SLOT_MASK);
+        members[slot] = -1;
+        vec2 offset = rest[slot];
+        released.w += 1.0;
+        lost += vec3(offset, dot(offset, offset));
+    }
+    for (uint index = lane; index < listed; index += 256u) {
+        uint entry = broken[index];
+        if (entry >> 24 != group) continue;
+        int slot = int(entry & NUCLEUS_SLOT_MASK);
+        vec4 fracture = fractureSlots[slot];
+        int body = members[slot];
+        if (body < 0) {
+            fractureSlots[slot].y = 0.0;
+            continue;
+        }
+        vec2 ejection = vec2(0.0);
+        float speed = fracture.y - 1.0;
+        if (speed > 0.0 && dot(fracture.zw, fracture.zw) > 0.0) {
+            float angle = EJECTION_SPREAD * (random(uint(slot), 3u) - 0.5);
+            ejection = rotate(rotation, rotate(vec2(cos(angle), sin(angle)), -normalize(fracture.zw))) * speed;
+        }
+        vec4 body4 = bodies[body];
+        bodies[body] = vec4(body4.xy, body4.zw + ejection / uViewport);
+        materials[body] = vec4(materials[body].xy, 1.0, -1.0);
+        members[slot] = -1;
+        vec2 offset = rest[slot];
+        released += vec4(ejection, cross2(rotate(rotation, offset), ejection), 1.0);
+        lost += vec3(offset, dot(offset, offset));
+    }
+    released = sumOverLanes(released);
+    lost = sumOverLanes(vec4(lost, 0.0)).xyz;
+    if (released.w == 0.0) return;
+    memoryBarrierBuffer();
+    barrier();
+
+    for (uint index = lane; index < moved; index += 256u) {
+        uint entry = broken[uint(uMovedBase) + index];
+        if (entry >> 24 == group) carve(rest[int(entry & NUCLEUS_SLOT_MASK)]);
+    }
+    for (uint index = lane; index < listed; index += 256u) {
+        uint entry = broken[index];
+        if (entry >> 24 != group) continue;
+        int slot = int(entry & NUCLEUS_SLOT_MASK);
+        if (members[slot] >= 0) continue;
+        carve(rest[slot]);
+        // Broken by an impact (crumbs the CPU let go are not).
+        if (fractureSlots[slot].y != 0.0 && mayHaveSplit(rest[slot])) sharedSplit = 1u;
+    }
+    memoryBarrierBuffer();
+    barrier();
+    for (uint index = lane; index < listed; index += 256u) {
+        uint entry = broken[index];
+        if (entry >> 24 == group) fractureSlots[int(entry & NUCLEUS_SLOT_MASK)].y = 0.0;
+    }
+    if (lane != 0u) return;
+    // What is left, from what broke off: the rest offsets summed to zero, and
+    // the inertia sum was |r0|^2 about the centre.
+    float count = rigid.scalars.z - released.w;
+    vec2 middle = count > 0.0 ? -lost.xy / count : vec2(0.0);
+    vec2 shift = rotate(rotation, middle);
+    float inertia = max(rigid.scalars.y - lost.z - count * dot(middle, middle), 0.0);
+    float spin = rigid.scalars.x;
+    // The block recoils from the chips: momentum and angular momentum
+    // (about the new centre) stay as they were.
+    vec2 kick = count > 0.0 ? -released.xy / count : vec2(0.0);
+    float angular = released.z - cross2(shift, released.xy);
+    float spinChange = inertia > 0.0 ? -angular / inertia : 0.0;
+    vec2 center = rigid.frame.zw + shift;
+    rigid.frame = vec4(center, center);
+    rigid.motion.xy += spin * vec2(-shift.y, shift.x) + kick;
+    rigid.scalars = vec4(spin + spinChange, inertia, max(count, 0.0), 0.0);
+    rigid.shape.xy -= middle;
+    rigid.bounds -= middle.xxyy;
+    for (int point = 0; point < rigid.tiles.w; point++) {
+        shapes[rigid.tiles.z + 2 * point] -= middle.x;
+        shapes[rigid.tiles.z + 2 * point + 1] -= middle.y;
+    }
+    groups[group] = rigid;
+    shifts[2u * group] = vec4(middle, kick);
+    shifts[2u * group + 1u] = vec4(spinChange, 0.0, 0.0, 0.0);
+    fractureGroups[group].w |= sharedSplit != 0u ? CHANGED_MAY_SPLIT : CHANGED_LOST;
+    if (uCacheInvalidation >= 0) cache[uCacheInvalidation] = 0u;
+}

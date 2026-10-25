@@ -108,7 +108,12 @@ class BlockDynamicsTest {
             val config = GravityConfig(
                 particles = ParticleConfig(capacity = 40_000, initialBodies = loose.size / 4, seed = 1, spatialSortInterval = 0),
                 gravity = GravityFieldConfig(gridWidth = 128, gridHeight = 128),
-                projectiles = ProjectileConfig(blockFriction = friction, blockDensity = blockDensity),
+                // Solid blocks: what breaks is BlockFractureTest's.
+                projectiles = ProjectileConfig(
+                    blockFriction = friction,
+                    blockDensity = blockDensity,
+                    blockStrength = Float.POSITIVE_INFINITY,
+                ),
             )
             GravityPipeline(config, size, size, bounded = true).use { pipeline ->
                 pipeline.mutualGravity = false

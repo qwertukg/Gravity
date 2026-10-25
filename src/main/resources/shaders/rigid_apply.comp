@@ -10,6 +10,20 @@ uniform vec2 uViewport;
 uniform int uBounded;
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
+#ifdef FRACTURE
+// After a collision pass: the impacts the pass recorded on members
+// (collision_rigid_contact.glsl) are read and cleared here, and what they
+// break is gathered per block for rigid_fracture.comp (rigid_layout.glsl).
+layout(std430, binding = 5) buffer Fractures { vec4 fractures[]; };
+layout(std430, binding = 6) buffer FractureSlots { vec4 fractureSlots[]; };
+layout(std430, binding = 7) buffer FractureGroups { uvec4 fractureGroups[]; };
+// Members to break off this pass, (group << 24 | slot) (rigid_fracture.comp).
+layout(std430, binding = 8) buffer Broken { uint brokenCount; uint movedCount; uint broken[]; };
+uniform float uFractureSpeed;
+// Share of the speed beyond its strength a chipped member flies off with,
+// at most the critical speed: what the stored strain energy gives it.
+const float EJECTION_SHARE = 0.5;
+#endif
 
 // Moves every member onto the group's rigid motion: x = c + R r0 and
 // v = V + w x (R r0).
@@ -30,4 +44,31 @@ void main() {
         ? clamp(position, vec2(0.0), vec2(MAXIMUM_UNIT))
         : fract(position);
     bodies[body] = vec4(position, velocity / uViewport);
+#ifdef FRACTURE
+    if (rigid.scalars.w == 0.0) return;
+    vec4 record = fractures[body];
+    if (record.w <= 0.0) return;
+    fractures[body] = vec4(0.0);
+    uint group = uint(tileGroups[gl_WorkGroupID.x]);
+    vec4 fracture = fractureSlots[member];
+    // Into the block, in its own frame.
+    fracture.zw = vec2(rotation.x * record.x + rotation.y * record.y, -rotation.y * record.x + rotation.x * record.y);
+    // Struck faster than its own strength, the member chips off, if what
+    // struck it brought the energy to break it free.
+    float strength = fracture.x * uFractureSpeed;
+    if (record.w > strength && record.z >= 1.0) {
+        if (fracture.y == 0.0) broken[atomicAdd(brokenCount, 1u)] = group << 24 | member;
+        fracture.y = max(fracture.y, 1.0 + EJECTION_SHARE * min(record.w - strength, uFractureSpeed));
+        atomicAdd(fractureGroups[group].z, 1u);
+    }
+    fractureSlots[member] = fracture;
+    // What the impact pays beyond that runs on as a crack from the member
+    // struck hardest.
+    uint budget = uint(min(record.z, MAXIMUM_RECORD_BUDGET) * FRACTURE_BUDGET_SCALE + 0.5);
+    if (budget > 0u) {
+        atomicAdd(fractureGroups[group].x, budget);
+        uint rank = uint(clamp(log2(1.0 + record.z) * 16.0, 0.0, 254.0)) + 1u;
+        atomicMax(fractureGroups[group].y, (rank << 24) | member);
+    }
+#endif
 }
