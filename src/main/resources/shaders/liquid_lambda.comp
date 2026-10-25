@@ -38,13 +38,17 @@ void main() {
                 float distanceSquared = dot(delta, delta);
                 density += poly6(distanceSquared);
                 if (uint(other) == id) continue;
-                vec2 gradient = spikyGradient(delta, sqrt(distanceSquared)) / uRestDensity;
+                vec2 gradient = spikyGradient(delta, sqrt(distanceSquared), id, uint(other)) / uRestDensity;
                 ownGradient += gradient;
                 // A block moves as a whole, so its bodies barely respond.
                 if (materials[other].z == 0.0) otherGradients += dot(gradient, gradient);
             }
         }
     }
+    // Walls are immovable: they add density and its gradient, nothing else.
+    vec3 walls = wallsDensity(position * uViewport);
+    density += walls.x;
+    ownGradient += walls.yz / uRestDensity;
     float constraint = max(density / uRestDensity - 1.0, 0.0);
     lambdas[id] = -constraint / (dot(ownGradient, ownGradient) + otherGradients + uRelaxation);
     if (uWritePressure != 0) pressures[id] = constraint * uPressureScale;

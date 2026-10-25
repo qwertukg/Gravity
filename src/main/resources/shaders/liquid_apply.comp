@@ -37,16 +37,26 @@ void main() {
                 float coefficient = ownLambda + lambdas[other] * materials[other].x / ownMass;
                 if (coefficient == 0.0) continue;
                 vec2 delta = pixelDelta(body.xy, bodies[other].xy);
-                correction += coefficient * spikyGradient(delta, length(delta));
+                correction += coefficient * spikyGradient(delta, length(delta), id, uint(other));
             }
         }
     }
+    // A wall pushes a fluid body back along the gradient of its virtual rows.
+    if (materials[id].z == 0.0) correction += ownLambda * wallsDensity(body.xy * uViewport).yz;
     correction /= uRestDensity;
     vec2 positionPixels = body.xy * uViewport + correction;
     vec2 velocityPixels = body.zw * uViewport + correction / uDt;
-    // Walls: stop a body at its radius, not at its centre. Penetration left
-    // here would become dx / dt of a collision substep in the next pass.
-    if (uBounded != 0) positionPixels = clamp(positionPixels, vec2(uBodyRadius), uViewport - uBodyRadius);
+    // Walls: stop a body at its radius, not at its centre, and take away the
+    // velocity that would carry it into the wall. Either one left here would
+    // come back from the next collision substep as a bounce off the wall.
+    if (uBounded != 0) {
+        vec2 inside = clamp(positionPixels, vec2(uBodyRadius), uViewport - uBodyRadius);
+        bvec2 low = lessThan(positionPixels, inside);
+        bvec2 high = greaterThan(positionPixels, inside);
+        if (low.x && velocityPixels.x < 0.0 || high.x && velocityPixels.x > 0.0) velocityPixels.x = 0.0;
+        if (low.y && velocityPixels.y < 0.0 || high.y && velocityPixels.y > 0.0) velocityPixels.y = 0.0;
+        positionPixels = inside;
+    }
     vec2 position = uBounded != 0
         ? clamp(positionPixels / uViewport, vec2(0.0), vec2(MAXIMUM_UNIT))
         : fract(positionPixels / uViewport);

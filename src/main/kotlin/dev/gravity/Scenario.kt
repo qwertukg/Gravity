@@ -522,6 +522,9 @@ enum class Scenario(val title: String, private val build: ScenarioBuilder.() -> 
         }
     });
 
+    /** Name for --scenario, e.g. cosmic-web. */
+    val optionName: String get() = name.lowercase().replace('_', '-')
+
     fun bodies(space: ScenarioSpace, seed: Long): FloatArray {
         val builder = ScenarioBuilder(space, Random(seed))
         builder.build()

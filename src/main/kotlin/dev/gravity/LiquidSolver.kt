@@ -17,6 +17,7 @@ import org.lwjgl.opengl.GL43.glDispatchCompute
 import org.lwjgl.system.MemoryUtil.memAllocInt
 import org.lwjgl.system.MemoryUtil.memFree
 import kotlin.math.max
+import kotlin.math.sqrt
 
 /**
  * Liquid mode: a position-based fluid (Macklin & Mueller 2013). Once per
@@ -66,13 +67,16 @@ internal class LiquidSolver(
             program.float("uKernelRadius", kernel.radiusPixels)
             program.float("uRestDensity", kernel.restDensity)
         }
-        listOf(lambda, viscosity).forEach { program ->
+        listOf(lambda, apply, viscosity).forEach { program ->
             program.use()
             program.float("uPoly6", kernel.poly6Coefficient)
         }
         listOf(lambda, apply).forEach { program ->
             program.use()
             program.float("uSpikyGradient", kernel.spikyGradientCoefficient)
+            // Virtual wall rows continue the hexagonal packing.
+            program.float("uBodyDiameter", contactDiameterPixels)
+            program.float("uRowStep", contactDiameterPixels * sqrt(3f) * 0.5f)
         }
         lambda.use()
         lambda.float("uRelaxation", kernel.relaxation)

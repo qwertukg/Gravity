@@ -36,6 +36,107 @@ class LiquidIntegrationTest {
     }
 
     @Test
+    fun `deep and self-gravitating liquid at rest stays calm`() {
+        // Both used to stir themselves up: the pool bounced off its floor, the
+        // planet's pressed core never settled with too few iterations.
+        val poolSize = 512
+        val pool = calmLattice(poolSize, poolSize) { _, y -> y <= 200f }
+        val poolSpeed = restlessness(pool, poolSize, poolSize, bounded = true)
+        val planetSize = 1024
+        val planet = calmLattice(planetSize, planetSize) { x, y ->
+            val dx = x - planetSize / 2f
+            val dy = y - planetSize / 2f
+            dx * dx + dy * dy <= 130f * 130f
+        }
+        val planetSpeed = restlessness(planet, planetSize, planetSize, bounded = false)
+        println("restlessness: pool rms=${poolSpeed.first} p99=${poolSpeed.second}; planet rms=${planetSpeed.first} p99=${planetSpeed.second} px/s")
+        assertTrue(poolSpeed.first < 10.0 && poolSpeed.second < 40.0, "pool: $poolSpeed px/s")
+        assertTrue(planetSpeed.first < 15.0 && planetSpeed.second < 40.0, "planet: $planetSpeed px/s")
+    }
+
+    /** RMS and 99th percentile speed (px/s) after six seconds. */
+    private fun restlessness(bodies: FloatArray, viewWidth: Int, viewHeight: Int, bounded: Boolean): Pair<Double, Double> {
+        val count = bodies.size / 4
+        var result = Double.NaN to Double.NaN
+        CollisionGpuContext().use {
+            GravityPipeline(config(count, count, density = 1f), viewWidth, viewHeight, bounded = bounded).use { pipeline ->
+                // The pool sits under the field, the planet under its own gravity.
+                pipeline.mutualGravity = !bounded
+                pipeline.liquid = true
+                if (bounded) pipeline.fieldAccelerationY = -300f
+                CollisionGpuAccess.upload(pipeline, bodies)
+                pipeline.initializeAcceleration(count)
+                repeat(720) { pipeline.step(count) }
+                val state = CollisionGpuAccess.floats(pipeline, "bodies", count * 4)
+                val speeds = (0 until count).map {
+                    val vx = state[it * 4 + 2] * viewWidth.toDouble()
+                    val vy = state[it * 4 + 3] * viewHeight.toDouble()
+                    sqrt(vx * vx + vy * vy)
+                }.sorted()
+                result = sqrt(speeds.sumOf { it * it } / count) to speeds[count * 99 / 100]
+            }
+            assertEquals(GL_NO_ERROR, glGetError())
+        }
+        return result
+    }
+
+    private fun calmLattice(viewWidth: Int, viewHeight: Int, keep: (Float, Float) -> Boolean): FloatArray {
+        val rowStep = diameter * sqrt(3f) * 0.5f
+        val values = ArrayList<Float>()
+        var row = 0
+        var y = 0.5f * diameter
+        while (y <= viewHeight - diameter) {
+            var x = 0.5f * diameter + if (row % 2 == 0) 0f else 0.5f * diameter
+            while (x <= viewWidth - 0.5f * diameter) {
+                if (keep(x, y)) values += listOf(x / viewWidth, y / viewHeight, 0f, 0f)
+                x += diameter
+            }
+            y += rowStep
+            row++
+        }
+        return values.toFloatArray()
+    }
+
+    @Test
+    fun `coincident liquid bodies separate`() {
+        // A wall corner clamps several bodies onto one point. They used to have
+        // no direction between them, stay merged and fly off as one red dot.
+        val count = 5
+        val bodies = FloatArray(count * 4) { i ->
+            when (i % 4) {
+                0 -> 100f / width
+                1 -> 100f / height
+                2 -> 30f / width
+                else -> -20f / height
+            }
+        }
+        CollisionGpuContext().use {
+            GravityPipeline(config(count, count, density = 1f), width, height).use { pipeline ->
+                pipeline.mutualGravity = false
+                pipeline.liquid = true
+                CollisionGpuAccess.upload(pipeline, bodies)
+                pipeline.initializeAcceleration(count)
+                repeat(30) { pipeline.step(count) }
+                val state = CollisionGpuAccess.floats(pipeline, "bodies", count * 4)
+                val pressures = CollisionGpuAccess.floats(pipeline, "pressures", count)
+                var closest = Float.MAX_VALUE
+                for (i in 0 until count) for (j in i + 1 until count) {
+                    val dx = (state[i * 4] - state[j * 4]) * width
+                    val dy = (state[i * 4 + 1] - state[j * 4 + 1]) * height
+                    closest = minOf(closest, sqrt(dx * dx + dy * dy))
+                }
+                println("coincident: closest pair=$closest px pressures=${pressures.toList()}")
+                assertTrue(closest > 0.5f * diameter, "bodies separate: closest pair $closest px")
+                assertTrue(pressures.all { it == 0f }, "separated bodies are not compressed: ${pressures.toList()}")
+                // Momentum stays with the clump.
+                assertEquals(count * 30f, (0 until count).sumOf { state[it * 4 + 2] * width.toDouble() }.toFloat(), 1e-2f)
+                assertEquals(count * -20f, (0 until count).sumOf { state[it * 4 + 3] * height.toDouble() }.toFloat(), 1e-2f)
+            }
+            assertEquals(GL_NO_ERROR, glGetError())
+        }
+    }
+
+    @Test
     fun `liquid keeps momentum`() {
         val random = Random(3)
         val count = 20_000

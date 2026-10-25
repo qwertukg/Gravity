@@ -103,11 +103,15 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var blockPreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
     private var scenarioMenu: ScenarioMenu? = null
-    private var scenario: Scenario? = null
+    private var scenario: Scenario? = config.start.scenario
     private var requestedScenario: Scenario? = null
     private var sessionConfig = config
     /** Screen-edge walls instead of the torus; kept across resets. */
-    private var bounded = false
+    private var bounded = config.start.walls && GravityPipeline.supportsWalls(config.gravity).also { supported ->
+        if (config.start.walls && !supported) {
+            System.err.println("Walls need an FFT grid of at most 1024 cells per axis; starting on the torus")
+        }
+    }
     private var vao = 0
     private var timer: GpuTimer? = null
     private var profiler: GpuProfiler? = null
@@ -117,11 +121,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var stopRequested = false
     private var clearRequested = false
     /** G: gravity between bodies; kept across resets. */
-    private var mutualGravity = true
+    private var mutualGravity = config.start.mutualGravity
     /** L: bodies outside blocks behave as a liquid; kept across resets. */
-    private var liquid = config.liquid.enabled
+    private var liquid = config.start.liquid
     /** Arrow-key fields, each toggled independently; opposite arrows cancel. */
-    private val fieldDirections = LinkedHashSet<FieldDirection>()
+    private val fieldDirections = LinkedHashSet(config.start.field)
     private var paused = false
     private val simulationSpeed = SimulationSpeed(
         scalePerScroll = config.presentation.timeScalePerScroll,

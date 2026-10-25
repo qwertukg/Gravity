@@ -20,6 +20,7 @@ data class GravityConfig(
     val trajectory: TrajectoryConfig = TrajectoryConfig(),
     val projectiles: ProjectileConfig = ProjectileConfig(),
     val liquid: LiquidConfig = LiquidConfig(),
+    val start: StartConfig = StartConfig(),
     val presentation: PresentationConfig = PresentationConfig(),
     val diagnostics: DiagnosticsConfig = DiagnosticsConfig(),
 ) {
@@ -101,6 +102,10 @@ data class GravityConfig(
             "projectile-max-diameter",
             "projectile-plus-bodies",
             "block-density",
+            "scenario",
+            "walls",
+            "mutual-gravity",
+            "field",
             "liquid",
             "liquid-kernel",
             "liquid-iterations",
@@ -433,7 +438,6 @@ data class GravityConfig(
                     ),
                 ),
                 liquid = LiquidConfig(
-                    enabled = booleanValue("liquid", defaults.liquid.enabled),
                     kernelRadiusDiameters = floatValue(
                         "liquid-kernel",
                         defaults.liquid.kernelRadiusDiameters,
@@ -447,6 +451,21 @@ data class GravityConfig(
                         defaults.liquid.viscosity,
                     ),
                 ),
+                start = run {
+                    // Benchmarks and diagnostic starts keep the uniform start
+                    // they were measured with; explicit options still win.
+                    val diagnostic = listOf("benchmark", "frames", "square-test", "disc-test", "fft-validate")
+                        .any { it in values } || stringValue("bodies", "GRAVITY_BODIES") != null
+                    val startDefaults = if (diagnostic) StartConfig.UNIFORM else defaults.start
+                    StartConfig(
+                        scenario = values["scenario"]?.let(StartConfig::parseScenario)
+                            ?: startDefaults.scenario.takeIf { "scenario" !in values },
+                        walls = booleanValue("walls", startDefaults.walls),
+                        mutualGravity = booleanValue("mutual-gravity", startDefaults.mutualGravity),
+                        field = values["field"]?.let(StartConfig::parseField) ?: startDefaults.field,
+                        liquid = booleanValue("liquid", startDefaults.liquid),
+                    )
+                },
                 presentation = PresentationConfig(
                     // Fewer, larger bodies: a column holds 1/s as many layers.
                     // Measured cluster pressure falls as about s^-1.2 (p99 is
@@ -758,18 +777,71 @@ data class ProjectileConfig(
  * position-based fluid instead of colliding as hard discs.
  */
 data class LiquidConfig(
-    val enabled: Boolean = false,
     /** Kernel radius in contact diameters. */
     val kernelRadiusDiameters: Float = 2f,
-    /** Density-constraint iterations per physics step. */
-    val iterations: Int = 4,
+    /**
+     * Density-constraint iterations per physics step. Deep or strongly pressed
+     * liquid (a 100k-body pool, a self-gravitating planet) needs about 12 for
+     * Jacobi to settle; with fewer the residual keeps stirring it.
+     */
+    val iterations: Int = 12,
     /** XSPH viscosity per physics step. */
-    val viscosity: Float = 0.05f,
+    val viscosity: Float = 0.1f,
 ) {
     init {
         require(kernelRadiusDiameters in 1.5f..4f) { "liquid kernel must be 1.5..4 diameters" }
         require(iterations in 1..16) { "liquid iterations must be in 1..16" }
         require(viscosity in 0f..1f) { "liquid viscosity must be in 0..1" }
+    }
+}
+
+/**
+ * State the interactive session starts in: a liquid scenario falling under
+ * the downward field into a box. Keys B, G, L and the arrows change it at
+ * runtime; the scenario buttons and R restart. Benchmarks and diagnostic
+ * starts use [UNIFORM] unless these options are given.
+ */
+data class StartConfig(
+    /** Scenario to start in; null is the uniform random start of --bodies. */
+    val scenario: Scenario? = Scenario.COSMIC_WEB,
+    /** Walls at the screen edges instead of the torus (key B). */
+    val walls: Boolean = true,
+    /** Gravity between bodies (key G). */
+    val mutualGravity: Boolean = false,
+    /** Uniform field directions (arrow keys). */
+    val field: Set<FieldDirection> = setOf(FieldDirection.DOWN),
+    /** Liquid mode (key L). */
+    val liquid: Boolean = true,
+) {
+    companion object {
+        /** The start benchmarks and diagnostics were measured with. */
+        val UNIFORM = StartConfig(
+            scenario = null,
+            walls = false,
+            mutualGravity = true,
+            field = emptySet(),
+            liquid = false,
+        )
+
+        /** A scenario name such as cosmic-web, or none for the uniform start. */
+        fun parseScenario(value: String): Scenario? {
+            val name = value.lowercase()
+            if (name == "none") return null
+            return Scenario.entries.firstOrNull { it.optionName == name }
+                ?: throw IllegalArgumentException(
+                    "Unknown --scenario: $value; use none or " +
+                        Scenario.entries.joinToString(", ") { it.optionName },
+                )
+        }
+
+        /** Comma-separated directions such as down or down,left; off for none. */
+        fun parseField(value: String): Set<FieldDirection> {
+            if (value.lowercase() == "off") return emptySet()
+            return value.split(',').map { part ->
+                FieldDirection.entries.firstOrNull { it.label == part.trim().lowercase() }
+                    ?: throw IllegalArgumentException("Unknown --field direction: $part; use up, down, left, right or off")
+            }.toCollection(LinkedHashSet())
+        }
     }
 }
 

@@ -28,10 +28,13 @@ computed by GPU compute shaders.
   edges and back, without restarting (see [Walls](#walls)).
 - Each body's position and velocity are stored in an SSBO as
   `vec4(x, y, vx, vy)` in normalized coordinates. A parallel material buffer
-  holds `vec2(mass, friction)`: every body has unit mass except the bodies of
+  holds `vec4(mass, friction, solid, unused)`: every body has unit mass
+  except the bodies of
   [rectangular blocks](#rectangular-blocks), and every body has the friction
   coefficient `--friction` (`0` by default).
-- Initial positions are uniformly random across the screen and initial
+- The interactive start is described in [Start](#start). The uniform start
+  (`--scenario=none`, and every benchmark and diagnostic run) works as
+  follows. Initial positions are uniformly random across the screen and initial
   velocities are zero. The seed is generated with `SecureRandom` and printed
   to the console.
 - Bodies are never merged or removed. New bodies are added only by firing
@@ -243,13 +246,13 @@ per physics step, after the collision substeps:
 
 1. A linked-list grid with cells no smaller than the kernel radius `h`
    (`--liquid-kernel`, `2` contact diameters) is built once per step.
-2. `--liquid-iterations` (`4`) Jacobi iterations solve the density
+2. `--liquid-iterations` (`12`) Jacobi iterations solve the density
    constraint `C = max(ρ/ρ0 − 1, 0)` of every liquid body, with the 2D poly6
    kernel for density and the spiky kernel for its gradient. The rest density
    `ρ0` is that of the hexagonal packing, so the liquid keeps the spacing of
    ordinary bodies. The constraint only pushes, so a free surface never
    clumps. Corrections become velocity as `Δv = Δx/Δt`.
-3. XSPH viscosity (`--liquid-viscosity`, `0.05`) smooths the flow between
+3. XSPH viscosity (`--liquid-viscosity`, `0.1`) smooths the flow between
    liquid bodies.
 
 - Liquid bodies do not collide with each other as hard discs, so they never
@@ -264,13 +267,28 @@ per physics step, after the collision substeps:
   so a pair is seen from both sides even when bodies cross cells during the
   iterations. Momentum is kept exactly; a GPU test checks it with a block in
   a violently expanding blob.
+- Walls are filled with virtual rows continuing the hexagonal packing (their
+  poly6 density along a row has a closed form), so liquid against a wall
+  reads the rest density instead of packing onto it. Where a correction
+  would push a body through a wall it stops at its radius and loses the
+  velocity into the wall; otherwise the next collision substep would turn
+  that push into a bounce, and a deep pool would boil at its floor.
+- Deep or strongly pressed liquid needs enough iterations: with `4`, a pool
+  `200 px` deep or a self-gravitating liquid planet keeps stirring itself up
+  (RMS speeds of `70–220 px/s` from rest), because Jacobi leaves a residual
+  in the pressed core. With `12` and viscosity `0.1` both stay at a few px/s
+  and the liquid compresses by about 2%. A GPU test starts both at rest and
+  fails with the old settings.
 - Pressure colours show the compression `C`.
-- Physics is cheaper with the liquid on: pairs of liquid bodies skip the hard
-  contact count. On the `calm` benchmark (50,000 bodies, `3440×1440`, RTX 2060
-  SUPER) a step takes `1.50 ms` with the liquid and `2.13 ms` without it; the
-  liquid passes take `0.43 ms`.
+- Cost on the `calm` benchmark (`3440×1440`, RTX 2060 SUPER): at 50,000
+  bodies the liquid passes take `1.07 ms` and the step costs the same as
+  without the liquid (`2.12 ms`), since pairs of liquid bodies skip the hard
+  contact count; at 200,000 bodies they take `2.7 ms` and the step grows
+  from `3.4` to `5.4 ms`. Fewer `--liquid-iterations` are cheaper for
+  shallow liquid.
 - GPU tests: a column collapses into a level pool of the expected depth, a
-  light block rises from the bottom, a heavy one sinks, momentum is kept.
+  light block rises from the bottom, a heavy one sinks, deep and
+  self-gravitating liquid stays calm, momentum is kept.
 
 ### Overlay and console
 
@@ -389,6 +407,33 @@ Run with options:
 
 Only `--key=value` syntax is supported.
 
+### Start
+
+A plain run starts the Cosmic web scenario as a liquid falling under the
+downward field into a box bounded by the screen edges, with gravity between
+bodies off:
+
+| Option | Default | Runtime key |
+|---|---|---|
+| `--scenario=NAME` | `cosmic-web` | scenario buttons, `R` |
+| `--walls=true\|false` | `true` | `B` |
+| `--mutual-gravity=true\|false` | `false` | `G` |
+| `--field=DIRECTIONS` | `down` | arrows |
+| `--liquid=true\|false` | `true` | `L` |
+
+`NAME` is `none` (the uniform random start of `--bodies`) or one of
+`turbulent-cloud`, `galaxy`, `galaxy-collision`, `spinning-planet`,
+`planetary-impact`, `ringed-planet`, `binary-stars`, `galaxy-flyby`,
+`planetary-system`, `cosmic-web`. `DIRECTIONS` is `off` or a comma-separated
+list of `up`, `down`, `left`, `right`.
+
+Benchmarks and diagnostic starts (`--benchmark`, `--frames`, `--bodies`,
+`--square-test`, `--disc-test`, `--fft-validate`) keep the start their
+measurements were taken with: uniform bodies on the torus, gravity between
+bodies on, no field and no liquid. Any option above still overrides it.
+Walls need an FFT grid of at most `1024` cells per axis; with a larger
+`--grid` the session starts on the torus.
+
 ### Body size
 
 `--point-size=S` is the single body-size option, for example
@@ -485,10 +530,14 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
 | `--projectile-plus-bodies=N` | `50000 / S²` | Projectile body count selected by key `+` |
 | `--block-density=F` | `0.5` | Mass of each body of an RMB block, `0.05–10`; other bodies have `1` |
-| `--liquid=true\|false` | `false` | Start in liquid mode (key `L` toggles it) |
+| `--liquid=true\|false` | `true` | Start in liquid mode (key `L` toggles it); see [Start](#start) |
+| `--scenario=NAME` | `cosmic-web` | Start scenario, or `none`; see [Start](#start) |
+| `--walls=true\|false` | `true` | Start with walls at the screen edges (key `B`) |
+| `--mutual-gravity=true\|false` | `false` | Start with gravity between bodies (key `G`) |
+| `--field=DIRECTIONS` | `down` | Start field directions, or `off` (arrow keys) |
 | `--liquid-kernel=F` | `2` | Liquid kernel radius in contact diameters, `1.5–4` |
-| `--liquid-iterations=N` | `4` | Liquid density iterations per physics step, `1–16` |
-| `--liquid-viscosity=F` | `0.05` | XSPH viscosity per physics step, `0–1` |
+| `--liquid-iterations=N` | `12` | Liquid density iterations per physics step, `1–16` |
+| `--liquid-viscosity=F` | `0.1` | XSPH viscosity per physics step, `0–1` |
 | `--preview-period-px=F` | `6` | Projectile-preview dash period |
 | `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
 | `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |

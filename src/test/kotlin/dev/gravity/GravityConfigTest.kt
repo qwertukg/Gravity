@@ -13,6 +13,41 @@ class GravityConfigTest {
     }
 
     @Test
+    fun `interactive start is a liquid cosmic web falling into a box without mutual gravity`() {
+        val start = GravityConfig.parse(emptyArray(), emptyMap()).start
+        assertEquals(Scenario.COSMIC_WEB, start.scenario)
+        assertEquals(true, start.walls)
+        assertEquals(false, start.mutualGravity)
+        assertEquals(setOf(FieldDirection.DOWN), start.field)
+        assertEquals(true, start.liquid)
+    }
+
+    @Test
+    fun `benchmarks and diagnostic starts keep the uniform start unless asked`() {
+        for (args in listOf("--benchmark=calm", "--frames=60", "--bodies=1000", "--disc-test=100")) {
+            assertEquals(StartConfig.UNIFORM, GravityConfig.parse(arrayOf(args), emptyMap()).start, args)
+        }
+        assertEquals(StartConfig.UNIFORM, GravityConfig.parse(emptyArray(), mapOf("GRAVITY_BODIES" to "1000")).start)
+        val mixed = GravityConfig.parse(arrayOf("--frames=60", "--liquid=true", "--field=down,left"), emptyMap()).start
+        assertEquals(StartConfig.UNIFORM.copy(liquid = true, field = setOf(FieldDirection.DOWN, FieldDirection.LEFT)), mixed)
+    }
+
+    @Test
+    fun `start options name scenarios and field directions`() {
+        val start = GravityConfig.parse(
+            arrayOf("--scenario=spinning-planet", "--walls=false", "--mutual-gravity=true", "--field=off", "--liquid=false"),
+            emptyMap(),
+        ).start
+        assertEquals(
+            StartConfig(Scenario.SPINNING_PLANET, walls = false, mutualGravity = true, field = emptySet(), liquid = false),
+            start,
+        )
+        assertEquals(null, GravityConfig.parse(arrayOf("--scenario=none"), emptyMap()).start.scenario)
+        assertFailsWith<IllegalArgumentException> { GravityConfig.parse(arrayOf("--scenario=moon"), emptyMap()) }
+        assertFailsWith<IllegalArgumentException> { GravityConfig.parse(arrayOf("--field=sideways"), emptyMap()) }
+    }
+
+    @Test
     fun `command line overrides environment across configuration sections`() {
         val config = GravityConfig.parse(
             arrayOf(

@@ -86,8 +86,7 @@ class GravityPipeline(
     private val cells = gridWidth * gridHeight
 
     /** Walls need a doubled FFT axis, which must fit one shared-memory line. */
-    val boundedSpaceSupported =
-        2 * maxOf(gridWidth, gridHeight) <= MAXIMUM_FFT_AXIS
+    val boundedSpaceSupported = supportsWalls(config.gravity)
 
     /**
      * Screen edges are walls instead of the periodic torus. A cyclic FFT is
@@ -119,7 +118,7 @@ class GravityPipeline(
      * Liquid mode: bodies outside blocks form a position-based fluid instead
      * of colliding as hard discs. See [LiquidSolver].
      */
-    var liquid = config.liquid.enabled
+    var liquid = false
 
     private val meshWidth get() = if (bounded) 2 * gridWidth else gridWidth
     private val meshHeight get() = if (bounded) 2 * gridHeight else gridHeight
@@ -1486,6 +1485,10 @@ class GravityPipeline(
         const val TRAJECTORY_VERTICES_PER_STEP = 6
         /** Longest line the shared-memory FFT holds (fft_shared.comp). */
         private const val MAXIMUM_FFT_AXIS = 2048
+
+        /** Walls double the FFT mesh, which must fit one shared-memory line. */
+        fun supportsWalls(gravity: GravityFieldConfig): Boolean =
+            2 * maxOf(gravity.gridWidth, gravity.gridHeight) <= MAXIMUM_FFT_AXIS
         /** Largest float below 1, as in the collision shaders. */
         private const val MAXIMUM_UNIT = 0.99999994f
         /** Cached binding slots, more than any shader uses. */
