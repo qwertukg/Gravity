@@ -102,6 +102,8 @@ data class GravityConfig(
             "projectile-max-diameter",
             "projectile-plus-bodies",
             "block-density",
+            "block-friction",
+            "block-restitution",
             "scenario",
             "walls",
             "mutual-gravity",
@@ -411,6 +413,14 @@ data class GravityConfig(
                     blockDensity = floatValue(
                         "block-density",
                         defaults.projectiles.blockDensity,
+                    ),
+                    blockFriction = floatValue(
+                        "block-friction",
+                        defaults.projectiles.blockFriction,
+                    ),
+                    blockRestitution = floatValue(
+                        "block-restitution",
+                        defaults.projectiles.blockRestitution,
                     ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
@@ -728,6 +738,16 @@ data class ProjectileConfig(
     val plusKeyBodyCount: Int = 50_000,
     /** Mass of each body of an RMB block; other bodies have unit mass. */
     val blockDensity: Float = 0.5f,
+    /**
+     * Coulomb friction of RMB blocks, against walls and each other; with a
+     * loose body the pair takes the geometric mean with `--friction`.
+     */
+    val blockFriction: Float = 0.5f,
+    /**
+     * Restitution of RMB blocks against walls and each other, and the least a
+     * loose body gets off a block; slow contacts never bounce.
+     */
+    val blockRestitution: Float = 0.2f,
     val previewPeriodPixels: Float = 6f,
     val benchmarkOriginX: Float = 0.25f,
     val benchmarkOriginY: Float = 0.5f,
@@ -748,6 +768,8 @@ data class ProjectileConfig(
         require(blockDensity in MINIMUM_DENSITY..MAXIMUM_DENSITY) {
             "block density must be in $MINIMUM_DENSITY..$MAXIMUM_DENSITY"
         }
+        require(blockFriction >= 0f && blockFriction.isFinite()) { "block friction must be non-negative" }
+        require(blockRestitution in 0f..1f) { "block restitution must be in 0..1" }
         require(previewPeriodPixels > 0f && previewPeriodPixels.isFinite())
         require(benchmarkOriginX in 0f..1f)
         require(benchmarkOriginY in 0f..1f)
@@ -803,7 +825,7 @@ data class LiquidConfig(
  */
 data class StartConfig(
     /** Scenario to start in; null is the uniform random start of --bodies. */
-    val scenario: Scenario? = Scenario.COSMIC_WEB,
+    val scenario: MenuScenario? = Scenario.COSMIC_WEB,
     /** Walls at the screen edges instead of the torus (key B). */
     val walls: Boolean = true,
     /** Gravity between bodies (key G). */
@@ -823,14 +845,15 @@ data class StartConfig(
             liquid = false,
         )
 
-        /** A scenario name such as cosmic-web, or none for the uniform start. */
-        fun parseScenario(value: String): Scenario? {
+        /** A scenario name such as cosmic-web or bullets, or none for the uniform start. */
+        fun parseScenario(value: String): MenuScenario? {
             val name = value.lowercase()
             if (name == "none") return null
-            return Scenario.entries.firstOrNull { it.optionName == name }
+            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries
+            return scenarios.firstOrNull { it.optionName == name }
                 ?: throw IllegalArgumentException(
                     "Unknown --scenario: $value; use none or " +
-                        Scenario.entries.joinToString(", ") { it.optionName },
+                        scenarios.joinToString(", ") { it.optionName },
                 )
         }
 

@@ -20,9 +20,15 @@ uniform int uBounded;
 #ifdef RIGID
 #include "collision_rigid.glsl"
 
-void countGroupContacts(uint id, uint contacts) {
-    int group = groupOf(id);
-    if (group >= 0) atomicAdd(groups[group].grid.w, int(contacts));
+// Counts the pair once for the blocks in it (collision_rigid.glsl).
+void countPairContact(uint first, uint second) {
+    int firstGroup = groupOf(first);
+    int secondGroup = groupOf(second);
+    if (firstGroup >= 0 && secondGroup >= 0) {
+        countPartnerContact(min(firstGroup, secondGroup), max(firstGroup, secondGroup));
+    } else if (firstGroup >= 0 || secondGroup >= 0) {
+        countLooseContact(max(firstGroup, secondGroup));
+    }
 }
 #endif
 
@@ -49,7 +55,8 @@ void main() {
     ));
     float diameterSquared = uDiameterPixels * uDiameterPixels;
 #ifdef RIGID
-    countGroupContacts(id, wallTouches(positionPixels));
+    int group = groupOf(id);
+    if (group >= 0) countWallContacts(group, positionPixels);
 #endif
     for (int dy = -uNeighborCellRadius; dy <= uNeighborCellRadius; ++dy) {
         for (int dx = -uNeighborCellRadius; dx <= uNeighborCellRadius; ++dx) {
@@ -70,8 +77,7 @@ void main() {
                         atomicAdd(contactCounts[id], 1u);
                         atomicAdd(contactCounts[otherId], 1u);
 #ifdef RIGID
-                        countGroupContacts(id, 1u);
-                        countGroupContacts(otherId, 1u);
+                        countPairContact(id, otherId);
 #endif
                     }
                 }

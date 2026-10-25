@@ -30,14 +30,19 @@ class GlueShapeTest {
     }
 
     @Test
-    fun `outside a body touches the shape exactly when it touches a member`() {
-        for (y in 0 until shape.height) for (x in 0 until shape.width) {
-            val px = shape.originX + x * shape.cellPixels
-            val py = shape.originY + y * shape.cellPixels
-            val distance = nearest(px, py)
-            if (distance >= GlueShape.FILL_DIAMETERS * diameter && distance < 2f * diameter) {
-                assertEquals(distance - 0.5f * diameter, shape.values[x + y * shape.width], 1e-4f)
+    fun `a face is flat at the touching distance of its row`() {
+        val top = offsets.maxOf { it.y }
+        val row = offsets.filter { it.y > top - 0.01f }
+        // Bodies touch the row from about 0.87 diameters up (in a groove).
+        for (height in listOf(0.9f, 1f, 1.5f).map { it * diameter }) {
+            // Across the middle of the face, away from the corners.
+            val samples = (0..200).map { k ->
+                val x = row.minOf { it.x } + 5f + k * (row.maxOf { it.x } - row.minOf { it.x } - 10f) / 200f
+                sample(x, top + height)
             }
+            assertTrue(samples.max() - samples.min() < 0.05f, "ripple ${samples.max() - samples.min()} px at $height px")
+            // Discs of a row touch a body between height and the slant to the next member.
+            assertEquals(height - 0.5f * diameter, samples.average().toFloat(), 0.15f * diameter)
         }
     }
 
@@ -73,6 +78,6 @@ class GlueShapeTest {
 
     @Test
     fun `the border bounds the field beyond the grid`() {
-        assertTrue(shape.borderMinimum > 1.4f * diameter, "border ${shape.borderMinimum}")
+        assertTrue(shape.borderMinimum > diameter, "border ${shape.borderMinimum}")
     }
 }

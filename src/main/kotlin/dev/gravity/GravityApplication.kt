@@ -103,8 +103,15 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var blockPreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
     private var scenarioMenu: ScenarioMenu? = null
-    private var scenario: Scenario? = config.start.scenario
-    private var requestedScenario: Scenario? = null
+    private var scenario: MenuScenario? = config.start.scenario
+    private var requestedScenario: MenuScenario? = null
+    /** Blocks of the current block scenario, glued after its loose bodies. */
+    private var scenarioBlocks: List<ScenarioBlock> = emptyList()
+    /**
+     * The walls, gravity, liquid and field the user had before a block
+     * scenario took them over; they come back with the next cosmic scenario.
+     */
+    private var savedEnvironment: Environment? = null
     private var sessionConfig = config
     /** Screen-edge walls instead of the torus; kept across resets. */
     private var bounded = config.start.walls && GravityPipeline.supportsWalls(config.gravity).also { supported ->
@@ -192,6 +199,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         }
 
         var active = sessionConfig.particles.initialBodies
+        active += spawnScenarioBlocks(simulation, active)
         initializeSimulation(simulation, active)
         activateFullscreenWindow()
         render(
@@ -223,7 +231,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
-                requestedScenario?.let { scenario = it }
+                requestedScenario?.let(::selectScenario)
                 requestedScenario = null
                 // C clears the screen: a fresh session with no active bodies;
                 // projectiles can be fired into it.
@@ -242,6 +250,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 simulation = createSimulation()
                 pipeline = simulation
                 active = if (clearing) 0 else sessionConfig.particles.initialBodies
+                if (!clearing) active += spawnScenarioBlocks(simulation, active)
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
                 timer = if (profiler == null) {
@@ -679,23 +688,50 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
      */
     private fun createSimulation(): GravityPipeline {
         val current = scenario
-        val state = current?.bodies(
-            ScenarioSpace(
-                widthPixels = viewportWidth.toFloat(),
-                heightPixels = viewportHeight.toFloat(),
-                gravitationalConstant = config.gravity.gravitationalConstant,
-                contactDiameterPixels = config.collisions.contactDiameterPixels,
-            ),
-            seed = config.particles.seed ?: java.security.SecureRandom().nextLong(),
+        val space = ScenarioSpace(
+            widthPixels = viewportWidth.toFloat(),
+            heightPixels = viewportHeight.toFloat(),
+            gravitationalConstant = config.gravity.gravitationalConstant,
+            contactDiameterPixels = config.collisions.contactDiameterPixels,
         )
+        val seed = config.particles.seed ?: java.security.SecureRandom().nextLong()
+        val state: FloatArray?
+        when (current) {
+            is BlockScenario -> {
+                val setup = current.setup(space, seed)
+                state = setup.bodies
+                scenarioBlocks = setup.blocks
+                // A block scenario brings its own box, field and liquid; the
+                // user's come back with the next cosmic scenario.
+                if (savedEnvironment == null) {
+                    savedEnvironment = Environment(bounded, mutualGravity, liquid, fieldDirections.toSet())
+                }
+                bounded = GravityPipeline.supportsWalls(config.gravity)
+                mutualGravity = false
+                liquid = current.liquid
+                fieldDirections.clear()
+                if (current.field) fieldDirections += FieldDirection.DOWN
+            }
+            is Scenario -> {
+                state = current.bodies(space, seed)
+                scenarioBlocks = emptyList()
+            }
+            null -> {
+                state = null
+                scenarioBlocks = emptyList()
+            }
+        }
+        val blockBodies = scenarioBlocks.sumOf {
+            RectangularBlock.bodyCount(config.collisions.contactDiameterPixels, it.maxX - it.minX, it.maxY - it.minY)
+        }
         sessionConfig = if (state == null) {
             config
         } else {
             val bodies = state.size / 4
-            System.err.printf(Locale.ROOT, "scenario=%s bodies=%,d%n", current.title, bodies)
+            System.err.printf(Locale.ROOT, "scenario=%s bodies=%,d%n", current!!.title, bodies + blockBodies)
             config.copy(
                 particles = config.particles.copy(
-                    capacity = maxOf(config.particles.capacity, bodies),
+                    capacity = maxOf(config.particles.capacity, bodies + blockBodies),
                     initialBodies = bodies,
                     squareTestPixels = null,
                     discTestRadiusPixels = null,
@@ -714,6 +750,51 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             it.liquid = liquid
             applyField(it)
         }
+    }
+
+    /** Walls, gravity between bodies, liquid mode and the field, as toggled by B, G, L and the arrows. */
+    private data class Environment(
+        val bounded: Boolean,
+        val mutualGravity: Boolean,
+        val liquid: Boolean,
+        val field: Set<FieldDirection>,
+    )
+
+    /**
+     * Makes [next] the scenario of the coming reset. Leaving block scenarios
+     * brings back the environment they took over (createSimulation).
+     */
+    private fun selectScenario(next: MenuScenario) {
+        if (next !is BlockScenario) {
+            savedEnvironment?.let {
+                bounded = it.bounded
+                mutualGravity = it.mutualGravity
+                liquid = it.liquid
+                fieldDirections.clear()
+                fieldDirections += it.field
+            }
+            savedEnvironment = null
+        }
+        scenario = next
+    }
+
+    /** Glues the blocks of the scenario after [firstBody]; returns their bodies. */
+    private fun spawnScenarioBlocks(simulation: GravityPipeline, firstBody: Int): Int {
+        var spawned = 0
+        for (block in scenarioBlocks) {
+            spawned += simulation.spawnBlock(
+                firstBody = firstBody + spawned,
+                minX = block.minX,
+                minY = block.minY,
+                maxX = block.maxX,
+                maxY = block.maxY,
+                density = block.density,
+                velocityX = block.velocityX,
+                velocityY = block.velocityY,
+                spin = block.spin,
+            )
+        }
+        return spawned
     }
 
     private fun applyField(simulation: GravityPipeline) {

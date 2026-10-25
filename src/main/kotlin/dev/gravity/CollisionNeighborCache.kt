@@ -129,6 +129,9 @@ internal class CollisionNeighborCache(
             solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
             solve.float("uTimeStep", collision.timeStep)
         }
+        rigidSolve.use()
+        rigidSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
+        rigidSolve.float("uRestingSpeed", restingSpeed(collision))
     }
 
     fun resolve(
@@ -274,6 +277,9 @@ internal class CollisionNeighborCache(
         const val STATE_DIRECT = 3
         private const val NODE_BYTES = 16L
         private const val SOLID_TILE = 8
+
+        /** Approach speed below which a block contact never bounces: 20 diameters a second. */
+        fun restingSpeed(collisions: CollisionConfig) = 20f * collisions.contactDiameterPixels
 
         fun stateByteOffset(capacity: Int): Long = capacity.toLong() * CACHE_PLANES * Int.SIZE_BYTES
 

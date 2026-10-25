@@ -10,19 +10,84 @@
 #include "rigid_layout.glsl"
 layout(std430, binding = 9) buffer Rigid {
     RigidGroup groups[MAXIMUM_GROUPS];
+    // Approach speed at the start of the current impact, as of the last pass;
+    // the largest seen this pass; how the pair met this pass (CONTACT_*);
+    // passes since it last met.
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    // Contacts of the pair this pass, counted once per pair of bodies.
+    int pairContacts[CONTACT_KEYS];
     float shapes[];
 };
 
-// Wall contacts a body has, for counting the contacts of its block.
-uint wallTouches(vec2 positionPixels) {
-    if (uBounded == 0) return 0u;
-    float radius = 0.5 * uDiameterPixels;
-    return uint(positionPixels.x < radius) + uint(uViewport.x - positionPixels.x < radius) +
-        uint(positionPixels.y < radius) + uint(uViewport.y - positionPixels.y < radius);
+// The push out of a wall or a block ends the touch within a pass, before
+// the impulses of the block have reached the speed they aim for. While an
+// impact lasts, a pair this much (in diameters) beyond touching keeps
+// meeting, by speed alone. It stays within the neighbour cache's skin, and
+// counting and solving agree on it.
+const float SPECULATIVE_DIAMETERS = 0.4;
+
+int contactKey(int group, int partner) {
+    return min(group, partner) * CONTACT_PARTNERS + max(group, partner);
 }
 
-// GlueShape.FILL_DIAMETERS.
+// A member of [group] meets wall [wall] (left, right, bottom, top) at
+// [distance] from it.
+bool meetsWall(int group, int wall, float distance) {
+    float radius = 0.5 * uDiameterPixels;
+    if (distance < radius) return true;
+    return impacts[contactKey(group, MAXIMUM_GROUPS + wall)] != 0 &&
+        distance < radius + SPECULATIVE_DIAMETERS * uDiameterPixels;
+}
+
+float contactReachSquared(uint first, uint second) {
+    vec4 firstMaterial = materials[first];
+    vec4 secondMaterial = materials[second];
+    bool fluidBlock = uLiquid != 0 && (firstMaterial.z == 0.0) != (secondMaterial.z == 0.0);
+    float reach = fluidBlock ? FLUID_REACH_DIAMETERS * uDiameterPixels : uDiameterPixels;
+    if (firstMaterial.z != 0.0 && secondMaterial.z != 0.0 &&
+        impacts[contactKey(int(firstMaterial.w), int(secondMaterial.w))] != 0) {
+        reach += SPECULATIVE_DIAMETERS * uDiameterPixels;
+    }
+    return reach * reach;
+}
+
+// Counts a contact of block [group] with a loose body, a partner of its own
+// (partnerShare).
+void countLooseContact(int group) {
+    atomicAdd(groups[group].grid.w, 1);
+}
+
+// Counts a contact of block [group] with block [partner]. A block's partners
+// are counted once each, by their first contact.
+void countPartnerContact(int group, int partner) {
+    if (atomicAdd(pairContacts[contactKey(group, partner)], 1) == 0) {
+        atomicAdd(groups[group].grid.w, 1);
+        atomicAdd(groups[partner].grid.w, 1);
+    }
+}
+
+// Counts a contact of block [group] with wall [wall], a partner like a block.
+void countWallContact(int group, int wall) {
+    if (atomicAdd(pairContacts[contactKey(group, MAXIMUM_GROUPS + wall)], 1) == 0) {
+        atomicAdd(groups[group].grid.w, 1);
+    }
+}
+
+// Counts the walls a member of [group] meets.
+void countWallContacts(int group, vec2 positionPixels) {
+    if (uBounded == 0) return;
+    if (meetsWall(group, 0, positionPixels.x)) countWallContact(group, 0);
+    if (meetsWall(group, 1, uViewport.x - positionPixels.x)) countWallContact(group, 1);
+    if (meetsWall(group, 2, positionPixels.y)) countWallContact(group, 2);
+    if (meetsWall(group, 3, uViewport.y - positionPixels.y)) countWallContact(group, 3);
+}
+
+// GlueShape.FILL_DIAMETERS and RIPPLE_DIAMETERS.
 const float FILL_DIAMETERS = 0.6;
+const float RIPPLE_DIAMETERS = 0.1;
 
 vec2 rigidOffset(vec2 delta) {
     // Walls: no minimum image.
@@ -76,11 +141,12 @@ float outlineValue() {
     return (FILL_DIAMETERS - 0.5) * uDiameterPixels;
 }
 
-// Depth of a body in a block's shape (zero or less: apart) and the normal
-// pointing out of the block. A body whose centre crossed the surface during
-// this pass's drift [dt] is pushed back out where it came in, so a fast body
-// cannot be pushed on through, however thin the block.
-float shapeContact(int group, vec2 bodyPixels, vec2 bodyVelocity, float radius, float dt, out vec2 normal) {
+// Depth of a body in a block's shape and the normal pointing out of the
+// block; a zero normal means apart. Down to -[slop], apart bodies still get
+// their (negative) depth and normal. A body whose centre crossed the surface
+// during this pass's drift [dt] is pushed back out where it came in, so a
+// fast body cannot be pushed on through, however thin the block.
+float shapeContact(int group, vec2 bodyPixels, vec2 bodyVelocity, float radius, float slop, float dt, out vec2 normal) {
     vec2 center;
     vec2 rotation;
     groupPose(group, dt, center, rotation);
@@ -88,7 +154,7 @@ float shapeContact(int group, vec2 bodyPixels, vec2 bodyVelocity, float radius, 
     vec2 gradient;
     float value = sampleShape(group, local, gradient);
     normal = vec2(0.0);
-    if (value >= radius) return 0.0;
+    if (value >= radius + slop) return 0.0;
     float penetration = radius - value;
     if (dt > 0.0) {
         vec2 startCenter;
@@ -150,9 +216,26 @@ void pushGroup(int group, vec2 shift) {
     if (negative.y > 0) atomicMax(groups[group].guard.w, negative.y);
 }
 
-// Mass splitting: a block in n contacts this pass meets each with 1/n of
-// its mass, so contacts solved side by side never push it further than one
-// contact solved alone would. Momentum is kept all the same.
-float groupContacts(int group) {
-    return float(max(groups[group].grid.w, 1));
+// Like pushGroup, for a block resting on bodies a wall holds: the wall
+// carries it, so the block also stops moving into them.
+void supportGroup(int group, vec2 shift) {
+    ivec2 positive = ivec2(max(shift, vec2(0.0)) * GUARD_SCALE + 0.5);
+    ivec2 negative = ivec2(max(-shift, vec2(0.0)) * GUARD_SCALE + 0.5);
+    if (positive.x > 0) atomicMax(groups[group].support.x, positive.x);
+    if (positive.y > 0) atomicMax(groups[group].support.y, positive.y);
+    if (negative.x > 0) atomicMax(groups[group].support.z, negative.x);
+    if (negative.y > 0) atomicMax(groups[group].support.w, negative.y);
+}
+
+// Mass splitting: contacts solved side by side never push a block further
+// than one contact solved alone would, as each meets a share of its mass.
+// The block shares its mass equally among its partners, and with a partner
+// among the pairs of bodies touching it. Shared among all pairs alike, a
+// block a big one lies on would give the floor below a hundredth of the
+// support it needs per pass, and the stack would sink and creep. This is the
+// factor the block's inverse mass is multiplied by; momentum is kept all the same.
+float partnerShare(int group, int partner) {
+    float partners = float(max(groups[group].grid.w, 1));
+    if (partner < 0) return partners;
+    return partners * float(max(pairContacts[contactKey(group, partner)], 1));
 }

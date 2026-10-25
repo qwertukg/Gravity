@@ -49,16 +49,19 @@ ivec2 wrapCell(ivec2 cell) {
 // A wall is an immovable body: the moving body takes the whole correction
 // that a pair would split, with the same restitution and position-to-velocity
 // conversion as body-body contacts.
-void wallContact(uint id, vec2 positionPixels, float distance, vec2 normal, vec2 velocityPixels,
+void wallContact(uint id, int wall, vec2 positionPixels, float distance, vec2 normal, vec2 velocityPixels,
     float pressureWeight, float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
+#ifdef RIGID
+    if (rigidPair(id, id)) {
+        rigidWallContact(id, wall, positionPixels, distance, normal, velocityPixels, pressureWeight, friction,
+            driftDt, effectiveSubstepDt, velocityCorrection, pressure);
+        return;
+    }
+#endif
     float penetration = 0.5 * uDiameterPixels - distance;
     if (penetration <= 0.0) return;
-#ifdef RIGID
-    float weight = rigidPair(id, id) ? rigidWallWeight(id, positionPixels, normal, driftDt) : pressureWeight;
-#else
     float weight = pressureWeight;
-#endif
     positionCorrection += normal * (penetration * weight);
     float normalSpeed = dot(velocityPixels, normal);
     if (normalSpeed < 0.0) {
@@ -84,15 +87,15 @@ void wallContacts(uint id, vec2 positionPixels, vec2 velocityPixels, uint ownCon
     inout vec2 velocityCorrection, inout float pressure) {
     if (uBounded == 0) return;
     // Counted as one more contact so body pairs keep their symmetric weights.
-    // A member of a block takes its block's rigid weight instead.
+    // A member of a block meets the wall as its block (rigidWallContact).
     float weight = 1.0 / float(ownContacts + 1u);
-    wallContact(id, positionPixels, positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
+    wallContact(id, 0, positionPixels, positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(id, positionPixels, uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
+    wallContact(id, 1, positionPixels, uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(id, positionPixels, positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
+    wallContact(id, 2, positionPixels, positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(id, positionPixels, uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
+    wallContact(id, 3, positionPixels, uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
 }
 
@@ -234,7 +237,7 @@ void main() {
     wallContacts(id, positionPixels, velocityPixels, ownContacts, materials[id].y, effectiveSubstepDt,
         positionCorrection, velocityCorrection, pressure);
 #ifdef RIGID
-    positionPixels += resolveGuards(positionPixels, driftDt);
+    positionPixels += rigidShift + resolveGuards(positionPixels, driftDt);
 #endif
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;

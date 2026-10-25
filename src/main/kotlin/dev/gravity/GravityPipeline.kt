@@ -300,6 +300,8 @@ class GravityPipeline(
     private val rigidBlocks = RigidBlocks(
         capacity = config.particles.capacity,
         contactDiameterPixels = config.collisions.contactDiameterPixels,
+        substepSeconds = collisionSubstep,
+        friction = config.projectiles.blockFriction,
         width = viewportWidth,
         height = viewportHeight,
         bind = ::bind,
@@ -573,8 +575,8 @@ class GravityPipeline(
     }
 
     /**
-     * Fills the rectangle between two corners with bodies at rest, glued into
-     * one rigid block.
+     * Fills the rectangle between two corners with bodies glued into one rigid
+     * block, at rest unless given a motion.
      */
     fun spawnBlock(
         firstBody: Int,
@@ -582,6 +584,12 @@ class GravityPipeline(
         minY: Float,
         maxX: Float,
         maxY: Float,
+        /** Mass of each body of the block. */
+        density: Float = config.projectiles.blockDensity,
+        /** Rigid motion to start with: velocity (px/s) and spin (rad/s, counter-clockwise). */
+        velocityX: Float = 0f,
+        velocityY: Float = 0f,
+        spin: Float = 0f,
     ): Int {
         val width = maxX - minX
         val height = maxY - minY
@@ -605,8 +613,7 @@ class GravityPipeline(
         if (!rigidBlocks.canAdd(count, shape)) return 0
         val centerX = 0.5f * (minX + maxX) + meanX
         val centerY = 0.5f * (minY + maxY) + meanY
-        val density = config.projectiles.blockDensity
-        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets, density, group = rigidBlocks.size)
+        val spawned = uploadBodies(firstBody, centerX, centerY, velocityX, velocityY, offsets, density, group = rigidBlocks.size, spin = spin)
         rigidBlocks.add(firstBody, offsets, centerX, centerY, shape)
         massExcess += spawned * (density - 1f)
         return spawned
@@ -626,13 +633,15 @@ class GravityPipeline(
         mass: Float,
         /** The block the bodies are glued into, or null for loose bodies. */
         group: Int?,
+        /** Spin about the centre, rad/s: each body moves with v + spin × offset. */
+        spin: Float = 0f,
     ): Int {
         if (group != null) solidBodies = true
         val material = memAllocFloat(offsets.size * 4)
         try {
+            val friction = if (group != null) config.projectiles.blockFriction else config.collisions.friction
             repeat(offsets.size) {
-                material.put(mass).put(config.collisions.friction)
-                    .put(if (group != null) 1f else 0f).put(group?.toFloat() ?: 0f)
+                material.put(mass).put(friction).put(if (group != null) 1f else 0f).put(group?.toFloat() ?: 0f)
             }
             material.flip()
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, materials)
@@ -645,8 +654,8 @@ class GravityPipeline(
             offsets.forEach { offset ->
                 upload.put(placeX(centerX + offset.x) / viewportWidth)
                 upload.put(placeY(centerY + offset.y) / viewportHeight)
-                upload.put(velocityX / viewportWidth)
-                upload.put(velocityY / viewportHeight)
+                upload.put((velocityX - spin * offset.y) / viewportWidth)
+                upload.put((velocityY + spin * offset.x) / viewportHeight)
             }
             upload.flip()
             val byteOffset = firstBody.toLong() * 4 * Float.SIZE_BYTES
@@ -880,7 +889,7 @@ class GravityPipeline(
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
-            rigidBlocks.project(bodies, bounded)
+            rigidBlocks.project(bodies, bounded, contacts = true)
             return
         }
         // collisionBodies is the input buffer used to build the current heads
@@ -1003,7 +1012,11 @@ class GravityPipeline(
         collisionSolve.int("uSubstepIndex", substepIndex ?: -1)
         collisionSolve.int("uBounded", if (bounded) 1 else 0)
         collisionSolve.int("uLiquid", if (liquid) 1 else 0)
-        if (!rigidBlocks.isEmpty) collisionSolve.float("uDriftDt", driftDt)
+        if (!rigidBlocks.isEmpty) {
+            collisionSolve.float("uDriftDt", driftDt)
+            collisionSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
+            collisionSolve.float("uRestingSpeed", CollisionNeighborCache.restingSpeed(config.collisions))
+        }
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_SOLVE)
@@ -1011,7 +1024,7 @@ class GravityPipeline(
         val swap = bodies
         bodies = collisionBodies
         collisionBodies = swap
-        rigidBlocks.project(bodies, bounded)
+        rigidBlocks.project(bodies, bounded, contacts = true)
     }
 
     private fun resolveLiquid(activeBodies: Int) {
@@ -1031,7 +1044,7 @@ class GravityPipeline(
         // The linked collision grid clears only the cells of the positions it
         // was built from, which the liquid passes have just replaced.
         if (neighborCache == null) clearUnsignedIntBuffer(collisionHeads)
-        rigidBlocks.project(bodies, bounded)
+        rigidBlocks.project(bodies, bounded, contacts = false)
         profiler?.end(GpuStage.LIQUID)
     }
 

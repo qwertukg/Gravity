@@ -12,11 +12,12 @@ import kotlin.math.sqrt
  * collision shaders (collision_rigid.glsl).
  *
  * Outside the block the value is the distance from the nearest member's
- * centre minus a body radius, so a body touches the block exactly when it
- * touches a member. Inside, the members are closed into one solid: discs of
+ * centre minus a body radius, so a body touches the block where it touches a
+ * member. Inside, the members are closed into one solid: discs of
  * [FILL_DIAMETERS] diameters around them cover the gaps of a packing, and the
  * value is minus the depth below that surface, so a body that got in is
- * pushed out of the nearest face instead of further between members.
+ * pushed out of the nearest face instead of further between members. The
+ * field is then smoothed, so faces are flat rather than rippled by members.
  */
 class GlueShape private constructor(
     /** Rest-frame position of the first grid node, px. */
@@ -27,6 +28,8 @@ class GlueShape private constructor(
     val height: Int,
     /** Row-major node values, px. */
     val values: FloatArray,
+    /** Convex hull of the member centres, counter-clockwise (x, y) pairs, px. */
+    val hull: FloatArray,
 ) {
     /** Smallest value on the grid border: beyond it, the distance is at least this. */
     val borderMinimum: Float = run {
@@ -47,6 +50,8 @@ class GlueShape private constructor(
         const val CELL_DIAMETERS = 0.5f
         /** Diameter around each member that closes a hexagonal packing (> 1/sqrt 3). */
         const val FILL_DIAMETERS = 0.6f
+        /** Largest ripple of a face the smoothing removes, in contact diameters. */
+        const val RIPPLE_DIAMETERS = 0.1f
         /** Grid reach beyond the outermost member centres, in contact diameters. */
         const val MARGIN_DIAMETERS = 2f
 
@@ -117,7 +122,58 @@ class GlueShape private constructor(
                 // Shift the filled outline back to the touching distance.
                 (outline + fill - radius).toFloat()
             }
-            return GlueShape(minX.toFloat(), minY.toFloat(), cell.toFloat(), width, height, values)
+            return GlueShape(
+                minX.toFloat(), minY.toFloat(), cell.toFloat(), width, height,
+                smooth(values, width, height, diameter), hull(offsets),
+            )
+        }
+
+        /** Andrew's monotone chain: the extreme members, which are what reaches a wall first. */
+        private fun hull(offsets: List<PixelOffset>): FloatArray {
+            val points = offsets.distinct().sortedWith(compareBy({ it.x }, { it.y }))
+            if (points.size < 3) return points.flatMap { listOf(it.x, it.y) }.toFloatArray()
+            fun turn(o: PixelOffset, a: PixelOffset, b: PixelOffset) =
+                (a.x - o.x).toDouble() * (b.y - o.y) - (a.y - o.y).toDouble() * (b.x - o.x)
+            val chain = ArrayList<PixelOffset>()
+            for (pass in 0..1) {
+                val start = chain.size
+                for (point in if (pass == 0) points else points.asReversed()) {
+                    while (chain.size >= start + 2 && turn(chain[chain.size - 2], chain[chain.size - 1], point) <= 0.0) {
+                        chain.removeAt(chain.size - 1)
+                    }
+                    chain += point
+                }
+                chain.removeAt(chain.size - 1)
+            }
+            return chain.flatMap { listOf(it.x, it.y) }.toFloatArray()
+        }
+
+        /**
+         * A face of members is a row of discs, rippled with their spacing: two
+         * blocks would interlock like gear teeth and slide as over cobbles. A
+         * binomial blur of about one cell (half a diameter) leaves a linear field
+         * as it is, so flat faces stay where they are, and the ripple of one
+         * diameter falls below a thousandth. A blur also rounds a convex corner
+         * off, which would let bodies onto its member, so the blur never rises
+         * more than [RIPPLE_DIAMETERS] above the field: that much covers the
+         * ripple of a face, and a corner stays where its member is.
+         */
+        private fun smooth(values: FloatArray, width: Int, height: Int, diameter: Float): FloatArray {
+            val kernel = floatArrayOf(1f, 6f, 15f, 20f, 15f, 6f, 1f).map { it / 64f }
+            val reach = kernel.size / 2
+            val across = FloatArray(values.size)
+            for (y in 0 until height) for (x in 0 until width) {
+                var sum = 0f
+                for (k in kernel.indices) sum += kernel[k] * values[(x + k - reach).coerceIn(0, width - 1) + y * width]
+                across[x + y * width] = sum
+            }
+            val result = FloatArray(values.size)
+            for (y in 0 until height) for (x in 0 until width) {
+                var sum = 0f
+                for (k in kernel.indices) sum += kernel[k] * across[x + (y + k - reach).coerceIn(0, height - 1) * width]
+                result[x + y * width] = min(sum, values[x + y * width] + RIPPLE_DIAMETERS * diameter)
+            }
+            return result
         }
 
         /** Squared distance in nodes from each node to the nearest outside node (Felzenszwalb). */

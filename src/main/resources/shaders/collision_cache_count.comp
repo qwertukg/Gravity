@@ -47,6 +47,14 @@ void countContact(uint id, uint other, float distanceSquared, inout uint contact
     if (distanceSquared < contactReachSquared(id, other)) {
         if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
         contacts++;
+#ifdef RIGID
+        // Each body sees the pair: the member of the lower block counts it,
+        // or the member when the other is loose.
+        int group = groupOf(id);
+        int otherGroup = groupOf(other);
+        if (group >= 0 && otherGroup < 0) countLooseContact(group);
+        else if (group >= 0 && group < otherGroup) countPartnerContact(group, otherGroup);
+#endif
     }
 }
 
@@ -135,7 +143,7 @@ void main() {
     contactCounts[id] = contacts;
 #ifdef RIGID
     int group = groupOf(id);
-    if (group >= 0) atomicAdd(groups[group].grid.w, int(contacts + wallTouches(position * uViewport)));
+    if (group >= 0) countWallContacts(group, position * uViewport);
 #endif
     // Cheap density sampling steers the NEXT pass to the ordinary grid when
     // an expanded candidate stencil is expensive. Both paths remain exhaustive.

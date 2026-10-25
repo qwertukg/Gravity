@@ -1,20 +1,25 @@
 package dev.gravity
 
+import org.lwjgl.opengl.GL11.GL_UNSIGNED_INT
 import org.lwjgl.opengl.GL15.GL_DYNAMIC_DRAW
 import org.lwjgl.opengl.GL15.glBindBuffer
 import org.lwjgl.opengl.GL15.glBufferData
 import org.lwjgl.opengl.GL15.glBufferSubData
 import org.lwjgl.opengl.GL15.glDeleteBuffers
 import org.lwjgl.opengl.GL15.glGenBuffers
+import org.lwjgl.opengl.GL30.GL_R32UI
+import org.lwjgl.opengl.GL30.GL_RED_INTEGER
 import org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT
 import org.lwjgl.opengl.GL42.glMemoryBarrier
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
+import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
 import org.lwjgl.system.MemoryUtil.memAlloc
 import org.lwjgl.system.MemoryUtil.memAllocFloat
 import org.lwjgl.system.MemoryUtil.memAllocInt
 import org.lwjgl.system.MemoryUtil.memFree
+import java.nio.ByteBuffer
 import kotlin.math.max
 
 /**
@@ -33,6 +38,10 @@ import kotlin.math.max
 internal class RigidBlocks(
     capacity: Int,
     contactDiameterPixels: Float,
+    /** Collision substep (s): the time over which a pass's pushes act. */
+    substepSeconds: Float,
+    /** Coulomb friction of blocks, against walls. */
+    friction: Float,
     private val width: Int,
     private val height: Int,
     private val bind: (Int, Int) -> Unit,
@@ -47,7 +56,7 @@ internal class RigidBlocks(
      * Every group (rigid_layout.glsl), then the values of their shapes
      * (GlueShape). The collision passes read and count contacts here.
      */
-    val groups = buffer(MAXIMUM_GROUPS.toLong() * GROUP_BYTES + shapeCapacity * Float.SIZE_BYTES)
+    val groups = buffer(SHAPES_OFFSET + shapeCapacity * Float.SIZE_BYTES)
     private val partials = buffer(tileCapacity.toLong() * 8 * Float.SIZE_BYTES)
     private val reduce = GlProgram.compute("/shaders/rigid_reduce.comp")
     private val finalize = GlProgram.compute("/shaders/rigid_finalize.comp")
@@ -68,11 +77,16 @@ internal class RigidBlocks(
         }
         finalize.use()
         finalize.float("uBodyRadius", 0.5f * contactDiameterPixels)
+        finalize.float("uSubstepDt", substepSeconds)
+        finalize.float("uBlockFriction", friction)
+        // The contact memory starts empty.
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, groups)
+        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, null as ByteBuffer?)
     }
 
     fun canAdd(bodies: Int, shape: GlueShape) =
         groupCount < MAXIMUM_GROUPS && tileCount + tilesFor(bodies) <= tileCapacity &&
-            shapeValues + shape.values.size <= shapeCapacity
+            shapeValues + shape.values.size + shape.hull.size <= shapeCapacity
 
     /**
      * Glues bodies `firstBody until firstBody + offsets.size`, already placed
@@ -100,11 +114,12 @@ internal class RigidBlocks(
                 .putFloat(centerX).putFloat(centerY).putFloat(centerX).putFloat(centerY)
                 .putFloat(0f).putFloat(0f).putFloat(1f).putFloat(0f)
                 .putFloat(0f).putFloat(inertia.toFloat()).putFloat(offsets.size.toFloat()).putFloat(0f)
-                .putInt(tileCount).putInt(tiles).putInt(0).putInt(0)
+                .putInt(tileCount).putInt(tiles).putInt((shapeValues + shape.values.size).toInt()).putInt(shape.hull.size / 2)
                 .putFloat(shape.originX).putFloat(shape.originY).putFloat(shape.cellPixels).putFloat(shape.borderMinimum)
                 .putInt(shapeValues.toInt()).putInt(shape.width).putInt(shape.height).putInt(0)
                 .putFloat(offsets.minOf { it.x }).putFloat(offsets.maxOf { it.x })
                 .putFloat(offsets.minOf { it.y }).putFloat(offsets.maxOf { it.y })
+                .putInt(0).putInt(0).putInt(0).putInt(0)
                 .putInt(0).putInt(0).putInt(0).putInt(0)
             memberData.flip()
             restData.flip()
@@ -122,8 +137,8 @@ internal class RigidBlocks(
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, groupCount.toLong() * GROUP_BYTES, groupData)
             glBufferSubData(
                 GL_SHADER_STORAGE_BUFFER,
-                MAXIMUM_GROUPS.toLong() * GROUP_BYTES + shapeValues * Float.SIZE_BYTES,
-                shape.values,
+                SHAPES_OFFSET + shapeValues * Float.SIZE_BYTES,
+                shape.values + shape.hull,
             )
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
         } finally {
@@ -134,11 +149,14 @@ internal class RigidBlocks(
         }
         groupCount++
         tileCount += tiles
-        shapeValues += shape.values.size
+        shapeValues += shape.values.size + shape.hull.size
     }
 
-    /** Snaps every group onto its rigid motion; [bodies] is updated in place. */
-    fun project(bodies: Int, bounded: Boolean) {
+    /**
+     * Snaps every group onto its rigid motion; [bodies] is updated in place.
+     * After a collision pass ([contacts]) the pass's contact memory is settled.
+     */
+    fun project(bodies: Int, bounded: Boolean, contacts: Boolean) {
         if (isEmpty) return
         val boundedFlag = if (bounded) 1 else 0
         reduce.use()
@@ -154,6 +172,7 @@ internal class RigidBlocks(
 
         finalize.use()
         finalize.int("uBounded", boundedFlag)
+        finalize.int("uContactPass", if (contacts) 1 else 0)
         bind(0, partials)
         bind(1, groups)
         glDispatchCompute(groupCount, 1, 1)
@@ -195,10 +214,13 @@ internal class RigidBlocks(
         const val TILE = 256
         const val MAXIMUM_GROUPS = 256
         /** Matches RigidGroup in rigid_layout.glsl. */
-        private const val GROUP_BYTES = 128
+        private const val GROUP_BYTES = 144
         /** Shape values reserved per body of capacity: blocks take about four. */
         private const val SHAPE_VALUES_PER_BODY = 8L
         private const val MINIMUM_SHAPE_VALUES = 1L shl 18
+        /** Contact memory of rigid_layout.glsl: five ints per block and partner. */
+        private const val CONTACT_KEYS = MAXIMUM_GROUPS.toLong() * (MAXIMUM_GROUPS + 4)
+        private const val SHAPES_OFFSET = MAXIMUM_GROUPS.toLong() * GROUP_BYTES + 5 * CONTACT_KEYS * Int.SIZE_BYTES
 
         private fun buffer(bytes: Long): Int = glGenBuffers().also {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)

@@ -34,12 +34,9 @@ bool rigidPair(uint first, uint second) {
 // it (GlueShape.FILL_DIAMETERS), not at the touching distance.
 const float FLUID_REACH_DIAMETERS = 0.6;
 
-// Squared centre distance below which a hard pair is in contact. Needs uDiameterPixels.
-float contactReachSquared(uint first, uint second) {
-    bool fluidBlock = uLiquid != 0 && (materials[first].z == 0.0) != (materials[second].z == 0.0);
-    float reach = fluidBlock ? FLUID_REACH_DIAMETERS * uDiameterPixels : uDiameterPixels;
-    return reach * reach;
-}
+// Squared centre distance below which a hard pair is in contact
+// (collision_rigid.glsl).
+float contactReachSquared(uint first, uint second);
 #else
 float contactReachSquared(uint first, uint second) {
     return uDiameterPixels * uDiameterPixels;

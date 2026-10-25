@@ -231,23 +231,45 @@ dropped onto a wall stays a rectangle.
 Blocks collide as solids. Each block gets a shape from its own bodies, a
 signed distance field on a grid in its frame (`GlueShape`): outside it is the
 distance to the nearest member less a body radius, so a body touches the
-block exactly when it touches a member; inside, the members are closed into
-one solid and the field points out of the nearest face. Any glued body gets
-its shape this way, whatever its outline.
+block where it touches a member; inside, the members are closed into one
+solid and the field points out of the nearest face. The field is smoothed,
+so a face is flat instead of rippled by its members, while a corner stays at
+its member. Any glued body gets its shape this way, whatever its outline.
 
 - A contact with a member is a contact with the block: its normal and depth
   come from the shape, and the correction is split by the block's rigid
   response (mass, inertia, arm), not by the mass of one member. Contacts
   solved side by side split a body's mass over them (mass splitting), so a
-  block in many contacts is never overshot. Each body of a pair still takes
-  only its own equal and opposite share; momentum is kept.
+  block in many contacts is never overshot: a block shares its mass equally
+  among its partners (the floor, each block, each loose body), and with a
+  partner among the pairs of bodies touching it, so the floor under a stack
+  carries it at once. Each body of a pair still takes only its own equal and
+  opposite share; momentum is kept.
+- Split impulse: the push out of a block or a wall moves positions only;
+  speeds change by impulses alone. Turning the push into speed, as loose
+  bodies do, would throw a body back as fast as it came.
+- Restitution `--block-restitution` (`0.2`) between blocks and against
+  walls; a loose body gets the larger of its own and the block's, liquid
+  none; below `20` diameters a second nothing bounces, so resting stays
+  rest. The impulses of a block reach their speed over a few passes, so each
+  pair of blocks, or block and wall, remembers its approach speed while the
+  impact lasts and aims at that times the restitution.
+- Coulomb friction `--block-friction` (`0.5`) against walls and other blocks:
+  the tangential impulse never exceeds friction times the normal one, along
+  the block's rigid response in that direction.
 - A body that crossed the outline during a substep is pushed back where it
   came in (sphere tracing along its path), so a fast bullet cannot be pushed
   on through, however thin the block.
 - A body whose centre still ends up inside a block is put back on the outline
   at once, position only. Between blocks the blocks themselves move apart by
   their masses; a body wedged between two blocks, or between a block and a
-  wall, moves the blocks instead. A block is never left in a wall.
+  wall, moves the blocks instead. A block is never left in a wall: its hull
+  is kept inside. Where a wall, or bodies a wall holds, push a block back,
+  the block also loses its speed into them, with its friction along the
+  wall, so a held block never builds up speed it could burst free with.
+- A block's spin comes from its members' speeds about the arms of its pose,
+  not from where its members were pushed to: a member pushed out of a wall
+  stands for its whole block and moves far.
 - Members of one block never collide with each other.
 - Collision passes with this code are compiled separately (`RIGID`) and run
   only while blocks exist; without blocks the passes are the plain ones.
@@ -256,9 +278,15 @@ its shape this way, whatever its outline.
   in a pile and in liquid: nothing passes through a block, no block reaches
   into a wall, and a centre found within a block's outline is at most a
   fraction of a body diameter deep, only at impacts.
+- GPU tests drop and throw blocks onto the floor, walls and each other and
+  measure the restitution, slide them on the floor and on a block against
+  Coulomb's law, and strike a small block with a big one and the other way
+  round against the one-dimensional impact of their masses.
 
 Every body of a block has the mass `--block-density` (`0.5` by default;
-`0.05–10`), the other bodies have unit mass. With the field on and walls, a
+`0.05–10`), the other bodies have unit mass, so a block's mass grows with its
+area: a big block takes a hit with less speed than a small one. Falling and
+floating do not depend on mass, only on density, as for real bodies. With the field on and walls, a
 light block dropped onto a pile floats at its surface and a heavy one sinks
 into it; GPU tests check both. Without liquid mode the pile is a granular
 solid: equal frictionless discs lock into a hexagonal packing, so a block
@@ -338,8 +366,8 @@ smoothed GPU frame time, and FFT grid size.
 
 ### Scenarios
 
-Ten buttons in the top-right corner restart the simulation in a prepared
-scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
+The upper ten buttons in the top-right corner restart the simulation in a
+prepared scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
 is normalized to the current body count (see [Gravity](#gravity)). Distances and body counts are
 authored for a `1440 px` tall screen; distances scale with its height and
 counts with its area (never above the authored counts).
@@ -373,6 +401,35 @@ Orbital speeds use the 2D circular speed `v = H·sqrt(G·f)`, where `f` is the
 enclosed mass fraction minus the uniform background removed by the periodic
 solver. One physics step takes about 3–10 ms per scenario on a `3440×1440`
 screen.
+
+### Block scenarios
+
+The buttons below them are the scenes [glued blocks](#rectangular-blocks)
+were checked on; the GPU tests `BlockPenetrationTest` and `BlockDynamicsTest`
+run the same scenes and `BlockScenarioRunTest` runs these buttons. Each
+brings its own environment: walls, no gravity between bodies, the downward
+field where it needs one, and liquid mode where it says so. The walls,
+gravity, liquid and field set before come back with the next scenario above.
+Blocks have mass `0.5` per body unless said otherwise.
+
+| Scenario | `--scenario=` | Field | Setup |
+|---|---|---|---|
+| Bullets into blocks | `bullets` | off | `30 px` bullets at `3000` and `6000 px/s` into `20 px` blocks, a `20 px` one at `3000 px/s` into a `3 px` plate |
+| Cannonball into a block | `cannonball` | off | `100 px` ball at `4000 px/s` into a `40 px` block |
+| Cannonball crushes blocks | `crush` | off | the same ball presses a block into a block at the right wall |
+| Block dropped onto a block | `stack` | down | a block falls onto a long block on the floor |
+| Big block on a small one | `big-on-small` | down | laid on its middle it rests; laid off the edge it tips off and leans |
+| Block rams a block | `ram` | off | a block at `1500 px/s` into a resting one |
+| Heavy block into a pile | `pile` | down | a block of mass `3` per body falls into a granular layer |
+| Blocks sink and rise in liquid | `liquid` | down, liquid | mass `3` sinks, `0.3` rises from the bottom of a pool |
+| Blocks bounce off the floor | `bounce` | down | drops from `100` and `300 px` |
+| Block thrown into a wall | `wall` | off | `600 px/s` into the right wall |
+| Small and big blocks collide | `masses` | off | small into big above, big into small below, at `400 px/s` |
+| Blocks slide with friction | `sliding` | down | at `300 px/s` on the floor and on a long block |
+| Bodies bounce off blocks | `bodies` | off | single bodies at `300 px/s` into a small and a big block |
+| Slow body against a block | `slow-body` | down | a body rolls at `20 px/s` into a block resting on the floor |
+| Blocks thrown and spun | `thrown` | down | one thrown at an angle, one spinning at `3 rad/s` |
+| Blocks on liquid drops | `drops` | down, liquid | a heavy and a light block fall onto a dozen drops on the floor |
 
 ## Controls
 
@@ -561,8 +618,10 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
 | `--projectile-plus-bodies=N` | `50000 / S²` | Projectile body count selected by key `+` |
 | `--block-density=F` | `0.5` | Mass of each body of an RMB block, `0.05–10`; other bodies have `1` |
+| `--block-friction=F` | `0.5` | Coulomb friction of RMB blocks against walls and blocks; with a loose body, the geometric mean with `--friction` |
+| `--block-restitution=F` | `0.2` | Restitution of RMB blocks against walls and blocks, and the least a loose body gets off one, `0–1` |
 | `--liquid=true\|false` | `true` | Start in liquid mode (key `L` toggles it); see [Start](#start) |
-| `--scenario=NAME` | `cosmic-web` | Start scenario, or `none`; see [Start](#start) |
+| `--scenario=NAME` | `cosmic-web` | Start scenario, cosmic or [block](#block-scenarios), or `none`; see [Start](#start) |
 | `--walls=true\|false` | `true` | Start with walls at the screen edges (key `B`) |
 | `--mutual-gravity=true\|false` | `false` | Start with gravity between bodies (key `G`) |
 | `--field=DIRECTIONS` | `down` | Start field directions, or `off` (arrow keys) |
