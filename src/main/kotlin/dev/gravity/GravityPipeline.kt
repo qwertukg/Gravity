@@ -506,20 +506,64 @@ class GravityPipeline(
         diameterPixels: Float,
     ): Int {
         val offsets = projectileOffsets(diameterPixels)
-        if (firstBody !in 0..config.particles.capacity ||
-            offsets.size > config.particles.capacity - firstBody) {
-            return 0
-        }
+        if (!fits(firstBody, offsets.size)) return 0
 
         val radius = offsets.maxOf { hypot(it.x, it.y) } +
             0.5f * config.collisions.contactDiameterPixels
         val insideX = if (bounded) centerX.coerceIn(radius, viewportWidthFloat - radius) else centerX
         val insideY = if (bounded) centerY.coerceIn(radius, viewportHeightFloat - radius) else centerY
+        return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets)
+    }
+
+    /** Fills the rectangle between two corners with bodies at rest. */
+    fun spawnBlock(
+        firstBody: Int,
+        minX: Float,
+        minY: Float,
+        maxX: Float,
+        maxY: Float,
+    ): Int {
+        val width = maxX - minX
+        val height = maxY - minY
+        val count = RectangularBlock.bodyCount(
+            config.collisions.contactDiameterPixels,
+            width,
+            height,
+        )
+        if (count == 0 || !fits(firstBody, count)) return 0
+
+        val offsets = RectangularBlock.offsets(
+            config.collisions.contactDiameterPixels,
+            width,
+            height,
+        )
+        return uploadBodies(
+            firstBody,
+            centerX = 0.5f * (minX + maxX),
+            centerY = 0.5f * (minY + maxY),
+            velocityX = 0f,
+            velocityY = 0f,
+            offsets = offsets,
+        )
+    }
+
+    private fun fits(firstBody: Int, count: Int) =
+        firstBody in 0..config.particles.capacity &&
+            count <= config.particles.capacity - firstBody
+
+    private fun uploadBodies(
+        firstBody: Int,
+        centerX: Float,
+        centerY: Float,
+        velocityX: Float,
+        velocityY: Float,
+        offsets: List<PixelOffset>,
+    ): Int {
         val upload = memAllocFloat(offsets.size * 4)
         try {
             offsets.forEach { offset ->
-                upload.put(placeX(insideX + offset.x) / viewportWidth)
-                upload.put(placeY(insideY + offset.y) / viewportHeight)
+                upload.put(placeX(centerX + offset.x) / viewportWidth)
+                upload.put(placeY(centerY + offset.y) / viewportHeight)
                 upload.put(velocityX / viewportWidth)
                 upload.put(velocityY / viewportHeight)
             }

@@ -185,6 +185,14 @@ unchanged.
 - Geometry is recomputed from monotonic time at most 30 times per second and
   rendered every frame from a retained GPU buffer.
 
+### Rectangular blocks
+
+Dragging with the right mouse button outlines a rectangle with a green dashed
+frame; releasing it fills the rectangle with hexagonally packed bodies at
+rest, with the same contact diameter as every other body. The overlay shows
+the future body count as `Block bodies:` while dragging. A block that would
+exceed `--capacity` is skipped, like a projectile.
+
 ### Overlay and console
 
 The upper-left overlay shows:
@@ -193,7 +201,8 @@ The upper-left overlay shows:
 - current body count;
 - body count in a projectile of the selected size;
 - time scale as a percentage;
-- future projectile speed while the left mouse button is held.
+- future projectile speed while the left mouse button is held;
+- future block body count while the right mouse button is held.
 
 Controls are shown in the lower-left corner. Both blocks and the scenario
 buttons share one UI layer: STB Easy Font text on the same translucent panels. Every two seconds the console reports body count, FPS,
@@ -243,6 +252,8 @@ screen.
 |---|---|
 | Hold and drag LMB | Select projectile direction and speed; show prediction |
 | Release LMB | Spawn a projectile at the initial press position |
+| Hold and drag RMB | Outline a rectangle between the press point and the cursor |
+| Release RMB | Fill the rectangle with bodies at rest |
 | LMB on a top-right button | Restart in that scenario |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |
