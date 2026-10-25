@@ -91,8 +91,9 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
             }
         }
 
-        fun compute(resource: String): GlProgram =
-            link(compile(org.lwjgl.opengl.GL43.GL_COMPUTE_SHADER, resource))
+        /** [defines] are names defined right after the #version line. */
+        fun compute(resource: String, vararg defines: String): GlProgram =
+            link(compile(org.lwjgl.opengl.GL43.GL_COMPUTE_SHADER, resource, defines.toList()))
 
         fun graphics(vertexResource: String, fragmentResource: String): GlProgram =
             link(
@@ -100,8 +101,12 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
                 compile(org.lwjgl.opengl.GL20.GL_FRAGMENT_SHADER, fragmentResource),
             )
 
-        private fun compile(type: Int, resource: String): Int {
-            val source = shaderSource(resource)
+        private fun compile(type: Int, resource: String, defines: List<String> = emptyList()): Int {
+            // The #version line comes first; the defines follow it.
+            val included = shaderSource(resource)
+            val source = if (defines.isEmpty()) included else
+                included.substringBefore('\n') + defines.joinToString("") { "\n#define $it" } +
+                    "\n" + included.substringAfter('\n')
             val shader = glCreateShader(type)
             glShaderSource(shader, source)
             glCompileShader(shader)

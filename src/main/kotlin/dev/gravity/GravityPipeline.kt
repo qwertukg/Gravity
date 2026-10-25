@@ -181,6 +181,8 @@ class GravityPipeline(
      */
     private var materials = buffer(materialBytes)
     private var spareMaterials = buffer(materialBytes)
+    /** Whether any slot has held a solid (block) body. */
+    private var solidBodies = false
     /** Mass of the active bodies minus their count: zero until a block is added. */
     private var massExcess = 0f
     // Spatial reordering writes into the free ping-pong body buffer and this
@@ -617,6 +619,7 @@ class GravityPipeline(
         mass: Float,
         solid: Boolean,
     ): Int {
+        if (solid) solidBodies = true
         val material = memAllocFloat(offsets.size * 4)
         try {
             repeat(offsets.size) {
@@ -863,7 +866,7 @@ class GravityPipeline(
         // Both solvers read masses and friction from binding 8.
         bind(8, materials)
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid)
+            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid, solidBodies)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap

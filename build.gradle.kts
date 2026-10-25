@@ -85,6 +85,24 @@ tasks.register<JavaExec>("collisionBenchmark") {
     jvmArgs("-Xms512m", "-Xmx2g")
 }
 
+tasks.register<JavaExec>("liquidBenchmark") {
+    description = "Measure liquid mode physics on the GPU without opening a visible window."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.LiquidBenchmark"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
+}
+
+tasks.register<JavaExec>("liquidEquivalence") {
+    description = "Record or compare one liquid solve and liquid-mode collision passes on fixed states."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.LiquidEquivalenceCheck"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
+}
+
 tasks.named<JavaExec>("run") {
     standardInput = System.`in`
 }

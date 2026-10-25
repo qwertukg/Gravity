@@ -7,6 +7,12 @@ layout(std430, binding = 2) writeonly buffer Nodes { GridNode nodes[]; };
 layout(std430, binding = 3) writeonly buffer References { vec2 references[]; };
 layout(std430, binding = 4) buffer Cache { uint cache[]; };
 layout(std430, binding = 5) readonly buffer AdaptiveState { uint adaptiveState[]; };
+#ifdef LIQUID
+// Liquid mode tags the tiles of solid bodies. A separate variant: drivers may
+// load the material even behind a uniform branch, which slows the hard mode.
+layout(std430, binding = 6) writeonly buffer SolidTiles { uint solidTiles[]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+#endif
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
@@ -24,6 +30,9 @@ void main() {
     references[id] = position;
     ivec2 cell = ivec2(floor(position * vec2(uGridWidth, uGridHeight)));
     cell = clamp(cell, ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+#ifdef LIQUID
+    if (materials[id].z != 0.0) solidTiles[solidTile(cell)] = epoch;
+#endif
     uint previous = atomicExchange(heads[cell.x + cell.y * uGridWidth], (epoch << uint(uIdBits)) | (id + 1u));
     // The node also keeps the position, so traversing this grid in the same
     // pass needs one load per visited body instead of two.

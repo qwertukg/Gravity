@@ -7,7 +7,36 @@
 // not its current one: then i finds j exactly when j finds i, so every pair
 // term is applied on both sides and momentum is kept even when bodies cross
 // cells during the iterations.
-layout(std430, binding = 6) buffer Cells { int cells[]; };
+//
+// The passes walk neighbour lists instead of the grid: every body of the
+// 3 x 3 cells closer than the kernel radius plus a skin when the list was
+// built. A pair left out was then at least that far apart; while no body has
+// moved half the skin since, it is still beyond the kernel radius, where
+// every kernel is zero, so the lists find exactly the pairs the grid would.
+// A body that moves further makes the next lambda pass rebuild all lists.
+// A body with more neighbours than slots walks the grid in every pass.
+//
+// The lists buffer holds per-body planes, one lane per body, then two
+// rebuild flags that alternate between iterations.
+layout(std430, binding = 5) buffer Lists { uint lists[]; };
+uniform int uCapacity;
+const uint PLANE_CELL = 0u;       // grid cell of the body when the grid was built
+const uint PLANE_COUNT = 1u;      // listed neighbours; above LIST_SLOTS the grid is walked
+const uint PLANE_REFERENCE = 2u;  // position (x, then y) when the list was built
+const uint PLANE_ENTRIES = 4u;
+const uint LIST_SLOTS = 32u;
+// Entries are body IDs with this bit set for solid (block) bodies.
+const uint SOLID_NEIGHBOUR = 0x80000000u;
+
+uint listOffset(uint plane, uint id) {
+    return plane * uint(uCapacity) + id;
+}
+
+// Rebuild flag read by the lambda pass of [iteration].
+uint flagOffset(int iteration) {
+    return (PLANE_ENTRIES + LIST_SLOTS) * uint(uCapacity) + uint(iteration & 1);
+}
+
 uniform vec2 uViewport;
 uniform int uBounded;
 uniform int uGridWidth;
@@ -55,7 +84,7 @@ int liquidCellIndex(ivec2 cell) {
 }
 
 ivec2 homeCell(uint id) {
-    int cell = cells[id];
+    int cell = int(lists[listOffset(PLANE_CELL, id)]);
     return ivec2(cell % uGridWidth, cell / uGridWidth);
 }
 

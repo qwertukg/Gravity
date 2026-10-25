@@ -46,9 +46,16 @@ internal class LiquidSolver(
     private val gridHeight = max(1, (height / kernel.radiusPixels).toInt())
     private val heads = buffer(gridWidth.toLong() * gridHeight * Int.SIZE_BYTES)
     private val next = buffer(capacity.toLong() * Int.SIZE_BYTES)
-    /** Grid cell of every body when the grid was built. */
-    private val cells = buffer(capacity.toLong() * Int.SIZE_BYTES)
+    /**
+     * Per-body grid cell, neighbour list and its reference position, then two
+     * rebuild flags (liquid_kernel.glsl).
+     */
+    private val lists = buffer((LIST_PLANES.toLong() * capacity + 2) * Int.SIZE_BYTES)
     private val lambdas = buffer(capacity.toLong() * Float.SIZE_BYTES)
+    // Ping-pong copies of the body positions alone, which is all the passes
+    // read of a neighbour.
+    private var positions = buffer(capacity.toLong() * 2 * Float.SIZE_BYTES)
+    private var sparePositions = buffer(capacity.toLong() * 2 * Float.SIZE_BYTES)
     private val grid = GlProgram.compute("/shaders/liquid_grid.comp")
     private val lambda = GlProgram.compute("/shaders/liquid_lambda.comp")
     private val apply = GlProgram.compute("/shaders/liquid_apply.comp")
@@ -60,6 +67,7 @@ internal class LiquidSolver(
             program.use()
             program.int("uGridWidth", gridWidth)
             program.int("uGridHeight", gridHeight)
+            program.int("uCapacity", capacity)
         }
         listOf(lambda, apply, viscosity).forEach { program ->
             program.use()
@@ -82,9 +90,12 @@ internal class LiquidSolver(
         lambda.float("uRelaxation", kernel.relaxation)
         // Compression shown like contact pressure: px/s of correction.
         lambda.float("uPressureScale", kernel.radiusPixels / timeStep)
+        val skin = LIST_SKIN_DIAMETERS * contactDiameterPixels
+        lambda.float("uListRadiusSquared", (kernel.radiusPixels + skin) * (kernel.radiusPixels + skin))
         apply.use()
         apply.float("uDt", timeStep)
         apply.float("uBodyRadius", 0.5f * contactDiameterPixels)
+        apply.float("uRebuildDistanceSquared", 0.25f * skin * skin)
         viscosity.use()
         viscosity.float("uViscosity", config.viscosity)
     }
@@ -114,39 +125,47 @@ internal class LiquidSolver(
 
         grid.use()
         grid.int("uCount", active)
-        bind(0, input)
+        bind(0, positions)
         bind(1, heads)
         bind(2, next)
-        bind(6, cells)
+        bind(5, lists)
+        bind(6, input)
         dispatch(active)
 
         var current = input
         var other = spare
         bind(3, lambdas)
-        bind(4, pressures)
         bind(8, materials)
         repeat(config.iterations) { iteration ->
             lambda.use()
             lambda.int("uCount", active)
             lambda.int("uBounded", boundedFlag)
+            lambda.int("uIteration", iteration)
             lambda.int("uWritePressure", if (iteration == config.iterations - 1) 1 else 0)
-            bind(0, current)
+            bind(0, positions)
+            bind(4, pressures)
             dispatch(active)
 
             apply.use()
             apply.int("uCount", active)
             apply.int("uBounded", boundedFlag)
-            bind(5, other)
+            apply.int("uIteration", iteration)
+            bind(4, sparePositions)
+            bind(6, current)
+            bind(7, other)
             dispatch(active)
             current = other.also { other = current }
+            positions = sparePositions.also { sparePositions = positions }
         }
 
         if (config.viscosity > 0f) {
             viscosity.use()
             viscosity.int("uCount", active)
             viscosity.int("uBounded", boundedFlag)
-            bind(0, current)
-            bind(5, other)
+            viscosity.int("uIteration", config.iterations)
+            bind(0, positions)
+            bind(6, current)
+            bind(7, other)
             dispatch(active)
             current = other
         }
@@ -160,10 +179,15 @@ internal class LiquidSolver(
 
     override fun close() {
         listOf(grid, lambda, apply, viscosity).forEach(GlProgram::close)
-        intArrayOf(heads, next, cells, lambdas).forEach(::glDeleteBuffers)
+        intArrayOf(heads, next, lists, lambdas, positions, sparePositions).forEach(::glDeleteBuffers)
     }
 
     private companion object {
+        /** Cell, count, reference x and y, then the slots (liquid_kernel.glsl). */
+        const val LIST_PLANES = 4 + 32
+        /** Lists reach this far beyond the kernel radius, in contact diameters. */
+        const val LIST_SKIN_DIAMETERS = 0.5f
+
         fun buffer(bytes: Long): Int = glGenBuffers().also {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)
             glBufferData(GL_SHADER_STORAGE_BUFFER, bytes, GL_DYNAMIC_DRAW)

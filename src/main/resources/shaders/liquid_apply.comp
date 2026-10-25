@@ -1,17 +1,33 @@
 #version 430 core
 layout(local_size_x = 256) in;
-layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 0) readonly buffer Positions { vec2 positions[]; };
 layout(std430, binding = 1) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 2) readonly buffer Next { int next[]; };
 layout(std430, binding = 3) readonly buffer Lambdas { float lambdas[]; };
-layout(std430, binding = 5) writeonly buffer OutputBodies { vec4 outputBodies[]; };
+layout(std430, binding = 4) writeonly buffer OutputPositions { vec2 outputPositions[]; };
+layout(std430, binding = 6) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 7) writeonly buffer OutputBodies { vec4 outputBodies[]; };
 layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
 uniform int uCount;
 uniform float uDt;
 uniform float uBodyRadius;
+uniform int uIteration;
+uniform float uRebuildDistanceSquared;
 #include "liquid_kernel.glsl"
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
+
+vec2 correction = vec2(0.0);
+
+void addNeighbour(uint id, uint other, vec2 position, float ownLambda, float ownMass) {
+    vec2 delta = pixelDelta(position, positions[other]);
+    // The gradient is zero from the kernel radius on.
+    if (dot(delta, delta) >= uKernelRadius * uKernelRadius) return;
+    // Lambdas are stored times the mass; solid ones are zero.
+    float coefficient = ownLambda + lambdas[other] / ownMass;
+    if (coefficient == 0.0) return;
+    correction += coefficient * spikyGradient(delta, length(delta), id, other);
+}
 
 // Jacobi position correction of the density constraints, converted to
 // velocity like the collision solver does (dv = dx / dt). A fluid pair moves
@@ -23,26 +39,29 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
-    float ownLambda = lambdas[id];
-    float ownMass = materials[id].x;
-    vec2 correction = vec2(0.0);
-    ivec2 home = homeCell(id);
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            ivec2 cell = home + ivec2(dx, dy);
-            if (!neighbourCell(cell)) continue;
-            for (int other = heads[liquidCellIndex(cell)]; other >= 0; other = next[other]) {
-                if (uint(other) == id) continue;
-                // Solid lambdas are zero; fluid bodies all have unit mass.
-                float coefficient = ownLambda + lambdas[other] * materials[other].x / ownMass;
-                if (coefficient == 0.0) continue;
-                vec2 delta = pixelDelta(body.xy, bodies[other].xy);
-                correction += coefficient * spikyGradient(delta, length(delta), id, uint(other));
+    vec4 material = materials[id];
+    float ownMass = material.x;
+    float ownLambda = lambdas[id] / ownMass;
+    uint count = lists[listOffset(PLANE_COUNT, id)];
+    if (count <= LIST_SLOTS) {
+        for (uint slot = 0u; slot < count; slot++) {
+            uint other = lists[listOffset(PLANE_ENTRIES + slot, id)] & ~SOLID_NEIGHBOUR;
+            addNeighbour(id, other, body.xy, ownLambda, ownMass);
+        }
+    } else {
+        ivec2 home = homeCell(id);
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec2 cell = home + ivec2(dx, dy);
+                if (!neighbourCell(cell)) continue;
+                for (int other = heads[liquidCellIndex(cell)]; other >= 0; other = next[other]) {
+                    if (uint(other) != id) addNeighbour(id, uint(other), body.xy, ownLambda, ownMass);
+                }
             }
         }
     }
     // A wall pushes a fluid body back along the gradient of its virtual rows.
-    if (materials[id].z == 0.0) correction += ownLambda * wallsDensity(body.xy * uViewport).yz;
+    if (material.z == 0.0) correction += ownLambda * wallsDensity(body.xy * uViewport).yz;
     correction /= uRestDensity;
     vec2 positionPixels = body.xy * uViewport + correction;
     vec2 velocityPixels = body.zw * uViewport + correction / uDt;
@@ -61,4 +80,13 @@ void main() {
         ? clamp(positionPixels / uViewport, vec2(0.0), vec2(MAXIMUM_UNIT))
         : fract(positionPixels / uViewport);
     outputBodies[id] = vec4(position, velocityPixels / uViewport);
+    outputPositions[id] = position;
+    // Half the skin from where the list was built: the next lambda pass
+    // rebuilds every list. NaNs rebuild too.
+    vec2 reference = uintBitsToFloat(uvec2(
+        lists[listOffset(PLANE_REFERENCE, id)],
+        lists[listOffset(PLANE_REFERENCE + 1u, id)]
+    ));
+    vec2 moved = pixelDelta(position, reference);
+    if (!(dot(moved, moved) < uRebuildDistanceSquared)) lists[flagOffset(uIteration + 1)] = 1u;
 }
