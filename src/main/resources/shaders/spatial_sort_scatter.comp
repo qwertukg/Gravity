@@ -7,6 +7,7 @@ layout(std430, binding = 3) writeonly buffer SortedAccelerations { vec2 sortedAc
 layout(std430, binding = 4) buffer TileCounts { uint tileCounts[]; };
 layout(std430, binding = 5) readonly buffer TileOffsets { uint tileOffsets[]; };
 layout(std430, binding = 6) readonly buffer BlockOffsets { uint blockOffsets[]; };
+layout(std430, binding = 7) writeonly buffer Destinations { uint destinations[]; };
 uniform int uCount;
 #include "spatial_sort_key.glsl"
 
@@ -22,4 +23,6 @@ void main() {
     // A pure permutation: state is copied bit for bit, nothing is recomputed.
     sortedBodies[target] = body;
     sortedAcceleration[target] = acceleration[id];
+    // Glued blocks list their bodies by ID and follow them here.
+    destinations[id] = target;
 }

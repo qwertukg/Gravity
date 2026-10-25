@@ -332,7 +332,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                         active,
                     )
                 } else if (blockBodyCount(block) > 0) {
-                    System.err.println("Block skipped: particle capacity is full")
+                    System.err.println("Block skipped: particle capacity or the ${RigidBlocks.MAXIMUM_GROUPS}-block limit is reached")
                 }
                 pendingBlock = null
             }
@@ -615,7 +615,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 "seed=${config.particles.seed?.toString() ?: "random"}, " +
                 "profile=${config.diagnostics.profile}, " +
                 "benchmark=${config.diagnostics.benchmarkScenario?.name?.lowercase() ?: "off"}, " +
-                "foreground=$foreground; RMB drag fills a rectangle with bodies; LMB drag fires a " +
+                "foreground=$foreground; RMB drag creates a glued rectangular block; LMB drag fires a " +
                 "${projectileDiameterPixels.toInt()}px projectile; " +
                 "digits 1-9 use ${config.projectiles.digitDiameterStepPixels.toInt()}px steps; " +
                 "0 selects ${config.projectiles.maximumDiameterPixels.toInt()}px; " +

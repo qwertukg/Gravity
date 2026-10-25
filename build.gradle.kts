@@ -53,6 +53,7 @@ tasks.test {
     exclude("**/CollisionShaderIntegrationTest.class")
     exclude("**/ParticleRendererTest.class")
     exclude("**/SpatialSortIntegrationTest.class")
+    exclude("**/RigidBlockIntegrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -64,6 +65,7 @@ tasks.register<Test>("gpuTest") {
     include("**/CollisionShaderIntegrationTest.class")
     include("**/ParticleRendererTest.class")
     include("**/SpatialSortIntegrationTest.class")
+    include("**/RigidBlockIntegrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

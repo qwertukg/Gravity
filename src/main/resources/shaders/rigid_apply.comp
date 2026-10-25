@@ -1,0 +1,33 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Members { int members[]; };
+layout(std430, binding = 2) readonly buffer Rest { vec2 rest[]; };
+layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
+layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
+uniform vec2 uViewport;
+uniform int uBounded;
+// Largest float below 1: a body clamped to a wall stays in the last grid cell.
+const float MAXIMUM_UNIT = 0.99999994;
+
+// Moves every member onto the group's rigid motion: x = c + R r0 and
+// v = V + w x (R r0).
+void main() {
+    uint member = gl_GlobalInvocationID.x;
+    int body = members[member];
+    if (body < 0) return;
+    RigidGroup rigid = groups[tileGroups[gl_WorkGroupID.x]];
+    vec2 rotation = rigid.motion.zw;
+    vec2 offset = rest[member];
+    vec2 arm = vec2(
+        rotation.x * offset.x - rotation.y * offset.y,
+        rotation.y * offset.x + rotation.x * offset.y
+    );
+    vec2 position = (rigid.frame.zw + arm) / uViewport;
+    vec2 velocity = rigid.motion.xy + rigid.scalars.x * vec2(-arm.y, arm.x);
+    position = uBounded != 0
+        ? clamp(position, vec2(0.0), vec2(MAXIMUM_UNIT))
+        : fract(position);
+    bodies[body] = vec4(position, velocity / uViewport);
+}

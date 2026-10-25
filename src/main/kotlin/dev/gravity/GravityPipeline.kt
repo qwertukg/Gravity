@@ -174,6 +174,9 @@ class GravityPipeline(
     private val sortBlockTotals = buffer(sortBlocks.toLong() * Int.SIZE_BYTES)
     private val sortBlockOffsets = buffer(sortBlocks.toLong() * Int.SIZE_BYTES)
     private val sortTotal = buffer(Int.SIZE_BYTES.toLong())
+    /** New ID of every body after the last spatial reordering. */
+    private val sortDestinations =
+        buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private var physicsSteps = 0L
     private val density = buffer(maximumMeshCells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
@@ -256,6 +259,12 @@ class GravityPipeline(
             profiler = profiler,
         )
     } else null
+    private val rigidBlocks = RigidBlocks(
+        capacity = config.particles.capacity,
+        width = viewportWidth,
+        height = viewportHeight,
+        bind = ::bind,
+    )
 
     init {
         if (config.collisions.neighborCache && neighborCache == null) {
@@ -515,7 +524,10 @@ class GravityPipeline(
         return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets)
     }
 
-    /** Fills the rectangle between two corners with bodies at rest. */
+    /**
+     * Fills the rectangle between two corners with bodies at rest, glued into
+     * one rigid block.
+     */
     fun spawnBlock(
         firstBody: Int,
         minX: Float,
@@ -530,21 +542,22 @@ class GravityPipeline(
             width,
             height,
         )
-        if (count == 0 || !fits(firstBody, count)) return 0
+        if (count == 0 || !fits(firstBody, count) || !rigidBlocks.canAdd(count)) return 0
 
-        val offsets = RectangularBlock.offsets(
+        val lattice = RectangularBlock.offsets(
             config.collisions.contactDiameterPixels,
             width,
             height,
         )
-        return uploadBodies(
-            firstBody,
-            centerX = 0.5f * (minX + maxX),
-            centerY = 0.5f * (minY + maxY),
-            velocityX = 0f,
-            velocityY = 0f,
-            offsets = offsets,
-        )
+        // The rigid fit needs offsets about the centre of mass.
+        val meanX = lattice.sumOf { it.x.toDouble() }.toFloat() / lattice.size
+        val meanY = lattice.sumOf { it.y.toDouble() }.toFloat() / lattice.size
+        val offsets = lattice.map { PixelOffset(it.x - meanX, it.y - meanY) }
+        val centerX = 0.5f * (minX + maxX) + meanX
+        val centerY = 0.5f * (minY + maxY) + meanY
+        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets)
+        rigidBlocks.add(firstBody, offsets, centerX, centerY)
+        return spawned
     }
 
     private fun fits(firstBody: Int, count: Int) =
@@ -794,6 +807,7 @@ class GravityPipeline(
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
+            rigidBlocks.project(bodies, bounded)
             return
         }
         // collisionBodies is the input buffer used to build the current heads
@@ -918,6 +932,7 @@ class GravityPipeline(
         val swap = bodies
         bodies = collisionBodies
         collisionBodies = swap
+        rigidBlocks.project(bodies, bounded)
     }
 
     private fun prepareAdaptiveCollisions(activeBodies: Int) {
@@ -1062,11 +1077,13 @@ class GravityPipeline(
         bind(4, sortCounts)
         bind(5, sortOffsets)
         bind(6, sortBlockOffsets)
+        bind(7, sortDestinations)
         sortScatter.int("uCount", activeBodies)
         dispatchBodies(activeBodies)
         barrier()
         bodies = collisionBodies.also { collisionBodies = bodies }
         acceleration = spareAcceleration.also { spareAcceleration = acceleration }
+        rigidBlocks.remap(sortDestinations)
         // Cached candidate lists and linked grids name the old IDs.
         neighborCache?.invalidate() ?: clearUnsignedIntBuffer(collisionHeads)
         profiler?.end(GpuStage.SPATIAL_SORT)
@@ -1297,6 +1314,7 @@ class GravityPipeline(
 
     override fun close() {
         neighborCache?.close()
+        rigidBlocks.close()
         listOf(
             clear,
             build,
@@ -1330,6 +1348,7 @@ class GravityPipeline(
             sortBlockTotals,
             sortBlockOffsets,
             sortTotal,
+            sortDestinations,
             density,
             cellHeads,
             cellCounts,

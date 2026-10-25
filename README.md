@@ -193,6 +193,24 @@ rest, with the same contact diameter as every other body. The overlay shows
 the future body count as `Block bodies:` while dragging. A block that would
 exceed `--capacity` is skipped, like a projectile.
 
+The bodies of a block are glued into one rigid body. Each of them still
+collides, feels gravity and the uniform field and hits walls on its own;
+after every collision pass the block is projected onto the rigid motion that
+best fits its bodies (2D shape matching: centre of mass, best-fit rotation,
+and the velocity and angular velocity that keep its momentum and angular
+momentum). A hit therefore pushes and spins the whole block, and a block
+dropped onto a wall stays a rectangle.
+
+- Members are listed per block and padded to whole 256-body workgroups, so
+  every workgroup sums a single block in shared memory: no float atomics, and
+  the result does not depend on scheduling.
+- Spatial sorting renames bodies; the scatter records every body's new ID and
+  the member lists follow it.
+- Up to `256` blocks per session; `C`, `R` and scenario changes remove them.
+  Without blocks the passes are skipped.
+- A GPU test checks that a block hit off centre keeps its shape to `1e-2 px`,
+  moves, spins and conserves momentum.
+
 ### Overlay and console
 
 The upper-left overlay shows:
@@ -253,7 +271,7 @@ screen.
 | Hold and drag LMB | Select projectile direction and speed; show prediction |
 | Release LMB | Spawn a projectile at the initial press position |
 | Hold and drag RMB | Outline a rectangle between the press point and the cursor |
-| Release RMB | Fill the rectangle with bodies at rest |
+| Release RMB | Fill the rectangle with bodies glued into one rigid block |
 | LMB on a top-right button | Restart in that scenario |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |

@@ -10,7 +10,7 @@ class FpsOverlay(
 ) : AutoCloseable {
     private val controlText =
         "LMB drag: aim / fire\n" +
-            "RMB drag: fill a rectangle with bodies\n" +
+            "RMB drag: glued rectangular block\n" +
             "1-9: bullet size step ${projectileConfig.digitDiameterStepPixels.toInt()} px\n" +
             "0: bullet size ${projectileConfig.maximumDiameterPixels.toInt()} px\n" +
             "+: bullet of ${projectileConfig.plusKeyBodyCount} bodies\n" +
