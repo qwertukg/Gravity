@@ -249,7 +249,13 @@ its member. Any glued body gets its shape this way, whatever its outline.
   opposite share; momentum is kept.
 - Split impulse: the push out of a block or a wall moves positions only;
   speeds change by impulses alone. Turning the push into speed, as loose
-  bodies do, would throw a body back as fast as it came.
+  bodies do, would throw a body back as fast as it came. For the same reason
+  two loose bodies overlapping where either touches a block move apart by
+  position alone: the block holds them where they are, so the speed would
+  only build up, pass after pass, in a crater or a crack, until they burst
+  out of it. The count pass marks such bodies in their contact count, and
+  both bodies of a pair read both marks, so the pair stays equal and
+  opposite.
 - Restitution `--block-restitution` (`0.2`) between blocks and against
   walls; a loose body gets the larger of its own and the block's, liquid
   none; below `20` diameters a second nothing bounces, so resting stays
@@ -328,9 +334,13 @@ unbreakable.
   the speed the strain energy released gives it; the block recoils from it,
   so momentum and angular momentum stay.
 - **Shape.** Where members broke off the block's shape is carved at once,
-  in the same pass: a node whose nearest member broke off lies as far from
-  the solid as the nearest member left. A projectile therefore enters the
-  crater it makes instead of hitting the block's old face. The block's
+  in the same pass, within two diameters: outside the solid a node lies as
+  far from it as the nearest member left, and inside no deeper than its
+  distance to the hole. The crater's floor and walls are thus faces like any
+  other, and sand resting in it lies still; a GPU test shoots sand down into
+  a block on the floor and checks that it settles in the crater. A
+  projectile enters the crater it makes instead of hitting the block's old
+  face. The block's
   centre of mass, mass and inertia follow what is left, updated from what
   broke off alone, so a large block costs no more than a small one.
 - **Pieces.** A crack through a block, one member wide, cuts it: members

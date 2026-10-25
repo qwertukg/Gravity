@@ -49,6 +49,23 @@ float contactReachSquared(uint first, uint second) {
 }
 #endif
 
+// The top bit of a body's contact count says that it touches a block
+// (RIGID passes). A block holds a body off position-only (split impulse), so
+// the body cannot move apart from the bodies it overlaps there: their push
+// turned into speed, as loose bodies take it, would only build up, pass after
+// pass, wherever bodies crowd into a crater or a crack, until they burst
+// out. A pair where either body is held moves apart by position alone; both
+// bodies read both bits, so the pair stays equal and opposite.
+const uint HELD_BIT = 0x80000000u;
+
+uint contactsOf(uint count) {
+    return count & ~HELD_BIT;
+}
+
+bool heldPair(uint firstCount, uint secondCount) {
+    return ((firstCount | secondCount) & HELD_BIT) != 0u;
+}
+
 // Every pair with a solid body stays a hard contact, so liquid cannot seep
 // through a block however much it is compressed; walls act on every body.
 // Members of one block never touch: the block holds them.

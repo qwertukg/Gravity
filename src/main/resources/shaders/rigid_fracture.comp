@@ -11,7 +11,8 @@ layout(std430, binding = 3) buffer Groups {
     int contactStates[CONTACT_KEYS];
     int idlePasses[CONTACT_KEYS];
     int pairContacts[CONTACT_KEYS];
-    float shapes[];
+    // Float bits: carving raises values with compare-and-swap.
+    uint shapes[];
 };
 layout(std430, binding = 4) buffer FractureSlots { vec4 fractureSlots[]; };
 layout(std430, binding = 5) buffer FractureGroups { uvec4 fractureGroups[]; };
@@ -44,10 +45,14 @@ const float BRANCH_CHANCE = 0.06;
 const float BRANCH_BUDGET = 8.0;
 // Chips leave within this angle (radians) of the way the impact came.
 const float EJECTION_SPREAD = 2.6;
-// The shape is carved within this many nodes of a broken member, out to
-// this many diameters from it; beyond, the field already says "free".
-const int CARVE_NODES = 3;
+// The shape is carved within this many nodes (two diameters) of a broken
+// member; the members left are looked for this many diameters out, beyond
+// which the field already says "free".
+const int CARVE_NODES = 4;
+const int CARVE_SEARCH_CELLS = 3;
 const float CARVE_REACH_DIAMETERS = 1.5;
+// GlueShape.FILL_DIAMETERS: the disc around each member that closes the solid.
+const float FILL_DIAMETERS = 0.6;
 
 shared vec4 sharedSums[256];
 // A broken member left neighbours that may no longer hold together.
@@ -78,7 +83,7 @@ float random(uint a, uint b) {
 int slotAt(ivec2 cell) {
     ivec4 grid = rigid.grid;
     if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, grid.yz))) return -1;
-    return int(shapes[grid.x + grid.y * grid.z + cell.x + cell.y * grid.y]);
+    return int(uintBitsToFloat(shapes[grid.x + grid.y * grid.z + cell.x + cell.y * grid.y]));
 }
 
 ivec2 cellOf(vec2 point) {
@@ -149,34 +154,52 @@ void crack(int nucleus, vec2 direction, float budget) {
     }
 }
 
-// The shape's field where the member at rest centre [point] was: a node
-// whose nearest member broke off now lies as far from the solid as the
-// nearest member left, so a body fits where the broken one was. The value
-// at a node depends only on which members are left, so lanes carving
-// overlapping windows write the same values.
+// Raises the shape's value at [index] to at least [value]: carving only
+// ever takes solid away, and lanes carving overlapping windows keep the
+// highest value any of them finds.
+void raise(int index, float value) {
+    uint seen = shapes[index];
+    while (uintBitsToFloat(seen) < value) {
+        uint before = atomicCompSwap(shapes[index], seen, floatBitsToUint(value));
+        if (before == seen) break;
+        seen = before;
+    }
+}
+
+// The shape's field around the member at rest centre [point] that broke
+// off, as GlueShape makes it from the members left. Outside the closed solid
+// a node lies as far from it as the nearest member left. Inside, its depth
+// is no more than its distance to the hole: within d - fill of the broken
+// centre no member's fill reaches, as members lie a diameter apart. The new
+// face is thus a face: a body resting in the crater meets the members left
+// as it meets them anywhere on the outline, instead of a field still as
+// deep as the block was.
 void carve(vec2 point) {
-    float reach = CARVE_REACH_DIAMETERS * uDiameterPixels;
+    float diameter = uDiameterPixels;
+    float radius = 0.5 * diameter;
+    float fill = FILL_DIAMETERS * diameter;
+    float reach = CARVE_REACH_DIAMETERS * diameter;
     ivec2 home = ivec2(floor((point - rigid.shape.xy) / rigid.shape.z + 0.5));
     for (int y = -CARVE_NODES; y <= CARVE_NODES; y++) {
         for (int x = -CARVE_NODES; x <= CARVE_NODES; x++) {
             ivec2 node = home + ivec2(x, y);
             if (any(lessThan(node, ivec2(0))) || any(greaterThanEqual(node, rigid.grid.yz))) continue;
             vec2 at = rigid.shape.xy + vec2(node) * rigid.shape.z;
-            float nearest = reach;
             float nearestLeft = reach;
-            for (int cy = -CARVE_NODES; cy <= CARVE_NODES; cy++) {
-                for (int cx = -CARVE_NODES; cx <= CARVE_NODES; cx++) {
+            for (int cy = -CARVE_SEARCH_CELLS; cy <= CARVE_SEARCH_CELLS; cy++) {
+                for (int cx = -CARVE_SEARCH_CELLS; cx <= CARVE_SEARCH_CELLS; cx++) {
                     int slot = slotAt(node + ivec2(cx, cy));
-                    if (slot < 0) continue;
-                    float distance = length(rest[slot] - at);
-                    nearest = min(nearest, distance);
-                    if (members[slot] >= 0) nearestLeft = min(nearestLeft, distance);
+                    if (slot >= 0 && members[slot] >= 0) nearestLeft = min(nearestLeft, length(rest[slot] - at));
                 }
             }
-            if (nearest < nearestLeft) {
-                int index = rigid.grid.x + node.x + node.y * rigid.grid.y;
-                shapes[index] = max(shapes[index], nearestLeft - 0.5 * uDiameterPixels);
+            int index = rigid.grid.x + node.x + node.y * rigid.grid.y;
+            float value = nearestLeft - radius;
+            if (nearestLeft < fill) {
+                float depth = fill - radius - uintBitsToFloat(shapes[index]);
+                float hole = length(at - point) - (diameter - fill);
+                value = fill - radius - max(fill - nearestLeft, min(depth, hole));
             }
+            raise(index, value);
         }
     }
 }
@@ -347,8 +370,9 @@ void main() {
     rigid.shape.xy -= middle;
     rigid.bounds -= middle.xxyy;
     for (int point = 0; point < rigid.tiles.w; point++) {
-        shapes[rigid.tiles.z + 2 * point] -= middle.x;
-        shapes[rigid.tiles.z + 2 * point + 1] -= middle.y;
+        int corner = rigid.tiles.z + 2 * point;
+        shapes[corner] = floatBitsToUint(uintBitsToFloat(shapes[corner]) - middle.x);
+        shapes[corner + 1] = floatBitsToUint(uintBitsToFloat(shapes[corner + 1]) - middle.y);
     }
     groups[group] = rigid;
     shifts[2u * group] = vec4(middle, kick);

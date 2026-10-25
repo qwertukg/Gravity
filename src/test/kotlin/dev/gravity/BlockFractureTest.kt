@@ -1,6 +1,8 @@
 package dev.gravity
 
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.sqrt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -145,6 +147,40 @@ class BlockFractureTest {
             first + pipeline.spawnBlock(first, 800f, 1000f, 920f, 1050f)
         }
         assertTrue(high.grains > 0, "the high drop breaks grains off")
+    }
+
+    @Test
+    fun `sand shot into a block settles in its crater`() {
+        CollisionGpuContext().use {
+            val config = GravityConfig(
+                // Bodies keep their IDs: the crater is watched body by body.
+                particles = ParticleConfig(capacity = 100_000, initialBodies = 1, seed = 1, spatialSortInterval = 0),
+            )
+            GravityPipeline(config, width, height, null, parked, bounded = true).use { pipeline ->
+                pipeline.mutualGravity = false
+                pipeline.fieldAccelerationY = -config.gravity.uniformFieldAcceleration * height / 1440f
+                var active = 1
+                active += pipeline.spawnBlock(active, 960f, 0f, 1160f, 80f)
+                pipeline.initializeAcceleration(active)
+                repeat(60) { pipeline.step(active) }
+                active += pipeline.spawnProjectile(active, 1060f, 300f, 0f, -1500f, 30f)
+                repeat(720) { pipeline.step(active) }
+                val bodies = CollisionGpuAccess.floats(pipeline, "bodies", active * 4)
+                val materials = CollisionGpuAccess.floats(pipeline, "materials", active * 4)
+                // Sand and grains below the block's top face, within its sides.
+                val crater = (0 until active).filter { materials[it * 4 + 2] == 0f || materials[it * 4 + 3] < 0f }
+                    .filter { bodies[it * 4] * width in 975f..1145f && bodies[it * 4 + 1] * height < 78f }
+                val speeds = crater.map { hypot(bodies[it * 4 + 2] * width.toDouble(), bodies[it * 4 + 3] * height.toDouble()) }
+                val rms = sqrt(speeds.sumOf { it * it } / speeds.size)
+                println("Crater: ${crater.size} bodies, rms speed %.1f px/s, fastest %.1f px/s".format(rms, speeds.max()))
+                assertTrue(crater.isNotEmpty(), "the shot makes a crater and sand fills it")
+                // Crowded into the crater they once kept pushing each other
+                // apart, a few hundred px/s, for as long as they stayed.
+                assertTrue(rms < 30.0, "sand rests in the crater: rms %.1f px/s".format(rms))
+                assertTrue(speeds.count { it > 50.0 } <= 2, "no grain keeps jumping")
+            }
+            assertEquals(GL_NO_ERROR, glGetError())
+        }
     }
 
     @Test

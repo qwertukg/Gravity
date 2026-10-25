@@ -36,6 +36,8 @@ const float MAXIMUM_UNIT = 0.99999994;
 #include "collision_rigid_contact.glsl"
 // Drift of this pass, by which block poses are extrapolated.
 float driftDt = 0.0;
+// Pushes apart from bodies of held pairs (HELD_BIT): position only.
+vec2 heldCorrection = vec2(0.0);
 #endif
 
 ivec2 wrapCell(ivec2 cell) {
@@ -128,7 +130,8 @@ void main() {
     vec2 positionCorrection = vec2(0.0);
     vec2 velocityCorrection = vec2(0.0);
     float pressure = 0.0;
-    uint ownContacts = contactCounts[id];
+    uint ownCount = contactCounts[id];
+    uint ownContacts = contactsOf(ownCount);
     float effectiveSubstepDt = uAdaptive != 0
         ? uTimeStep / float(max(adaptiveState[2], 1u))
         : uSubstepDt;
@@ -159,7 +162,7 @@ void main() {
 #ifdef RIGID
                     if (distanceSquared < reachSquared && rigidPair(id, otherId)) {
                         rigidContact(id, otherId, positionPixels, velocityPixels, other.xy * uViewport,
-                            other.zw * uViewport, ownContacts, contactCounts[otherId], driftDt,
+                            other.zw * uViewport, ownContacts, contactsOf(contactCounts[otherId]), driftDt,
                             effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
                     } else
 #endif
@@ -174,7 +177,7 @@ void main() {
                             : fallbackNormal(id, otherId);
                         float penetration = uDiameterPixels - distance;
                         float pairWeight = 1.0 / float(max(
-                            max(ownContacts, contactCounts[otherId]),
+                            max(ownContacts, contactsOf(contactCounts[otherId])),
                             1u
                         ));
 
@@ -184,8 +187,12 @@ void main() {
 
                         // Symmetric weights keep every impulse equal and
                         // opposite, including crowded multi-body contacts.
-                        positionCorrection +=
-                            normal * (share * penetration * pairWeight);
+                        vec2 push = normal * (share * penetration * pairWeight);
+#ifdef RIGID
+                        if (heldPair(ownCount, contactCounts[otherId])) heldCorrection += push;
+                        else
+#endif
+                        positionCorrection += push;
 
                         vec2 otherVelocityPixels = other.zw * uViewport;
                         vec2 relativeVelocity =
@@ -241,6 +248,9 @@ void main() {
 #endif
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
+#ifdef RIGID
+    positionPixels += heldCorrection;
+#endif
     vec2 position;
 #ifdef RIGID
     if (rigidPair(id, id)) {
