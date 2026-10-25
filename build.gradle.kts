@@ -57,6 +57,7 @@ tasks.test {
     exclude("**/BuoyancyIntegrationTest.class")
     exclude("**/FrictionIntegrationTest.class")
     exclude("**/LiquidIntegrationTest.class")
+    exclude("**/BlockPenetrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -72,6 +73,7 @@ tasks.register<Test>("gpuTest") {
     include("**/BuoyancyIntegrationTest.class")
     include("**/FrictionIntegrationTest.class")
     include("**/LiquidIntegrationTest.class")
+    include("**/BlockPenetrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

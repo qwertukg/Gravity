@@ -175,9 +175,10 @@ class GravityPipeline(
     private var collisionBodies = buffer(bodyBytes)
     private var acceleration = buffer(accelerationBytes)
     /**
-     * Per-body material (mass, Coulomb friction, solid, unused). Bodies have
+     * Per-body material (mass, Coulomb friction, solid, block). Bodies have
      * unit mass except those of RMB blocks; every body has the configured
-     * friction. Block bodies are solid: in liquid mode the others are fluid.
+     * friction. Block bodies are solid and name their block (its index in
+     * [rigidBlocks]): in liquid mode the others are fluid.
      */
     private var materials = buffer(materialBytes)
     private var spareMaterials = buffer(materialBytes)
@@ -245,8 +246,11 @@ class GravityPipeline(
     private val kick = GlProgram.compute("/shaders/kick.comp")
     private val collisionClear = GlProgram.compute("/shaders/collision_clear.comp")
     private val collisionBuild = GlProgram.compute("/shaders/collision_build.comp")
-    private val collisionCount = GlProgram.compute("/shaders/collision_count.comp")
-    private val collisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
+    // RIGID variants run while glued blocks exist (collision_material.glsl).
+    private val hardCollisionCount = GlProgram.compute("/shaders/collision_count.comp")
+    private val rigidCollisionCount = GlProgram.compute("/shaders/collision_count.comp", "RIGID")
+    private val hardCollisionSolve = GlProgram.compute("/shaders/collision_solve.comp")
+    private val rigidCollisionSolve = GlProgram.compute("/shaders/collision_solve.comp", "RIGID")
     private val collisionAdaptiveReset =
         GlProgram.compute("/shaders/collision_adaptive_reset.comp")
     private val collisionAdaptiveReduce =
@@ -295,6 +299,7 @@ class GravityPipeline(
     )
     private val rigidBlocks = RigidBlocks(
         capacity = config.particles.capacity,
+        contactDiameterPixels = config.collisions.contactDiameterPixels,
         width = viewportWidth,
         height = viewportHeight,
         bind = ::bind,
@@ -564,7 +569,7 @@ class GravityPipeline(
             0.5f * config.collisions.contactDiameterPixels
         val insideX = if (bounded) centerX.coerceIn(radius, viewportWidthFloat - radius) else centerX
         val insideY = if (bounded) centerY.coerceIn(radius, viewportHeightFloat - radius) else centerY
-        return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets, mass = 1f, solid = false)
+        return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets, mass = 1f, group = null)
     }
 
     /**
@@ -585,7 +590,7 @@ class GravityPipeline(
             width,
             height,
         )
-        if (count == 0 || !fits(firstBody, count) || !rigidBlocks.canAdd(count)) return 0
+        if (count == 0 || !fits(firstBody, count)) return 0
 
         val lattice = RectangularBlock.offsets(
             config.collisions.contactDiameterPixels,
@@ -596,11 +601,13 @@ class GravityPipeline(
         val meanX = lattice.sumOf { it.x.toDouble() }.toFloat() / lattice.size
         val meanY = lattice.sumOf { it.y.toDouble() }.toFloat() / lattice.size
         val offsets = lattice.map { PixelOffset(it.x - meanX, it.y - meanY) }
+        val shape = GlueShape.of(offsets, config.collisions.contactDiameterPixels)
+        if (!rigidBlocks.canAdd(count, shape)) return 0
         val centerX = 0.5f * (minX + maxX) + meanX
         val centerY = 0.5f * (minY + maxY) + meanY
         val density = config.projectiles.blockDensity
-        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets, density, solid = true)
-        rigidBlocks.add(firstBody, offsets, centerX, centerY)
+        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets, density, group = rigidBlocks.size)
+        rigidBlocks.add(firstBody, offsets, centerX, centerY, shape)
         massExcess += spawned * (density - 1f)
         return spawned
     }
@@ -617,13 +624,15 @@ class GravityPipeline(
         velocityY: Float,
         offsets: List<PixelOffset>,
         mass: Float,
-        solid: Boolean,
+        /** The block the bodies are glued into, or null for loose bodies. */
+        group: Int?,
     ): Int {
-        if (solid) solidBodies = true
+        if (group != null) solidBodies = true
         val material = memAllocFloat(offsets.size * 4)
         try {
             repeat(offsets.size) {
-                material.put(mass).put(config.collisions.friction).put(if (solid) 1f else 0f).put(0f)
+                material.put(mass).put(config.collisions.friction)
+                    .put(if (group != null) 1f else 0f).put(group?.toFloat() ?: 0f)
             }
             material.flip()
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, materials)
@@ -863,10 +872,11 @@ class GravityPipeline(
         writePressure: Boolean,
         substepIndex: Int?,
     ) {
-        // Both solvers read masses and friction from binding 8.
+        // Both solvers read masses and friction from binding 8, blocks from 9.
         bind(8, materials)
+        bind(9, rigidBlocks.groups)
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid, solidBodies)
+            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid, solidBodies, rigidBlocks.size)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
@@ -890,6 +900,7 @@ class GravityPipeline(
             if (config.collisions.adaptive) 1 else 0,
         )
         collisionClear.int("uSubstepIndex", substepIndex ?: -1)
+        collisionClear.int("uRigidGroups", rigidBlocks.size)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_CLEAR)
@@ -918,6 +929,7 @@ class GravityPipeline(
         profiler?.end(GpuStage.COLLISION_BUILD)
 
         profiler?.begin(GpuStage.COLLISION_COUNT)
+        val collisionCount = if (rigidBlocks.isEmpty) hardCollisionCount else rigidCollisionCount
         collisionCount.use()
         bind(0, bodies)
         bind(1, collisionHeads)
@@ -948,6 +960,7 @@ class GravityPipeline(
         profiler?.end(GpuStage.COLLISION_COUNT)
 
         profiler?.begin(GpuStage.COLLISION_SOLVE)
+        val collisionSolve = if (rigidBlocks.isEmpty) hardCollisionSolve else rigidCollisionSolve
         collisionSolve.use()
         bind(0, bodies)
         bind(1, collisionBodies)
@@ -990,6 +1003,7 @@ class GravityPipeline(
         collisionSolve.int("uSubstepIndex", substepIndex ?: -1)
         collisionSolve.int("uBounded", if (bounded) 1 else 0)
         collisionSolve.int("uLiquid", if (liquid) 1 else 0)
+        if (!rigidBlocks.isEmpty) collisionSolve.float("uDriftDt", driftDt)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_SOLVE)
@@ -1436,8 +1450,10 @@ class GravityPipeline(
             kick,
             collisionClear,
             collisionBuild,
-            collisionCount,
-            collisionSolve,
+            hardCollisionCount,
+            rigidCollisionCount,
+            hardCollisionSolve,
+            rigidCollisionSolve,
             collisionAdaptiveReset,
             collisionAdaptiveReduce,
             collisionAdaptiveFinalize,
@@ -1496,8 +1512,8 @@ class GravityPipeline(
         private const val MAXIMUM_UNIT = 0.99999994f
         /** Cached binding slots, more than any shader uses. */
         private const val STORAGE_BINDINGS = 16
-        /** Bindings 0..8: kick, trajectory and both solvers use all nine. */
-        private const val USED_STORAGE_BINDINGS = 9
+        /** Bindings 0..9: the collision solvers use all ten. */
+        private const val USED_STORAGE_BINDINGS = 10
         /** Values scanned per workgroup by spatial_sort_scan.comp. */
         private const val SORT_SCAN_BLOCK = 1024
         /** Target reordering tile edge; a tile holds a few dozen dense bodies. */

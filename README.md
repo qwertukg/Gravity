@@ -228,6 +228,35 @@ dropped onto a wall stays a rectangle.
 - A GPU test checks that a block hit off centre keeps its shape to `1e-2 px`,
   moves, spins and conserves momentum.
 
+Blocks collide as solids. Each block gets a shape from its own bodies, a
+signed distance field on a grid in its frame (`GlueShape`): outside it is the
+distance to the nearest member less a body radius, so a body touches the
+block exactly when it touches a member; inside, the members are closed into
+one solid and the field points out of the nearest face. Any glued body gets
+its shape this way, whatever its outline.
+
+- A contact with a member is a contact with the block: its normal and depth
+  come from the shape, and the correction is split by the block's rigid
+  response (mass, inertia, arm), not by the mass of one member. Contacts
+  solved side by side split a body's mass over them (mass splitting), so a
+  block in many contacts is never overshot. Each body of a pair still takes
+  only its own equal and opposite share; momentum is kept.
+- A body that crossed the outline during a substep is pushed back where it
+  came in (sphere tracing along its path), so a fast bullet cannot be pushed
+  on through, however thin the block.
+- A body whose centre still ends up inside a block is put back on the outline
+  at once, position only. Between blocks the blocks themselves move apart by
+  their masses; a body wedged between two blocks, or between a block and a
+  wall, moves the blocks instead. A block is never left in a wall.
+- Members of one block never collide with each other.
+- Collision passes with this code are compiled separately (`RIGID`) and run
+  only while blocks exist; without blocks the passes are the plain ones.
+- GPU tests shoot bullets up to `6000 px/s`, a `100 px` cannonball and a
+  block into blocks, crush two blocks against a wall, stack and sink blocks
+  in a pile and in liquid: nothing passes through a block, no block reaches
+  into a wall, and a centre found within a block's outline is at most a
+  fraction of a body diameter deep, only at impacts.
+
 Every body of a block has the mass `--block-density` (`0.5` by default;
 `0.05–10`), the other bodies have unit mass. With the field on and walls, a
 light block dropped onto a pile floats at its surface and a heavy one sinks
@@ -256,9 +285,11 @@ per physics step, after the collision substeps:
    liquid bodies.
 
 - Liquid bodies do not collide with each other as hard discs, so they never
-  lock into a packing and flow under any pressure. Every pair with a block
-  body, and every wall, stays a hard contact: liquid cannot seep through a
-  block however much it is compressed.
+  lock into a packing and flow under any pressure. Walls stay hard contacts.
+  Against a block the liquid's own pressure does the work; a hard contact is
+  only the guard that puts a liquid body back on the block's outline when
+  it gets inside, position only. Turning that push into speed would blast
+  the liquid that carries a block away from under it.
 - Block bodies count in the density around them and take the reaction of
   the liquid scaled by the mass ratio, so every pair keeps its momentum; the
   rigid projection spreads it over the block. Buoyancy follows: a block of

@@ -5,6 +5,7 @@ layout(std430, binding = 0) readonly buffer Partials { vec4 partials[]; };
 layout(std430, binding = 1) buffer Groups { RigidGroup groups[]; };
 uniform vec2 uViewport;
 uniform int uBounded;
+uniform float uBodyRadius;
 
 shared vec4 sharedA[256];
 shared vec4 sharedB[256];
@@ -47,7 +48,33 @@ void main() {
     float angularVelocity = inertia > 0.0 ? angularMomentum / inertia : 0.0;
 
     center += rigid.frame.xy;
-    if (uBounded == 0) center -= floor(center / uViewport) * uViewport;
+    // Out of the blocks it was pressed into, position only (collision_rigid_contact.glsl).
+    center += vec2(rigid.guard.xy - rigid.guard.zw) / GUARD_SCALE;
+    rigid.guard = ivec4(0);
+    if (uBounded == 0) {
+        center -= floor(center / uViewport) * uViewport;
+    } else {
+        // A block never reaches into a wall, however hard it is pressed: its
+        // member contacts with the wall share the block with all its other
+        // contacts and may not have pushed it out yet. Move it back inside
+        // and take away the speed into the wall, which stops it.
+        vec2 low = vec2(1e30);
+        vec2 high = vec2(-1e30);
+        for (int corner = 0; corner < 4; corner++) {
+            vec2 rest = vec2((corner & 1) == 0 ? rigid.bounds.x : rigid.bounds.y,
+                (corner & 2) == 0 ? rigid.bounds.z : rigid.bounds.w);
+            vec2 arm = vec2(rotation.x * rest.x - rotation.y * rest.y, rotation.y * rest.x + rotation.x * rest.y);
+            low = min(low, arm);
+            high = max(high, arm);
+        }
+        vec2 shift = max(vec2(uBodyRadius) - (center + low), vec2(0.0)) -
+            max(center + high + uBodyRadius - uViewport, vec2(0.0));
+        // A block wider than the screen stays where it is.
+        shift *= vec2(lessThan(high - low + 2.0 * uBodyRadius, uViewport));
+        center += shift;
+        if (shift.x * velocity.x < 0.0) velocity.x = 0.0;
+        if (shift.y * velocity.y < 0.0) velocity.y = 0.0;
+    }
     rigid.frame = vec4(center, center);
     rigid.motion = vec4(velocity, rotation);
     rigid.scalars.x = angularVelocity;

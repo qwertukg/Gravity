@@ -24,10 +24,19 @@ uniform int uWritePressure;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
 uniform int uBounded;
+#ifdef RIGID
+uniform float uDriftDt;
+#endif
 
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
 #include "collision_material.glsl"
+#ifdef RIGID
+#include "collision_rigid.glsl"
+#include "collision_rigid_contact.glsl"
+// Drift of this pass, by which block poses are extrapolated.
+float driftDt = 0.0;
+#endif
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -40,11 +49,16 @@ ivec2 wrapCell(ivec2 cell) {
 // A wall is an immovable body: the moving body takes the whole correction
 // that a pair would split, with the same restitution and position-to-velocity
 // conversion as body-body contacts.
-void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
-    float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
+void wallContact(uint id, vec2 positionPixels, float distance, vec2 normal, vec2 velocityPixels,
+    float pressureWeight, float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
     float penetration = 0.5 * uDiameterPixels - distance;
     if (penetration <= 0.0) return;
+#ifdef RIGID
+    float weight = rigidPair(id, id) ? rigidWallWeight(id, positionPixels, normal, driftDt) : pressureWeight;
+#else
+    float weight = pressureWeight;
+#endif
     positionCorrection += normal * (penetration * weight);
     float normalSpeed = dot(velocityPixels, normal);
     if (normalSpeed < 0.0) {
@@ -59,25 +73,26 @@ void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
             weight, friction);
     }
     if (uWritePressure != 0) {
-        pressure += weight * (
+        pressure += pressureWeight * (
             penetration / effectiveSubstepDt + max(-normalSpeed, 0.0)
         );
     }
 }
 
-void wallContacts(vec2 positionPixels, vec2 velocityPixels, uint ownContacts,
+void wallContacts(uint id, vec2 positionPixels, vec2 velocityPixels, uint ownContacts,
     float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
     if (uBounded == 0) return;
     // Counted as one more contact so body pairs keep their symmetric weights.
+    // A member of a block takes its block's rigid weight instead.
     float weight = 1.0 / float(ownContacts + 1u);
-    wallContact(positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
+    wallContact(id, positionPixels, positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
+    wallContact(id, positionPixels, uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
+    wallContact(id, positionPixels, positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-    wallContact(uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
+    wallContact(id, positionPixels, uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
         friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
 }
 
@@ -114,6 +129,9 @@ void main() {
     float effectiveSubstepDt = uAdaptive != 0
         ? uTimeStep / float(max(adaptiveState[2], 1u))
         : uSubstepDt;
+#ifdef RIGID
+    driftDt = uAdaptive != 0 && uDriftDt != 0.0 ? effectiveSubstepDt : uDriftDt;
+#endif
     if (uWritePressure != 0 && uAdaptive != 0) {
         atomicMax(adaptiveState[3], ownContacts);
         if (ownContacts >= uint(uDenseContactThreshold)) {
@@ -134,7 +152,15 @@ void main() {
                     // Walls: no minimum image, bodies across an edge never touch.
                     if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     precise float distanceSquared = dot(delta, delta);
-                    if (distanceSquared < diameterSquared) {
+                    float reachSquared = contactReachSquared(id, otherId);
+#ifdef RIGID
+                    if (distanceSquared < reachSquared && rigidPair(id, otherId)) {
+                        rigidContact(id, otherId, positionPixels, velocityPixels, other.xy * uViewport,
+                            other.zw * uViewport, ownContacts, contactCounts[otherId], driftDt,
+                            effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+                    } else
+#endif
+                    if (distanceSquared < reachSquared) {
                         float distance = sqrt(max(
                             distanceSquared,
                             uCoincidentDistanceSquaredEpsilon
@@ -205,11 +231,21 @@ void main() {
         }
     }
 
-    wallContacts(positionPixels, velocityPixels, ownContacts, materials[id].y, effectiveSubstepDt,
+    wallContacts(id, positionPixels, velocityPixels, ownContacts, materials[id].y, effectiveSubstepDt,
         positionCorrection, velocityCorrection, pressure);
+#ifdef RIGID
+    positionPixels += resolveGuards(positionPixels, driftDt);
+#endif
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
     vec2 position;
+#ifdef RIGID
+    if (rigidPair(id, id)) {
+        // A member's correction stands for its block's and may be large; the
+        // rigid projection reads it as is and places the member itself.
+        position = positionPixels / uViewport;
+    } else
+#endif
     if (uBounded != 0) {
         position = clamp(positionPixels / uViewport, vec2(0.0), vec2(MAXIMUM_UNIT));
     } else {

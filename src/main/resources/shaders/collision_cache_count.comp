@@ -23,6 +23,9 @@ uniform int uBounded;
 uniform int uNoHardPairs;
 #include "collision_cache_grid.glsl"
 #include "collision_material.glsl"
+#ifdef RIGID
+#include "collision_rigid.glsl"
+#endif
 
 float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition) {
     // The reference counter evaluates an unordered pair in ascending ID order
@@ -41,7 +44,7 @@ float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition
 
 void countContact(uint id, uint other, float distanceSquared, inout uint contacts) {
     if (!hardPair(id, other)) return;
-    if (distanceSquared < uDiameterPixels * uDiameterPixels) {
+    if (distanceSquared < contactReachSquared(id, other)) {
         if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
         contacts++;
     }
@@ -130,6 +133,10 @@ void main() {
     // Each invocation owns its count and ordered contact cache. No atomics,
     // scan, global sort or truncated list is needed.
     contactCounts[id] = contacts;
+#ifdef RIGID
+    int group = groupOf(id);
+    if (group >= 0) atomicAdd(groups[group].grid.w, int(contacts + wallTouches(position * uViewport)));
+#endif
     // Cheap density sampling steers the NEXT pass to the ordinary grid when
     // an expanded candidate stencil is expensive. Both paths remain exhaustive.
     // Vary the sampled lane to avoid aliasing row-major lattice boundaries.

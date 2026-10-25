@@ -15,6 +15,7 @@ import org.lwjgl.system.MemoryUtil.memAlloc
 import org.lwjgl.system.MemoryUtil.memAllocFloat
 import org.lwjgl.system.MemoryUtil.memAllocInt
 import org.lwjgl.system.MemoryUtil.memFree
+import kotlin.math.max
 
 /**
  * Glued blocks: groups of bodies that move as one rigid body. Every body
@@ -31,6 +32,7 @@ import org.lwjgl.system.MemoryUtil.memFree
  */
 internal class RigidBlocks(
     capacity: Int,
+    contactDiameterPixels: Float,
     private val width: Int,
     private val height: Int,
     private val bind: (Int, Int) -> Unit,
@@ -40,7 +42,12 @@ internal class RigidBlocks(
     private val members = buffer(memberCapacity.toLong() * Int.SIZE_BYTES)
     private val rest = buffer(memberCapacity.toLong() * 2 * Float.SIZE_BYTES)
     private val tileGroups = buffer(tileCapacity.toLong() * Int.SIZE_BYTES)
-    private val groups = buffer(MAXIMUM_GROUPS.toLong() * GROUP_BYTES)
+    private val shapeCapacity = max(MINIMUM_SHAPE_VALUES, capacity.toLong() * SHAPE_VALUES_PER_BODY)
+    /**
+     * Every group (rigid_layout.glsl), then the values of their shapes
+     * (GlueShape). The collision passes read and count contacts here.
+     */
+    val groups = buffer(MAXIMUM_GROUPS.toLong() * GROUP_BYTES + shapeCapacity * Float.SIZE_BYTES)
     private val partials = buffer(tileCapacity.toLong() * 8 * Float.SIZE_BYTES)
     private val reduce = GlProgram.compute("/shaders/rigid_reduce.comp")
     private val finalize = GlProgram.compute("/shaders/rigid_finalize.comp")
@@ -48,25 +55,32 @@ internal class RigidBlocks(
     private val remapProgram = GlProgram.compute("/shaders/rigid_remap.comp")
     private var groupCount = 0
     private var tileCount = 0
+    private var shapeValues = 0L
 
     val isEmpty get() = groupCount == 0
+    /** Groups glued so far; the next one gets this index. */
+    val size get() = groupCount
 
     init {
         listOf(reduce, finalize, apply).forEach { program ->
             program.use()
             program.vec2("uViewport", width.toFloat(), height.toFloat())
         }
+        finalize.use()
+        finalize.float("uBodyRadius", 0.5f * contactDiameterPixels)
     }
 
-    fun canAdd(bodies: Int) =
-        groupCount < MAXIMUM_GROUPS && tileCount + tilesFor(bodies) <= tileCapacity
+    fun canAdd(bodies: Int, shape: GlueShape) =
+        groupCount < MAXIMUM_GROUPS && tileCount + tilesFor(bodies) <= tileCapacity &&
+            shapeValues + shape.values.size <= shapeCapacity
 
     /**
      * Glues bodies `firstBody until firstBody + offsets.size`, already placed
-     * at centre + offset. Offsets are in pixels and must sum to zero.
+     * at centre + offset, with [shape] made from the same offsets. Offsets are
+     * in pixels and must sum to zero.
      */
-    fun add(firstBody: Int, offsets: List<PixelOffset>, centerX: Float, centerY: Float) {
-        require(offsets.isNotEmpty() && canAdd(offsets.size))
+    fun add(firstBody: Int, offsets: List<PixelOffset>, centerX: Float, centerY: Float, shape: GlueShape) {
+        require(offsets.isNotEmpty() && canAdd(offsets.size, shape))
         val tiles = tilesFor(offsets.size)
         val entries = tiles * TILE
         val memberData = memAllocInt(entries)
@@ -87,6 +101,11 @@ internal class RigidBlocks(
                 .putFloat(0f).putFloat(0f).putFloat(1f).putFloat(0f)
                 .putFloat(0f).putFloat(inertia.toFloat()).putFloat(offsets.size.toFloat()).putFloat(0f)
                 .putInt(tileCount).putInt(tiles).putInt(0).putInt(0)
+                .putFloat(shape.originX).putFloat(shape.originY).putFloat(shape.cellPixels).putFloat(shape.borderMinimum)
+                .putInt(shapeValues.toInt()).putInt(shape.width).putInt(shape.height).putInt(0)
+                .putFloat(offsets.minOf { it.x }).putFloat(offsets.maxOf { it.x })
+                .putFloat(offsets.minOf { it.y }).putFloat(offsets.maxOf { it.y })
+                .putInt(0).putInt(0).putInt(0).putInt(0)
             memberData.flip()
             restData.flip()
             tileData.flip()
@@ -101,6 +120,11 @@ internal class RigidBlocks(
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, tileCount.toLong() * Int.SIZE_BYTES, tileData)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, groups)
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, groupCount.toLong() * GROUP_BYTES, groupData)
+            glBufferSubData(
+                GL_SHADER_STORAGE_BUFFER,
+                MAXIMUM_GROUPS.toLong() * GROUP_BYTES + shapeValues * Float.SIZE_BYTES,
+                shape.values,
+            )
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
         } finally {
             memFree(memberData)
@@ -110,6 +134,7 @@ internal class RigidBlocks(
         }
         groupCount++
         tileCount += tiles
+        shapeValues += shape.values.size
     }
 
     /** Snaps every group onto its rigid motion; [bodies] is updated in place. */
@@ -170,7 +195,10 @@ internal class RigidBlocks(
         const val TILE = 256
         const val MAXIMUM_GROUPS = 256
         /** Matches RigidGroup in rigid_layout.glsl. */
-        private const val GROUP_BYTES = 64
+        private const val GROUP_BYTES = 128
+        /** Shape values reserved per body of capacity: blocks take about four. */
+        private const val SHAPE_VALUES_PER_BODY = 8L
+        private const val MINIMUM_SHAPE_VALUES = 1L shl 18
 
         private fun buffer(bytes: Long): Int = glGenBuffers().also {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)

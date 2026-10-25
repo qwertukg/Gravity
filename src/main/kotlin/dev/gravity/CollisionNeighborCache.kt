@@ -60,8 +60,13 @@ internal class CollisionNeighborCache(
     private val drift = GlProgram.compute("/shaders/collision_cache_drift.comp")
     private val hardBuild = GlProgram.compute("/shaders/collision_cache_build.comp")
     private val liquidBuild = GlProgram.compute("/shaders/collision_cache_build.comp", "LIQUID")
-    private val count = GlProgram.compute("/shaders/collision_cache_count.comp")
-    private val solve = GlProgram.compute("/shaders/collision_cache_solve.comp")
+    // RIGID variants run while glued blocks exist (collision_material.glsl).
+    private val hardCount = GlProgram.compute("/shaders/collision_cache_count.comp")
+    private val rigidCount = GlProgram.compute("/shaders/collision_cache_count.comp", "RIGID")
+    private val hardSolve = GlProgram.compute("/shaders/collision_cache_solve.comp")
+    private val rigidSolve = GlProgram.compute("/shaders/collision_cache_solve.comp", "RIGID")
+    private val counts = listOf(hardCount, rigidCount)
+    private val solves = listOf(hardSolve, rigidSolve)
 
     // Heads store (epoch << idBits) | (id + 1); id + 1 never exceeds capacity.
     private val idBits = 32 - Integer.numberOfLeadingZeros(capacity)
@@ -85,18 +90,18 @@ internal class CollisionNeighborCache(
         val cellSize = min(width.toDouble() / gridWidth, height.toDouble() / gridHeight)
         val searchRadius = max(collision.neighborCellRadius, ceil(candidateRadius / cellSize).toInt())
             .coerceAtMost(max(gridWidth, gridHeight))
-        listOf(drift, hardBuild, liquidBuild, count, solve).forEach { program ->
+        (listOf(drift, hardBuild, liquidBuild) + counts + solves).forEach { program ->
             program.use()
             program.int("uAdaptive", if (collision.adaptive) 1 else 0)
             program.int("uCapacity", capacity)
         }
-        listOf(hardBuild, liquidBuild, count, solve).forEach { program ->
+        (listOf(hardBuild, liquidBuild) + counts + solves).forEach { program ->
             program.use()
             program.int("uGridWidth", gridWidth)
             program.int("uGridHeight", gridHeight)
             program.int("uIdBits", idBits)
         }
-        listOf(liquidBuild, count).forEach { program ->
+        (listOf(liquidBuild) + counts).forEach { program ->
             program.use()
             program.int("uSolidTileWidth", solidTileWidth)
         }
@@ -105,21 +110,25 @@ internal class CollisionNeighborCache(
         drift.float("uTimeStep", collision.timeStep)
         drift.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
         drift.float("uReuseDistanceSquared", reuseDistance * reuseDistance)
-        listOf(count, solve).forEach { program ->
+        (counts + solves).forEach { program ->
             program.use()
             program.int("uSearchRadius", searchRadius)
             program.int("uNeighborCellRadius", collision.neighborCellRadius)
             program.vec2("uViewport", width.toFloat(), height.toFloat())
             program.float("uDiameterPixels", collision.contactDiameterPixels)
         }
-        count.use()
-        count.float("uCandidateRadiusSquared", (candidateRadius * candidateRadius).toFloat())
-        solve.use()
-        solve.int("uDenseContactThreshold", collision.denseContactThreshold)
-        solve.float("uRestitutionCoefficient", collision.restitutionCoefficient)
-        solve.float("uCoincidentDistanceSquaredEpsilon", collision.coincidentDistanceSquaredEpsilon)
-        solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
-        solve.float("uTimeStep", collision.timeStep)
+        counts.forEach { count ->
+            count.use()
+            count.float("uCandidateRadiusSquared", (candidateRadius * candidateRadius).toFloat())
+        }
+        solves.forEach { solve ->
+            solve.use()
+            solve.int("uDenseContactThreshold", collision.denseContactThreshold)
+            solve.float("uRestitutionCoefficient", collision.restitutionCoefficient)
+            solve.float("uCoincidentDistanceSquaredEpsilon", collision.coincidentDistanceSquaredEpsilon)
+            solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
+            solve.float("uTimeStep", collision.timeStep)
+        }
     }
 
     fun resolve(
@@ -134,6 +143,8 @@ internal class CollisionNeighborCache(
         bounded: Boolean,
         liquid: Boolean,
         solids: Boolean,
+        /** Glued blocks; their buffer is bound to 9 (collision_rigid.glsl). */
+        rigidGroups: Int,
     ) {
         require(active in 1..capacity)
         if (listedPairs != (liquid to solids)) {
@@ -154,6 +165,7 @@ internal class CollisionNeighborCache(
         drift.float("uKickDt", kickDt)
         drift.float("uDriftDt", driftDt)
         drift.int("uBounded", if (bounded) 1 else 0)
+        drift.int("uRigidGroups", rigidGroups)
         bind(0, input)
         bind(1, references)
         bind(2, cache)
@@ -180,6 +192,7 @@ internal class CollisionNeighborCache(
         profiler?.end(GpuStage.COLLISION_BUILD)
 
         profiler?.begin(GpuStage.COLLISION_COUNT)
+        val count = if (rigidGroups > 0) rigidCount else hardCount
         iteration(count, substep)
         count.int("uCount", active)
         count.int("uBounded", if (bounded) 1 else 0)
@@ -197,11 +210,13 @@ internal class CollisionNeighborCache(
         profiler?.end(GpuStage.COLLISION_COUNT)
 
         profiler?.begin(GpuStage.COLLISION_SOLVE)
+        val solve = if (rigidGroups > 0) rigidSolve else hardSolve
         iteration(solve, substep)
         solve.int("uCount", active)
         solve.int("uWritePressure", if (writePressure) 1 else 0)
         solve.int("uBounded", if (bounded) 1 else 0)
         solve.int("uLiquid", if (liquid) 1 else 0)
+        if (rigidGroups > 0) solve.float("uDriftDt", driftDt)
         // Sample one body per workgroup. This only chooses between two exact
         // broad phases for the next pass; it never limits contacts.
         solve.int("uDenseSampleThreshold", max(8, ((active + 255) / 256 + 3) / 4))
@@ -244,7 +259,7 @@ internal class CollisionNeighborCache(
     private fun barrier() = glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     override fun close() {
-        listOf(drift, hardBuild, liquidBuild, count, solve).forEach(GlProgram::close)
+        (listOf(drift, hardBuild, liquidBuild) + counts + solves).forEach(GlProgram::close)
         intArrayOf(references, cache, nodes, solidTiles).forEach(::glDeleteBuffers)
     }
 

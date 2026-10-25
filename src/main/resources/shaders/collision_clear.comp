@@ -5,6 +5,9 @@ layout(std430, binding = 0) readonly buffer PreviousBodies { vec4 previousBodies
 layout(std430, binding = 1) buffer Heads { uint heads[]; };
 layout(std430, binding = 2) writeonly buffer ContactCounts { uint contactCounts[]; };
 layout(std430, binding = 3) readonly buffer AdaptiveState { uint adaptiveState[]; };
+#include "rigid_layout.glsl"
+layout(std430, binding = 9) buffer Rigid { RigidGroup groups[MAXIMUM_GROUPS]; };
+uniform int uRigidGroups;
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -27,6 +30,8 @@ void main() {
         uint(uSubstepIndex) >= adaptiveState[2]
     ) return;
     uint id = gl_GlobalInvocationID.x;
+    // The count pass adds up the contacts of every block afresh.
+    if (id < uint(uRigidGroups)) groups[id].grid.w = 0;
     if (id >= uint(uCount)) return;
     contactCounts[id] = 0u;
 
