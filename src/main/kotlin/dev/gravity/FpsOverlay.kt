@@ -21,6 +21,7 @@ class FpsOverlay(
             "Arrows: uniform gravity on / off\n" +
             "C: clear all bodies\n" +
             "G: gravity between bodies on / off\n" +
+            "L: liquid on / off\n" +
             "R: reset\n" +
             "Esc: exit"
     private val layer = UiLayer(
@@ -37,6 +38,7 @@ class FpsOverlay(
     private var renderedBounded = false
     private var renderedField = ""
     private var renderedMutualGravity = true
+    private var renderedLiquid = false
 
     fun render(
         fps: Double,
@@ -48,6 +50,7 @@ class FpsOverlay(
         bounded: Boolean,
         field: String,
         mutualGravity: Boolean,
+        liquid: Boolean,
     ) {
         val fpsBits = fps.toRawBits()
         val timeScaleBits = timeScale.toRawBits()
@@ -60,7 +63,8 @@ class FpsOverlay(
             blockBodies != renderedBlockBodies ||
             bounded != renderedBounded ||
             field != renderedField ||
-            mutualGravity != renderedMutualGravity
+            mutualGravity != renderedMutualGravity ||
+            liquid != renderedLiquid
         ) {
             val projectileSpeed = futureProjectileSpeed?.let {
                 String.format(Locale.ROOT, "%.1f px/s", it)
@@ -68,7 +72,7 @@ class FpsOverlay(
             val block = blockBodies?.toString() ?: "-"
             val text = String.format(
                 Locale.ROOT,
-                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nBlock bodies: %s\nSpace: %s\nField: %s\nGravity: %s",
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nBlock bodies: %s\nSpace: %s\nField: %s\nGravity: %s\nLiquid: %s",
                 fps,
                 activeBodies,
                 projectileBodies,
@@ -78,6 +82,7 @@ class FpsOverlay(
                 if (bounded) "walls" else "torus",
                 field,
                 if (mutualGravity) "on" else "off",
+                if (liquid) "on" else "off",
             )
             val margin = config.overlayMarginPixels
             val lineHeight = config.overlayLineHeightPixels
@@ -109,6 +114,7 @@ class FpsOverlay(
             renderedBounded = bounded
             renderedField = field
             renderedMutualGravity = mutualGravity
+            renderedLiquid = liquid
         }
 
         layer.draw()

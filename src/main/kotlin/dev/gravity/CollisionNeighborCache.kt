@@ -120,6 +120,7 @@ internal class CollisionNeighborCache(
         writePressure: Boolean,
         substep: Int?,
         bounded: Boolean,
+        liquid: Boolean,
     ) {
         require(active in 1..capacity)
         if (++epoch > maximumEpoch) {
@@ -163,6 +164,7 @@ internal class CollisionNeighborCache(
         iteration(count, substep)
         count.int("uCount", active)
         count.int("uBounded", if (bounded) 1 else 0)
+        count.int("uLiquid", if (liquid) 1 else 0)
         bind(0, input)
         bind(1, heads)
         bind(2, nodes)
@@ -178,6 +180,7 @@ internal class CollisionNeighborCache(
         solve.int("uCount", active)
         solve.int("uWritePressure", if (writePressure) 1 else 0)
         solve.int("uBounded", if (bounded) 1 else 0)
+        solve.int("uLiquid", if (liquid) 1 else 0)
         // Sample one body per workgroup. This only chooses between two exact
         // broad phases for the next pass; it never limits contacts.
         solve.int("uDenseSampleThreshold", max(8, ((active + 255) / 256 + 3) / 4))

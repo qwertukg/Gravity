@@ -54,6 +54,9 @@ tasks.test {
     exclude("**/ParticleRendererTest.class")
     exclude("**/SpatialSortIntegrationTest.class")
     exclude("**/RigidBlockIntegrationTest.class")
+    exclude("**/BuoyancyIntegrationTest.class")
+    exclude("**/FrictionIntegrationTest.class")
+    exclude("**/LiquidIntegrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -66,6 +69,9 @@ tasks.register<Test>("gpuTest") {
     include("**/ParticleRendererTest.class")
     include("**/SpatialSortIntegrationTest.class")
     include("**/RigidBlockIntegrationTest.class")
+    include("**/BuoyancyIntegrationTest.class")
+    include("**/FrictionIntegrationTest.class")
+    include("**/LiquidIntegrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

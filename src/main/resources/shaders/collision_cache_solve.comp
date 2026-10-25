@@ -28,12 +28,13 @@ uniform int uSubstepIndex;
 uniform int uBounded;
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
+#include "collision_material.glsl"
 #include "collision_cache_grid.glsl"
 // A wall is an immovable body: the moving body takes the whole correction
 // that a pair would split, with the same restitution and position-to-velocity
 // conversion as body-body contacts.
 void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
-    float effectiveSubstepDt, inout vec2 positionCorrection,
+    float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
     float penetration = 0.5 * uDiameterPixels - distance;
     if (penetration <= 0.0) return;
@@ -43,6 +44,13 @@ void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
         velocityCorrection -= normal *
             ((1.0 + uRestitutionCoefficient) * normalSpeed * weight);
     }
+    if (friction > 0.0) {
+        // The wall has the body's own friction coefficient.
+        velocityCorrection += frictionCorrection(velocityPixels, normal, normalSpeed,
+            weight * ((1.0 + uRestitutionCoefficient) * max(-normalSpeed, 0.0) +
+                penetration / effectiveSubstepDt),
+            weight, friction);
+    }
     if (uWritePressure != 0) {
         pressure += weight * (
             penetration / effectiveSubstepDt + max(-normalSpeed, 0.0)
@@ -51,19 +59,19 @@ void wallContact(float distance, vec2 normal, vec2 velocityPixels, float weight,
 }
 
 void wallContacts(vec2 positionPixels, vec2 velocityPixels, uint ownContacts,
-    float effectiveSubstepDt, inout vec2 positionCorrection,
+    float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
     if (uBounded == 0) return;
     // Counted as one more contact so body pairs keep their symmetric weights.
     float weight = 1.0 / float(ownContacts + 1u);
     wallContact(positionPixels.x, vec2(1.0, 0.0), velocityPixels, weight,
-        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+        friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
     wallContact(uViewport.x - positionPixels.x, vec2(-1.0, 0.0), velocityPixels, weight,
-        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+        friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
     wallContact(positionPixels.y, vec2(0.0, 1.0), velocityPixels, weight,
-        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+        friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
     wallContact(uViewport.y - positionPixels.y, vec2(0.0, -1.0), velocityPixels, weight,
-        effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
+        friction, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
 }
 
 vec2 fallbackNormal(uint first, uint second) {
@@ -78,6 +86,7 @@ vec2 fallbackNormal(uint first, uint second) {
 void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocityPixels,
     uint ownContacts, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
+    if (!hardPair(id, otherId)) return;
     float diameterSquared = uDiameterPixels * uDiameterPixels;
     vec4 other = inputBodies[otherId];
     precise vec2 delta = positionPixels - other.xy * uViewport;
@@ -99,10 +108,14 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
             1u
         ));
 
-        // Symmetric weights keep every correction equal and
+        vec4 ownMaterial = materials[id];
+        vec4 otherMaterial = materials[otherId];
+        float share = massShare(ownMaterial, otherMaterial);
+
+        // Symmetric weights keep every impulse equal and
         // opposite, including crowded multi-body contacts.
         positionCorrection +=
-            normal * (0.5 * penetration * pairWeight);
+            normal * (share * penetration * pairWeight);
 
         vec2 otherVelocityPixels = other.zw * uViewport;
         vec2 relativeVelocity =
@@ -110,15 +123,26 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
         float relativeNormalSpeed =
             dot(relativeVelocity, normal);
         if (relativeNormalSpeed < 0.0) {
-            // Smooth circular bodies, e=0: the approaching
-            // normal components meet at their pair average.
+            // e=0: the approaching normal components meet
+            // at the pair's centre-of-mass velocity.
             velocityCorrection -= normal *
                 (
-                    0.5 *
+                    share *
                     (1.0 + uRestitutionCoefficient) *
                     relativeNormalSpeed *
                     pairWeight
                 );
+        }
+        float friction = pairFriction(ownMaterial, otherMaterial);
+        if (friction > 0.0) {
+            velocityCorrection += frictionCorrection(
+                relativeVelocity, normal, relativeNormalSpeed,
+                share * pairWeight * (
+                    (1.0 + uRestitutionCoefficient) *
+                        max(-relativeNormalSpeed, 0.0) +
+                    penetration / effectiveSubstepDt
+                ),
+                share * pairWeight, friction);
         }
         if (uWritePressure != 0) {
             if (uAdaptive != 0) {
@@ -200,7 +224,7 @@ void main() {
             }
         }
     }
-    wallContacts(positionPixels, velocityPixels, ownContacts, effectiveSubstepDt,
+    wallContacts(positionPixels, velocityPixels, ownContacts, materials[id].y, effectiveSubstepDt,
         positionCorrection, velocityCorrection, pressure);
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
@@ -212,6 +236,7 @@ void main() {
         position = positionPixels / uViewport;
     }
     outputBodies[id] = vec4(position, velocityPixels / uViewport);
-    if (uWritePressure != 0) pressures[id] = pressure;
+    // Fluid pressure comes from the liquid passes.
+    if (uWritePressure != 0 && !fluidBody(id)) pressures[id] = pressure;
     if (id == 0u) scheduleNextPass();
 }

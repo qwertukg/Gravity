@@ -16,6 +16,7 @@ uniform int uNeighborCellRadius;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
 uniform int uBounded;
+#include "collision_material.glsl"
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -46,7 +47,7 @@ void main() {
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             while (encoded != 0u) {
                 uint otherId = encoded - 1u;
-                if (otherId > id) {
+                if (otherId > id && hardPair(id, otherId)) {
                     // The solver and cached counter must agree at the strict
                     // cutoff; prevent context-dependent FMA contraction here.
                     precise vec2 delta =

@@ -27,7 +27,10 @@ computed by GPU compute shaders.
   reflection or velocity changes. Key `B` switches to walls at the screen
   edges and back, without restarting (see [Walls](#walls)).
 - Each body's position and velocity are stored in an SSBO as
-  `vec4(x, y, vx, vy)` in normalized coordinates. Every body has unit mass.
+  `vec4(x, y, vx, vy)` in normalized coordinates. A parallel material buffer
+  holds `vec2(mass, friction)`: every body has unit mass except the bodies of
+  [rectangular blocks](#rectangular-blocks), and every body has the friction
+  coefficient `--friction` (`0` by default).
 - Initial positions are uniformly random across the screen and initial
   velocities are zero. The seed is generated with `SecureRandom` and printed
   to the console.
@@ -127,10 +130,21 @@ scenario changes.
   small screen tiles, so neighbouring bodies have neighbouring IDs and every
   neighbor search reads nearby memory. It is a pure permutation and costs
   about 0.1 ms at 400k bodies.
-- Bodies are modeled as smooth circles with a restitution coefficient of `0`.
-- A symmetric Jacobi correction removes penetration and approaching normal
-  velocity. Position correction is converted to velocity with
-  `Δv = Δx/Δt`.
+- Bodies are modeled as circles with a restitution coefficient of `0`.
+- A Jacobi correction removes penetration and approaching normal velocity.
+  Each body of a pair takes the other's share of the pair mass,
+  `m_j / (m_i + m_j)`, so the impulses are equal and opposite and momentum is
+  kept; equal masses split a correction in half. Position correction is
+  converted to velocity with `Δv = Δx/Δt`.
+- Coulomb friction acts on the tangential relative velocity. The pair
+  coefficient is `sqrt(μ_i μ_j)`; the tangential change is at most `μ` times
+  the normal change of the same pass and never reverses sliding. A wall uses
+  the body's own coefficient. With `μ = 0` (the default) the friction code is
+  skipped and results are bit for bit those of smooth bodies.
+- Gravity weighs every body by its mass: CIC deposit, exact near-field
+  sources, and cell monopoles (cell masses are summed in `1/256` units, exact
+  for unit masses). Gravity is normalized to the total mass. A uniform field
+  accelerates every body alike, so buoyancy comes from collisions alone.
 - Pressure is written only by the final collision pass. Body color follows an
   HSV gradient from cyan through green and yellow to red; values above
   `--pressure-max` are clamped to red.
@@ -211,6 +225,53 @@ dropped onto a wall stays a rectangle.
 - A GPU test checks that a block hit off centre keeps its shape to `1e-2 px`,
   moves, spins and conserves momentum.
 
+Every body of a block has the mass `--block-density` (`0.5` by default;
+`0.05–10`), the other bodies have unit mass. With the field on and walls, a
+light block dropped onto a pile floats at its surface and a heavy one sinks
+into it; GPU tests check both. Without liquid mode the pile is a granular
+solid: equal frictionless discs lock into a hexagonal packing, so a block
+finds its level where it lands, as on sand. A light block buried deep in a
+pile stays there, and a heavy one stops once the pile below can carry it. In
+[liquid mode](#liquid-mode) a light block rises from the bottom and a heavy
+one sinks to it.
+
+### Liquid mode
+
+Key `L` (or `--liquid=true`) turns the bodies outside blocks into a liquid.
+It is a position-based fluid (Macklin & Müller 2013) solved on the GPU once
+per physics step, after the collision substeps:
+
+1. A linked-list grid with cells no smaller than the kernel radius `h`
+   (`--liquid-kernel`, `2` contact diameters) is built once per step.
+2. `--liquid-iterations` (`4`) Jacobi iterations solve the density
+   constraint `C = max(ρ/ρ0 − 1, 0)` of every liquid body, with the 2D poly6
+   kernel for density and the spiky kernel for its gradient. The rest density
+   `ρ0` is that of the hexagonal packing, so the liquid keeps the spacing of
+   ordinary bodies. The constraint only pushes, so a free surface never
+   clumps. Corrections become velocity as `Δv = Δx/Δt`.
+3. XSPH viscosity (`--liquid-viscosity`, `0.05`) smooths the flow between
+   liquid bodies.
+
+- Liquid bodies do not collide with each other as hard discs, so they never
+  lock into a packing and flow under any pressure. Every pair with a block
+  body, and every wall, stays a hard contact: liquid cannot seep through a
+  block however much it is compressed.
+- Block bodies count in the density around them and take the reaction of
+  the liquid scaled by the mass ratio, so every pair keeps its momentum; the
+  rigid projection spreads it over the block. Buoyancy follows: a block of
+  `--block-density` below `1` floats, above `1` sinks.
+- Every pass searches around the cell a body had when the grid was built,
+  so a pair is seen from both sides even when bodies cross cells during the
+  iterations. Momentum is kept exactly; a GPU test checks it with a block in
+  a violently expanding blob.
+- Pressure colours show the compression `C`.
+- Physics is cheaper with the liquid on: pairs of liquid bodies skip the hard
+  contact count. On the `calm` benchmark (50,000 bodies, `3440×1440`, RTX 2060
+  SUPER) a step takes `1.50 ms` with the liquid and `2.13 ms` without it; the
+  liquid passes take `0.43 ms`.
+- GPU tests: a column collapses into a level pool of the expected depth, a
+  light block rises from the bottom, a heavy one sinks, momentum is kept.
+
 ### Overlay and console
 
 The upper-left overlay shows:
@@ -283,6 +344,7 @@ screen.
 | `↑` `↓` `←` `→` | Toggle a uniform gravity field in that direction |
 | `C` | Remove all bodies; projectiles can be fired into the empty screen |
 | `G` | Toggle gravity between bodies; the uniform field and collisions stay |
+| `L` | Toggle liquid mode for bodies outside blocks |
 | `R` | Create a new GPU session and restart the current scenario |
 | `Esc` | Exit |
 
@@ -290,7 +352,9 @@ screen.
 
 - 64-bit Windows or Linux.
 - JDK 18 installed; the build explicitly uses `jvmToolchain(18)`.
-- A GPU and driver supporting OpenGL 4.3 Core, compute shaders, and SSBOs.
+- A GPU and driver supporting OpenGL 4.3 Core, compute shaders, and SSBOs,
+  with at least 9 storage buffers per compute shader (the specification
+  minimum is 8; current NVIDIA, AMD and Intel drivers allow 16 or more).
 - A primary monitor accessible through GLFW. The application opens fullscreen
   on that monitor at its current resolution.
 - Internet access on the first Gradle Wrapper run to download Gradle and Maven
@@ -393,6 +457,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--sort-interval=N` | `2` | Physics steps between spatial reorderings of the body arrays, `N ≥ 0`; `0` disables it |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
+| `--friction=F` | `0` | Coulomb friction coefficient of every body, `F ≥ 0` |
 | `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
 | `--adaptive-displacement-fraction=F` | `0.25` | Allowed displacement as a fraction of body diameter, `0–1` |
 | `--adaptive-penetration-fraction=F` | `0.125` | Penetration trigger as a fraction of body diameter, `0–1` |
@@ -419,6 +484,11 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-size-step=F` | `10` | Diameter increment selected by keys `1–9` |
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
 | `--projectile-plus-bodies=N` | `50000 / S²` | Projectile body count selected by key `+` |
+| `--block-density=F` | `0.5` | Mass of each body of an RMB block, `0.05–10`; other bodies have `1` |
+| `--liquid=true\|false` | `false` | Start in liquid mode (key `L` toggles it) |
+| `--liquid-kernel=F` | `2` | Liquid kernel radius in contact diameters, `1.5–4` |
+| `--liquid-iterations=N` | `4` | Liquid density iterations per physics step, `1–16` |
+| `--liquid-viscosity=F` | `0.05` | XSPH viscosity per physics step, `0–1` |
 | `--preview-period-px=F` | `6` | Projectile-preview dash period |
 | `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
 | `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |

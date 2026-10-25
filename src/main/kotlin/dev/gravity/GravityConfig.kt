@@ -19,6 +19,7 @@ data class GravityConfig(
     val collisions: CollisionConfig = CollisionConfig(),
     val trajectory: TrajectoryConfig = TrajectoryConfig(),
     val projectiles: ProjectileConfig = ProjectileConfig(),
+    val liquid: LiquidConfig = LiquidConfig(),
     val presentation: PresentationConfig = PresentationConfig(),
     val diagnostics: DiagnosticsConfig = DiagnosticsConfig(),
 ) {
@@ -65,6 +66,7 @@ data class GravityConfig(
             "diameter",
             "collision-neighbor-radius",
             "restitution",
+            "friction",
             "coincident-distance-epsilon",
             "adaptive-collisions",
             "collision-cache",
@@ -98,6 +100,11 @@ data class GravityConfig(
             "projectile-size-step",
             "projectile-max-diameter",
             "projectile-plus-bodies",
+            "block-density",
+            "liquid",
+            "liquid-kernel",
+            "liquid-iterations",
+            "liquid-viscosity",
             "preview-period-px",
             "frames",
             "square-test",
@@ -307,6 +314,10 @@ data class GravityConfig(
                         "restitution",
                         defaults.collisions.restitutionCoefficient,
                     ),
+                    friction = floatValue(
+                        "friction",
+                        defaults.collisions.friction,
+                    ),
                     coincidentDistanceSquaredEpsilon = floatValue(
                         "coincident-distance-epsilon",
                         defaults.collisions.coincidentDistanceSquaredEpsilon,
@@ -392,6 +403,10 @@ data class GravityConfig(
                         "projectile-plus-bodies",
                         scaledCount(defaults.projectiles.plusKeyBodyCount),
                     ),
+                    blockDensity = floatValue(
+                        "block-density",
+                        defaults.projectiles.blockDensity,
+                    ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
                         defaults.projectiles.previewPeriodPixels,
@@ -415,6 +430,21 @@ data class GravityConfig(
                     benchmarkVelocityY = floatValue(
                         "benchmark-projectile-vy",
                         defaults.projectiles.benchmarkVelocityY,
+                    ),
+                ),
+                liquid = LiquidConfig(
+                    enabled = booleanValue("liquid", defaults.liquid.enabled),
+                    kernelRadiusDiameters = floatValue(
+                        "liquid-kernel",
+                        defaults.liquid.kernelRadiusDiameters,
+                    ),
+                    iterations = intValue(
+                        "liquid-iterations",
+                        defaults.liquid.iterations,
+                    ),
+                    viscosity = floatValue(
+                        "liquid-viscosity",
+                        defaults.liquid.viscosity,
                     ),
                 ),
                 presentation = PresentationConfig(
@@ -607,6 +637,8 @@ data class CollisionConfig(
     val contactDiameterPixels: Float = REFERENCE_DIAMETER_PIXELS,
     val neighborCellRadius: Int = 1,
     val restitutionCoefficient: Float = 0f,
+    /** Coulomb friction coefficient given to every body; 0 is smooth. */
+    val friction: Float = 0f,
     val coincidentDistanceSquaredEpsilon: Float = 1e-12f,
     val adaptive: Boolean = false,
     val neighborCache: Boolean = true,
@@ -628,6 +660,7 @@ data class CollisionConfig(
         }
         require(neighborCellRadius in 1..4)
         require(restitutionCoefficient in 0f..1f)
+        require(friction >= 0f && friction.isFinite())
         require(
             coincidentDistanceSquaredEpsilon > 0f &&
                 coincidentDistanceSquaredEpsilon.isFinite(),
@@ -674,6 +707,8 @@ data class ProjectileConfig(
     val digitDiameterStepPixels: Float = 10f,
     val maximumDiameterPixels: Float = 100f,
     val plusKeyBodyCount: Int = 50_000,
+    /** Mass of each body of an RMB block; other bodies have unit mass. */
+    val blockDensity: Float = 0.5f,
     val previewPeriodPixels: Float = 6f,
     val benchmarkOriginX: Float = 0.25f,
     val benchmarkOriginY: Float = 0.5f,
@@ -691,6 +726,9 @@ data class ProjectileConfig(
             "maximum projectile diameter must cover digit 9"
         }
         require(plusKeyBodyCount > 0)
+        require(blockDensity in MINIMUM_DENSITY..MAXIMUM_DENSITY) {
+            "block density must be in $MINIMUM_DENSITY..$MAXIMUM_DENSITY"
+        }
         require(previewPeriodPixels > 0f && previewPeriodPixels.isFinite())
         require(benchmarkOriginX in 0f..1f)
         require(benchmarkOriginY in 0f..1f)
@@ -706,6 +744,32 @@ data class ProjectileConfig(
         } else {
             digit * digitDiameterStepPixels
         }
+    }
+
+    companion object {
+        /** Body masses are summed per gravity cell in 1/256 units. */
+        const val MINIMUM_DENSITY = 0.05f
+        const val MAXIMUM_DENSITY = 10f
+    }
+}
+
+/**
+ * Liquid mode (key L): bodies that are not part of a block become a
+ * position-based fluid instead of colliding as hard discs.
+ */
+data class LiquidConfig(
+    val enabled: Boolean = false,
+    /** Kernel radius in contact diameters. */
+    val kernelRadiusDiameters: Float = 2f,
+    /** Density-constraint iterations per physics step. */
+    val iterations: Int = 4,
+    /** XSPH viscosity per physics step. */
+    val viscosity: Float = 0.05f,
+) {
+    init {
+        require(kernelRadiusDiameters in 1.5f..4f) { "liquid kernel must be 1.5..4 diameters" }
+        require(iterations in 1..16) { "liquid iterations must be in 1..16" }
+        require(viscosity in 0f..1f) { "liquid viscosity must be in 0..1" }
     }
 }
 

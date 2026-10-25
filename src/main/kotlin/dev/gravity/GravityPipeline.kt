@@ -1,6 +1,7 @@
 package dev.gravity
 
 import org.lwjgl.opengl.GL11.GL_FLOAT
+import org.lwjgl.opengl.GL11.glGetInteger
 import org.lwjgl.opengl.GL15.GL_DYNAMIC_DRAW
 import org.lwjgl.opengl.GL15.GL_READ_ONLY
 import org.lwjgl.opengl.GL15.GL_WRITE_ONLY
@@ -13,6 +14,8 @@ import org.lwjgl.opengl.GL15.glMapBuffer
 import org.lwjgl.opengl.GL15.glUnmapBuffer
 import org.lwjgl.opengl.GL30.glBindBufferBase
 import org.lwjgl.opengl.GL30.GL_R32F
+import org.lwjgl.opengl.GL11.GL_RGBA
+import org.lwjgl.opengl.GL30.GL_RGBA32F
 import org.lwjgl.opengl.GL30.GL_R32UI
 import org.lwjgl.opengl.GL30.GL_RED_INTEGER
 import org.lwjgl.opengl.GL31.GL_COPY_READ_BUFFER
@@ -23,7 +26,9 @@ import org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT
 import org.lwjgl.opengl.GL42.GL_COMMAND_BARRIER_BIT
 import org.lwjgl.opengl.GL42.glMemoryBarrier
 import org.lwjgl.opengl.GL43.GL_DISPATCH_INDIRECT_BUFFER
+import org.lwjgl.opengl.GL43.GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS
 import org.lwjgl.opengl.GL43.GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+import org.lwjgl.opengl.GL43.GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
@@ -110,6 +115,12 @@ class GravityPipeline(
      */
     var mutualGravity = true
 
+    /**
+     * Liquid mode: bodies outside blocks form a position-based fluid instead
+     * of colliding as hard discs. See [LiquidSolver].
+     */
+    var liquid = config.liquid.enabled
+
     private val meshWidth get() = if (bounded) 2 * gridWidth else gridWidth
     private val meshHeight get() = if (bounded) 2 * gridHeight else gridHeight
     private val meshCells get() = meshWidth * meshHeight
@@ -152,9 +163,11 @@ class GravityPipeline(
         config.particles.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val accelerationBytes =
         config.particles.capacity.toLong() * 2 * Float.SIZE_BYTES
+    private val materialBytes =
+        config.particles.capacity.toLong() * 4 * Float.SIZE_BYTES
     private val complexBytes = maximumMeshCells.toLong() * 2 * Float.SIZE_BYTES
     private val projectileOffsets = HashMap<Float, List<PixelOffset>>()
-    private val boundStorageBuffers = IntArray(8) { -1 }
+    private val boundStorageBuffers = IntArray(STORAGE_BINDINGS) { -1 }
 
     fun projectileBodyCount(diameterPixels: Float): Int =
         projectileOffsets(diameterPixels).size
@@ -162,6 +175,15 @@ class GravityPipeline(
     private var bodies = buffer(bodyBytes)
     private var collisionBodies = buffer(bodyBytes)
     private var acceleration = buffer(accelerationBytes)
+    /**
+     * Per-body material (mass, Coulomb friction, solid, unused). Bodies have
+     * unit mass except those of RMB blocks; every body has the configured
+     * friction. Block bodies are solid: in liquid mode the others are fluid.
+     */
+    private var materials = buffer(materialBytes)
+    private var spareMaterials = buffer(materialBytes)
+    /** Mass of the active bodies minus their count: zero until a block is added. */
+    private var massExcess = 0f
     // Spatial reordering writes into the free ping-pong body buffer and this
     // spare, then swaps them in.
     private var spareAcceleration = buffer(accelerationBytes)
@@ -181,6 +203,7 @@ class GravityPipeline(
     private val density = buffer(maximumMeshCells.toLong() * Int.SIZE_BYTES)
     private val cellHeads = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val cellCounts = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
+    private val cellMasses = buffer(physicalCells.toLong() * Int.SIZE_BYTES)
     private val nextBody =
         buffer(config.particles.capacity.toLong() * Int.SIZE_BYTES)
     private val collisionHeads = buffer(collisionCells.toLong() * Int.SIZE_BYTES)
@@ -234,6 +257,7 @@ class GravityPipeline(
     private val sortCount = GlProgram.compute("/shaders/spatial_sort_count.comp")
     private val sortScan = GlProgram.compute("/shaders/spatial_sort_scan.comp")
     private val sortScatter = GlProgram.compute("/shaders/spatial_sort_scatter.comp")
+    private val sortMaterials = GlProgram.compute("/shaders/spatial_sort_materials.comp")
     /**
      * Gravity is normalised to the bodies simulated right now, not to the
      * initial count: fired projectiles share the same total mass instead of
@@ -259,6 +283,15 @@ class GravityPipeline(
             profiler = profiler,
         )
     } else null
+    private val liquidSolver = LiquidSolver(
+        config = config.liquid,
+        contactDiameterPixels = config.collisions.contactDiameterPixels,
+        capacity = config.particles.capacity,
+        width = viewportWidth,
+        height = viewportHeight,
+        timeStep = config.collisions.timeStep,
+        bind = ::bind,
+    )
     private val rigidBlocks = RigidBlocks(
         capacity = config.particles.capacity,
         width = viewportWidth,
@@ -267,11 +300,17 @@ class GravityPipeline(
     )
 
     init {
+        check(
+            glGetInteger(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS) >= USED_STORAGE_BINDINGS &&
+                glGetInteger(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS) >= USED_STORAGE_BINDINGS,
+        ) { "The GPU must allow $USED_STORAGE_BINDINGS storage buffers per compute shader" }
         if (config.collisions.neighborCache && neighborCache == null) {
             System.err.println("Neighbor cache exceeds GPU buffer limit; using complete linked-grid collisions")
         }
         seedBodies()
         clearFloatBuffer(acceleration)
+        clearMaterials(materials)
+        clearMaterials(spareMaterials)
         clearFloatBuffer(pressures)
         clearUnsignedIntBuffer(collisionHeads)
         clearUnsignedIntBuffer(collisionAdaptiveState)
@@ -311,7 +350,7 @@ class GravityPipeline(
             null,
         )?.asIntBuffer() ?: error("Unable to map density for FFT validation")
         val expected = DoubleArray(cells * 2)
-        val inverseMassScale = 1.0 / massScaleFor(activeBodies.toFloat())
+        val inverseMassScale = 1.0 / massScaleFor(normalizationMass)
         repeat(cells) { index ->
             expected[index * 2] =
                 (densityMap[index].toLong() and 0xffff_ffffL) * inverseMassScale
@@ -388,6 +427,7 @@ class GravityPipeline(
             )
         }
         profiler?.end(GpuStage.COLLISION_SUBSTEPS)
+        if (liquid) resolveLiquid(activeBodies)
         if (mutualGravity) buildForce(activeBodies)
         applyKick(activeBodies, initial = false)
         // The final gravity kick can create new inward contact velocity in the
@@ -426,7 +466,9 @@ class GravityPipeline(
         bind(3, cellHeads)
         bind(4, nextBody)
         bind(5, cellCounts)
+        bind(6, cellMasses)
         bind(7, bodies)
+        bind(8, materials)
         trajectoryCompute.int("uStepCount", config.trajectory.steps)
         trajectoryCompute.int("uMeshWidth", meshWidth)
         trajectoryCompute.int("uMeshHeight", meshHeight)
@@ -521,7 +563,7 @@ class GravityPipeline(
             0.5f * config.collisions.contactDiameterPixels
         val insideX = if (bounded) centerX.coerceIn(radius, viewportWidthFloat - radius) else centerX
         val insideY = if (bounded) centerY.coerceIn(radius, viewportHeightFloat - radius) else centerY
-        return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets)
+        return uploadBodies(firstBody, insideX, insideY, velocityX, velocityY, offsets, mass = 1f, solid = false)
     }
 
     /**
@@ -555,8 +597,10 @@ class GravityPipeline(
         val offsets = lattice.map { PixelOffset(it.x - meanX, it.y - meanY) }
         val centerX = 0.5f * (minX + maxX) + meanX
         val centerY = 0.5f * (minY + maxY) + meanY
-        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets)
+        val density = config.projectiles.blockDensity
+        val spawned = uploadBodies(firstBody, centerX, centerY, 0f, 0f, offsets, density, solid = true)
         rigidBlocks.add(firstBody, offsets, centerX, centerY)
+        massExcess += spawned * (density - 1f)
         return spawned
     }
 
@@ -571,7 +615,20 @@ class GravityPipeline(
         velocityX: Float,
         velocityY: Float,
         offsets: List<PixelOffset>,
+        mass: Float,
+        solid: Boolean,
     ): Int {
+        val material = memAllocFloat(offsets.size * 4)
+        try {
+            repeat(offsets.size) {
+                material.put(mass).put(config.collisions.friction).put(if (solid) 1f else 0f).put(0f)
+            }
+            material.flip()
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, materials)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, firstBody.toLong() * 4 * Float.SIZE_BYTES, material)
+        } finally {
+            memFree(material)
+        }
         val upload = memAllocFloat(offsets.size * 4)
         try {
             offsets.forEach { offset ->
@@ -730,13 +787,13 @@ class GravityPipeline(
     }
 
     private fun buildForce(activeBodies: Int) {
-        val totalMass = activeBodies.toFloat()
-        val massScale = massScaleFor(totalMass)
+        val massScale = massScaleFor(normalizationMass)
         profiler?.begin(GpuStage.GRAVITY_GRID)
         clear.use()
         bind(0, density)
         bind(1, cellHeads)
         bind(2, cellCounts)
+        bind(3, cellMasses)
         clear.int("uMeshCells", meshCells)
         clear.int("uParticleCells", physicalCells)
         dispatch(maxOf(meshCells, physicalCells))
@@ -748,6 +805,8 @@ class GravityPipeline(
         bind(2, cellHeads)
         bind(3, nextBody)
         bind(4, cellCounts)
+        bind(5, cellMasses)
+        bind(6, materials)
         build.int("uCount", activeBodies)
         build.int("uMeshWidth", meshWidth)
         build.int("uMeshHeight", meshHeight)
@@ -802,8 +861,10 @@ class GravityPipeline(
         writePressure: Boolean,
         substepIndex: Int?,
     ) {
+        // Both solvers read masses and friction from binding 8.
+        bind(8, materials)
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded)
+            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap
@@ -879,6 +940,7 @@ class GravityPipeline(
         )
         collisionCount.int("uSubstepIndex", substepIndex ?: -1)
         collisionCount.int("uBounded", if (bounded) 1 else 0)
+        collisionCount.int("uLiquid", if (liquid) 1 else 0)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_COUNT)
@@ -925,6 +987,7 @@ class GravityPipeline(
         collisionSolve.int("uWritePressure", if (writePressure) 1 else 0)
         collisionSolve.int("uSubstepIndex", substepIndex ?: -1)
         collisionSolve.int("uBounded", if (bounded) 1 else 0)
+        collisionSolve.int("uLiquid", if (liquid) 1 else 0)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_SOLVE)
@@ -933,6 +996,27 @@ class GravityPipeline(
         bodies = collisionBodies
         collisionBodies = swap
         rigidBlocks.project(bodies, bounded)
+    }
+
+    private fun resolveLiquid(activeBodies: Int) {
+        profiler?.begin(GpuStage.LIQUID)
+        val result = liquidSolver.resolve(
+            input = bodies,
+            spare = collisionBodies,
+            materials = materials,
+            pressures = pressures,
+            active = activeBodies,
+            bounded = bounded,
+        )
+        if (result != bodies) {
+            collisionBodies = bodies
+            bodies = result
+        }
+        // The linked collision grid clears only the cells of the positions it
+        // was built from, which the liquid passes have just replaced.
+        if (neighborCache == null) clearUnsignedIntBuffer(collisionHeads)
+        rigidBlocks.project(bodies, bounded)
+        profiler?.end(GpuStage.LIQUID)
     }
 
     private fun prepareAdaptiveCollisions(activeBodies: Int) {
@@ -1003,6 +1087,8 @@ class GravityPipeline(
         bind(4, cellHeads)
         bind(5, nextBody)
         bind(6, cellCounts)
+        bind(7, cellMasses)
+        bind(8, materials)
         kick.int("uCount", activeBodies)
         kick.float("uTotalMass", normalizationMass)
         kick.int("uMeshWidth", meshWidth)
@@ -1083,6 +1169,15 @@ class GravityPipeline(
         barrier()
         bodies = collisionBodies.also { collisionBodies = bodies }
         acceleration = spareAcceleration.also { spareAcceleration = acceleration }
+
+        sortMaterials.use()
+        bind(0, sortDestinations)
+        bind(1, materials)
+        bind(2, spareMaterials)
+        sortMaterials.int("uCount", activeBodies)
+        dispatchBodies(activeBodies)
+        barrier()
+        materials = spareMaterials.also { spareMaterials = materials }
         rigidBlocks.remap(sortDestinations)
         // Cached candidate lists and linked grids name the old IDs.
         neighborCache?.invalidate() ?: clearUnsignedIntBuffer(collisionHeads)
@@ -1095,7 +1190,7 @@ class GravityPipeline(
      * projectile is fired. An empty screen keeps a unit mass.
      */
     private fun normalizeTo(activeBodies: Int) {
-        val mass = max(1, activeBodies).toFloat()
+        val mass = max(1f, activeBodies + massExcess)
         if (mass == normalizationMass) return
         normalizationMass = mass
         initializeKernel()
@@ -1262,6 +1357,18 @@ class GravityPipeline(
         )
     }
 
+    /** Unit mass, the configured friction and not solid in every slot. */
+    private fun clearMaterials(buffer: Int) {
+        val material = memAllocFloat(4)
+        try {
+            material.put(1f).put(config.collisions.friction).put(0f).put(0f).flip()
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer)
+            glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_RGBA32F, GL_RGBA, GL_FLOAT, material)
+        } finally {
+            memFree(material)
+        }
+    }
+
     private fun clearUnsignedIntBuffer(buffer: Int) {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer)
         glClearBufferData(
@@ -1315,6 +1422,7 @@ class GravityPipeline(
     override fun close() {
         neighborCache?.close()
         rigidBlocks.close()
+        liquidSolver.close()
         listOf(
             clear,
             build,
@@ -1336,6 +1444,7 @@ class GravityPipeline(
             sortCount,
             sortScan,
             sortScatter,
+            sortMaterials,
         )
             .forEach(GlProgram::close)
         intArrayOf(
@@ -1343,6 +1452,8 @@ class GravityPipeline(
             collisionBodies,
             acceleration,
             spareAcceleration,
+            materials,
+            spareMaterials,
             sortCounts,
             sortOffsets,
             sortBlockTotals,
@@ -1352,6 +1463,7 @@ class GravityPipeline(
             density,
             cellHeads,
             cellCounts,
+            cellMasses,
             nextBody,
             collisionHeads,
             collisionNext,
@@ -1376,6 +1488,10 @@ class GravityPipeline(
         private const val MAXIMUM_FFT_AXIS = 2048
         /** Largest float below 1, as in the collision shaders. */
         private const val MAXIMUM_UNIT = 0.99999994f
+        /** Cached binding slots, more than any shader uses. */
+        private const val STORAGE_BINDINGS = 16
+        /** Bindings 0..8: kick, trajectory and both solvers use all nine. */
+        private const val USED_STORAGE_BINDINGS = 9
         /** Values scanned per workgroup by spatial_sort_scan.comp. */
         private const val SORT_SCAN_BLOCK = 1024
         /** Target reordering tile edge; a tile holds a few dozen dense bodies. */

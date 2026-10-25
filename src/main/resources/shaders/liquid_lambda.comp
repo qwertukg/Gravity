@@ -1,0 +1,51 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Heads { int heads[]; };
+layout(std430, binding = 2) readonly buffer Next { int next[]; };
+layout(std430, binding = 3) writeonly buffer Lambdas { float lambdas[]; };
+layout(std430, binding = 4) writeonly buffer Pressures { float pressures[]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+uniform int uCount;
+uniform float uRelaxation;
+uniform int uWritePressure;
+uniform float uPressureScale;
+#include "liquid_kernel.glsl"
+
+// Density constraint C = max(rho / rho0 - 1, 0) of every fluid body and its
+// multiplier lambda. Solid (block) bodies add to the density around them like
+// fluid does, so the liquid presses on a block's surface, but they have no
+// constraint of their own. The constraint only pushes: a free surface never
+// pulls bodies together.
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    if (materials[id].z != 0.0) {
+        lambdas[id] = 0.0;
+        return;
+    }
+    vec2 position = bodies[id].xy;
+    float density = 0.0;
+    vec2 ownGradient = vec2(0.0);
+    float otherGradients = 0.0;
+    ivec2 home = homeCell(id);
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 cell = home + ivec2(dx, dy);
+            if (!neighbourCell(cell)) continue;
+            for (int other = heads[liquidCellIndex(cell)]; other >= 0; other = next[other]) {
+                vec2 delta = pixelDelta(position, bodies[other].xy);
+                float distanceSquared = dot(delta, delta);
+                density += poly6(distanceSquared);
+                if (uint(other) == id) continue;
+                vec2 gradient = spikyGradient(delta, sqrt(distanceSquared)) / uRestDensity;
+                ownGradient += gradient;
+                // A block moves as a whole, so its bodies barely respond.
+                if (materials[other].z == 0.0) otherGradients += dot(gradient, gradient);
+            }
+        }
+    }
+    float constraint = max(density / uRestDensity - 1.0, 0.0);
+    lambdas[id] = -constraint / (dot(ownGradient, ownGradient) + otherGradients + uRelaxation);
+    if (uWritePressure != 0) pressures[id] = constraint * uPressureScale;
+}

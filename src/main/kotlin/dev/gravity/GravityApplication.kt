@@ -16,6 +16,7 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_KEY_B
 import org.lwjgl.glfw.GLFW.GLFW_KEY_C
 import org.lwjgl.glfw.GLFW.GLFW_KEY_G
+import org.lwjgl.glfw.GLFW.GLFW_KEY_L
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_RIGHT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
@@ -117,6 +118,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var clearRequested = false
     /** G: gravity between bodies; kept across resets. */
     private var mutualGravity = true
+    /** L: bodies outside blocks behave as a liquid; kept across resets. */
+    private var liquid = config.liquid.enabled
     /** Arrow-key fields, each toggled independently; opposite arrows cancel. */
     private val fieldDirections = LinkedHashSet<FieldDirection>()
     private var paused = false
@@ -499,6 +502,10 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 mutualGravity = !mutualGravity
                 pipeline?.mutualGravity = mutualGravity
             }
+            if (key == GLFW_KEY_L && action == GLFW_PRESS) {
+                liquid = !liquid
+                pipeline?.liquid = liquid
+            }
             if (key == GLFW_KEY_C && action == GLFW_PRESS) {
                 clearRequested = true
                 resetRequested = true
@@ -700,6 +707,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             bounded = bounded,
         ).also {
             it.mutualGravity = mutualGravity
+            it.liquid = liquid
             applyField(it)
         }
     }
@@ -804,6 +812,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             bounded = bounded,
             field = fieldDirections.joinToString(" ") { it.label }.ifEmpty { "off" },
             mutualGravity = mutualGravity,
+            liquid = liquid,
             fps = fps,
             activeBodies = activeBodies,
             projectileBodies = projectileBodyCount,

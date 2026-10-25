@@ -37,6 +37,7 @@ class RigidBlockIntegrationTest {
                 val initial = CollisionGpuAccess.floats(pipeline, "bodies", active * 4)
                 initial[0] = 10f / width; initial[1] = 10f / height; initial[2] = 0f; initial[3] = 0f
                 CollisionGpuAccess.upload(pipeline, initial)
+                // Only the unit-mass bullet moves.
                 val momentumBefore = momentumX(initial, from = 1, until = active)
 
                 pipeline.initializeAcceleration(active)
@@ -78,7 +79,9 @@ class RigidBlockIntegrationTest {
                 assertTrue(velocityX > 5.0, "the hit moves the block: $velocityX px/s")
                 assertTrue(abs(angle) > 0.05, "an off-centre hit spins the block: $angle rad")
                 // The parked body stays at rest; sorting may have moved its ID.
-                val momentumAfter = momentumX(bodies, from = 0, until = active)
+                // Masses must have followed the bodies through every sort.
+                val materials = CollisionGpuAccess.floats(pipeline, "materials", active * 4)
+                val momentumAfter = (0 until active).sumOf { materials[4 * it] * bodies[it * 4 + 2].toDouble() * width }
                 assertEquals(momentumBefore, momentumAfter, 0.01 * momentumBefore, "momentum is conserved")
             }
             assertEquals(GL_NO_ERROR, glGetError())

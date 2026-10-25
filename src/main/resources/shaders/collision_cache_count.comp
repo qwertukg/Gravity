@@ -19,6 +19,7 @@ uniform int uAdaptive;
 uniform int uSubstepIndex;
 uniform int uBounded;
 #include "collision_cache_grid.glsl"
+#include "collision_material.glsl"
 
 float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition) {
     // The reference counter evaluates an unordered pair in ascending ID order
@@ -36,6 +37,8 @@ float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition
 }
 
 void countContact(uint id, uint other, float distanceSquared, inout uint contacts) {
+    // Candidates keep every neighbour, so toggling liquid mode needs no rebuild.
+    if (!hardPair(id, other)) return;
     if (distanceSquared < uDiameterPixels * uDiameterPixels) {
         if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
         contacts++;

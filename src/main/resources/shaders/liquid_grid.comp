@@ -1,0 +1,16 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer Heads { int heads[]; };
+layout(std430, binding = 2) writeonly buffer Next { int next[]; };
+uniform int uCount;
+#include "liquid_kernel.glsl"
+
+// Heads are cleared to -1 beforehand; every body pushes itself onto its cell.
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    int cell = liquidCellIndex(liquidCell(bodies[id].xy));
+    cells[id] = cell;
+    next[id] = atomicExchange(heads[cell], int(id));
+}

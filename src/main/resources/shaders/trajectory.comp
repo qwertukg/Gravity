@@ -7,7 +7,10 @@ layout(std430, binding = 2) readonly buffer ForceY { vec2 forceY[]; };
 layout(std430, binding = 3) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 4) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 5) readonly buffer CellCounts { int cellCounts[]; };
+layout(std430, binding = 6) readonly buffer CellMasses { uint cellMasses[]; };
 layout(std430, binding = 7) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+const float CELL_MASS_UNITS = 256.0;
 
 uniform int uStepCount;
 uniform int uMeshWidth;
@@ -132,8 +135,7 @@ vec2 accelerationAt(vec2 position) {
             if (!homeCell && count > uExactCellThreshold) {
                 vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
-                // Unit masses: the count is the exact aggregate mass.
-                float aggregateMass = float(count);
+                float aggregateMass = float(cellMasses[index]) / CELL_MASS_UNITS;
                 result += localAcceleration(
                     center,
                     position,
@@ -150,7 +152,7 @@ vec2 accelerationAt(vec2 position) {
                     result += localAcceleration(
                         bodies[other].xy,
                         position,
-                        1.0
+                        materials[other].x
                     );
                     other = nextBody[other];
                     visited++;

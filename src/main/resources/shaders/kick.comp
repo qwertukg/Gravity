@@ -8,6 +8,8 @@ layout(std430, binding = 3) readonly buffer ForceY { vec2 forceY[]; };
 layout(std430, binding = 4) readonly buffer Heads { int heads[]; };
 layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 6) readonly buffer CellCounts { int cellCounts[]; };
+layout(std430, binding = 7) readonly buffer CellMasses { uint cellMasses[]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -30,6 +32,7 @@ uniform float uTotalMass;
 uniform int uExactCellThreshold;
 uniform int uMaximumHomeInteractions;
 uniform float uMinimumDistanceCellFraction;
+const float CELL_MASS_UNITS = 256.0;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -125,8 +128,7 @@ void main() {
             if (!homeCell && count > uExactCellThreshold) {
                 vec2 center = (vec2(wrapCell(neighborCell)) + 0.5) /
                     vec2(uPhysicalWidth, uPhysicalHeight);
-                // Unit masses: the count is the exact aggregate mass.
-                float aggregateMass = float(count);
+                float aggregateMass = float(cellMasses[index]) / CELL_MASS_UNITS;
                 result += localAcceleration(center, body.xy, aggregateMass);
             } else {
                 int other = heads[index];
@@ -136,7 +138,7 @@ void main() {
                     : uExactCellThreshold;
                 while (other >= 0 && visited < limit) {
                     if (uint(other) != id) {
-                        result += localAcceleration(bodies[other].xy, body.xy, 1.0);
+                        result += localAcceleration(bodies[other].xy, body.xy, materials[other].x);
                     }
                     other = nextBody[other];
                     visited++;
