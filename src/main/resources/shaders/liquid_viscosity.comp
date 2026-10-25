@@ -1,0 +1,55 @@
+#version 430 core
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Positions { vec2 positions[]; };
+layout(std430, binding = 1) readonly buffer Heads { int heads[]; };
+layout(std430, binding = 2) readonly buffer Next { int next[]; };
+layout(std430, binding = 6) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 7) writeonly buffer OutputBodies { vec4 outputBodies[]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+uniform int uCount;
+uniform float uViscosity;
+uniform int uIteration;
+#include "liquid_kernel.glsl"
+
+vec2 blend = vec2(0.0);
+
+void addNeighbour(uint other, vec2 position, vec2 velocity) {
+    vec2 delta = pixelDelta(position, positions[other]);
+    float distanceSquared = dot(delta, delta);
+    // The kernel is zero from its radius on.
+    if (distanceSquared >= uKernelRadius * uKernelRadius) return;
+    blend += (bodies[other].zw * uViewport - velocity) * poly6(distanceSquared);
+}
+
+// XSPH viscosity between fluid bodies: each velocity moves towards its
+// neighbours' by c * sum (v_j - v_i) W_ij / rho0. The pair terms are equal
+// and opposite, so momentum is kept; blocks are left alone.
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 body = bodies[id];
+    if (materials[id].z == 0.0) {
+        vec2 velocity = body.zw * uViewport;
+        uint count = lists[listOffset(PLANE_COUNT, id)];
+        // A raised flag means the last corrections outran the lists.
+        if (lists[flagOffset(uIteration)] == 0u && count <= LIST_SLOTS) {
+            for (uint slot = 0u; slot < count; slot++) {
+                uint entry = lists[listOffset(PLANE_ENTRIES + slot, id)];
+                if ((entry & SOLID_NEIGHBOUR) == 0u) addNeighbour(entry, body.xy, velocity);
+            }
+        } else {
+            ivec2 home = homeCell(id);
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    ivec2 cell = home + ivec2(dx, dy);
+                    if (!neighbourCell(cell)) continue;
+                    for (int other = heads[liquidCellIndex(cell)]; other >= 0; other = next[other]) {
+                        if (uint(other) != id && materials[other].z == 0.0) addNeighbour(uint(other), body.xy, velocity);
+                    }
+                }
+            }
+        }
+        body.zw = (velocity + blend * (uViscosity / uRestDensity)) / uViewport;
+    }
+    outputBodies[id] = body;
+}

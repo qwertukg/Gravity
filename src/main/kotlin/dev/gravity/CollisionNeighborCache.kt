@@ -54,19 +54,32 @@ internal class CollisionNeighborCache(
     private val references = buffer(capacity.toLong() * 2 * Float.SIZE_BYTES)
     private val cache = buffer(cacheBytes(capacity))
     private val nodes = buffer(capacity.toLong() * NODE_BYTES)
+    private val solidTileWidth = (gridWidth + SOLID_TILE - 1) / SOLID_TILE
+    /** Epoch of the last build with a solid body in each tile (collision_cache_layout.glsl). */
+    private val solidTiles = buffer(solidTileWidth.toLong() * ((gridHeight + SOLID_TILE - 1) / SOLID_TILE) * Int.SIZE_BYTES)
     private val drift = GlProgram.compute("/shaders/collision_cache_drift.comp")
-    private val build = GlProgram.compute("/shaders/collision_cache_build.comp")
-    private val count = GlProgram.compute("/shaders/collision_cache_count.comp")
-    private val solve = GlProgram.compute("/shaders/collision_cache_solve.comp")
+    private val hardBuild = GlProgram.compute("/shaders/collision_cache_build.comp")
+    private val liquidBuild = GlProgram.compute("/shaders/collision_cache_build.comp", "LIQUID")
+    // RIGID variants run while glued blocks exist (collision_material.glsl).
+    private val hardCount = GlProgram.compute("/shaders/collision_cache_count.comp")
+    private val rigidCount = GlProgram.compute("/shaders/collision_cache_count.comp", "RIGID")
+    private val hardSolve = GlProgram.compute("/shaders/collision_cache_solve.comp")
+    private val rigidSolve = GlProgram.compute("/shaders/collision_cache_solve.comp", "RIGID")
+    private val counts = listOf(hardCount, rigidCount)
+    private val solves = listOf(hardSolve, rigidSolve)
 
     // Heads store (epoch << idBits) | (id + 1); id + 1 never exceeds capacity.
     private val idBits = 32 - Integer.numberOfLeadingZeros(capacity)
     private val maximumEpoch = ((1L shl (32 - idBits)) - 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     private var epoch = 0
+    /** Liquid mode and solid bodies of the cached lists, which hold only hard pairs. */
+    private var listedPairs: Pair<Boolean, Boolean>? = null
 
     init {
         require(idBits < 32) { "capacity leaves no bits for the grid epoch" }
         clearStateWords(0, STATE_WORDS)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, solidTiles)
+        glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, null as ByteBuffer?)
 
         // Guard both the displacement test and candidate cutoff against pixel
         // conversion/minimum-image float rounding. Too small a skin disables
@@ -77,37 +90,48 @@ internal class CollisionNeighborCache(
         val cellSize = min(width.toDouble() / gridWidth, height.toDouble() / gridHeight)
         val searchRadius = max(collision.neighborCellRadius, ceil(candidateRadius / cellSize).toInt())
             .coerceAtMost(max(gridWidth, gridHeight))
-        listOf(drift, build, count, solve).forEach { program ->
+        (listOf(drift, hardBuild, liquidBuild) + counts + solves).forEach { program ->
             program.use()
             program.int("uAdaptive", if (collision.adaptive) 1 else 0)
             program.int("uCapacity", capacity)
         }
-        listOf(build, count, solve).forEach { program ->
+        (listOf(hardBuild, liquidBuild) + counts + solves).forEach { program ->
             program.use()
             program.int("uGridWidth", gridWidth)
             program.int("uGridHeight", gridHeight)
             program.int("uIdBits", idBits)
+        }
+        (listOf(liquidBuild) + counts).forEach { program ->
+            program.use()
+            program.int("uSolidTileWidth", solidTileWidth)
         }
         drift.use()
         drift.vec2("uViewport", width.toFloat(), height.toFloat())
         drift.float("uTimeStep", collision.timeStep)
         drift.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
         drift.float("uReuseDistanceSquared", reuseDistance * reuseDistance)
-        listOf(count, solve).forEach { program ->
+        (counts + solves).forEach { program ->
             program.use()
             program.int("uSearchRadius", searchRadius)
             program.int("uNeighborCellRadius", collision.neighborCellRadius)
             program.vec2("uViewport", width.toFloat(), height.toFloat())
             program.float("uDiameterPixels", collision.contactDiameterPixels)
         }
-        count.use()
-        count.float("uCandidateRadiusSquared", (candidateRadius * candidateRadius).toFloat())
-        solve.use()
-        solve.int("uDenseContactThreshold", collision.denseContactThreshold)
-        solve.float("uRestitutionCoefficient", collision.restitutionCoefficient)
-        solve.float("uCoincidentDistanceSquaredEpsilon", collision.coincidentDistanceSquaredEpsilon)
-        solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
-        solve.float("uTimeStep", collision.timeStep)
+        counts.forEach { count ->
+            count.use()
+            count.float("uCandidateRadiusSquared", (candidateRadius * candidateRadius).toFloat())
+        }
+        solves.forEach { solve ->
+            solve.use()
+            solve.int("uDenseContactThreshold", collision.denseContactThreshold)
+            solve.float("uRestitutionCoefficient", collision.restitutionCoefficient)
+            solve.float("uCoincidentDistanceSquaredEpsilon", collision.coincidentDistanceSquaredEpsilon)
+            solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
+            solve.float("uTimeStep", collision.timeStep)
+        }
+        rigidSolve.use()
+        rigidSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
+        rigidSolve.float("uRestingSpeed", restingSpeed(collision))
     }
 
     fun resolve(
@@ -120,8 +144,16 @@ internal class CollisionNeighborCache(
         writePressure: Boolean,
         substep: Int?,
         bounded: Boolean,
+        liquid: Boolean,
+        solids: Boolean,
+        /** Glued blocks; their buffer is bound to 9 (collision_rigid.glsl). */
+        rigidGroups: Int,
     ) {
         require(active in 1..capacity)
+        if (listedPairs != (liquid to solids)) {
+            listedPairs = liquid to solids
+            invalidate()
+        }
         if (++epoch > maximumEpoch) {
             // Older tags would become ambiguous: start again from empty lists.
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
@@ -136,6 +168,7 @@ internal class CollisionNeighborCache(
         drift.float("uKickDt", kickDt)
         drift.float("uDriftDt", driftDt)
         drift.int("uBounded", if (bounded) 1 else 0)
+        drift.int("uRigidGroups", rigidGroups)
         bind(0, input)
         bind(1, references)
         bind(2, cache)
@@ -146,6 +179,7 @@ internal class CollisionNeighborCache(
         profiler?.end(GpuStage.COLLISION_DRIFT)
 
         profiler?.begin(GpuStage.COLLISION_BUILD)
+        val build = if (liquid) liquidBuild else hardBuild
         iteration(build, substep)
         build.int("uCount", active)
         build.int("uEpoch", epoch)
@@ -155,29 +189,37 @@ internal class CollisionNeighborCache(
         bind(3, references)
         bind(4, cache)
         bind(5, adaptive)
+        bind(6, solidTiles)
         dispatch(active, substep)
         barrier()
         profiler?.end(GpuStage.COLLISION_BUILD)
 
         profiler?.begin(GpuStage.COLLISION_COUNT)
+        val count = if (rigidGroups > 0) rigidCount else hardCount
         iteration(count, substep)
         count.int("uCount", active)
         count.int("uBounded", if (bounded) 1 else 0)
+        count.int("uLiquid", if (liquid) 1 else 0)
+        count.int("uNoHardPairs", if (liquid && !solids) 1 else 0)
         bind(0, input)
         bind(1, heads)
         bind(2, nodes)
         bind(3, contacts)
         bind(4, adaptive)
         bind(5, cache)
+        bind(6, solidTiles)
         dispatch(active, substep)
         barrier()
         profiler?.end(GpuStage.COLLISION_COUNT)
 
         profiler?.begin(GpuStage.COLLISION_SOLVE)
+        val solve = if (rigidGroups > 0) rigidSolve else hardSolve
         iteration(solve, substep)
         solve.int("uCount", active)
         solve.int("uWritePressure", if (writePressure) 1 else 0)
         solve.int("uBounded", if (bounded) 1 else 0)
+        solve.int("uLiquid", if (liquid) 1 else 0)
+        if (rigidGroups > 0) solve.float("uDriftDt", driftDt)
         // Sample one body per workgroup. This only chooses between two exact
         // broad phases for the next pass; it never limits contacts.
         solve.int("uDenseSampleThreshold", max(8, ((active + 255) / 256 + 3) / 4))
@@ -220,8 +262,8 @@ internal class CollisionNeighborCache(
     private fun barrier() = glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     override fun close() {
-        listOf(drift, build, count, solve).forEach(GlProgram::close)
-        intArrayOf(references, cache, nodes).forEach(::glDeleteBuffers)
+        (listOf(drift, hardBuild, liquidBuild) + counts + solves).forEach(GlProgram::close)
+        intArrayOf(references, cache, nodes, solidTiles).forEach(::glDeleteBuffers)
     }
 
     companion object {
@@ -234,6 +276,10 @@ internal class CollisionNeighborCache(
         const val STATE_REBUILDS = 2
         const val STATE_DIRECT = 3
         private const val NODE_BYTES = 16L
+        private const val SOLID_TILE = 8
+
+        /** Approach speed below which a block contact never bounces: 20 diameters a second. */
+        fun restingSpeed(collisions: CollisionConfig) = 20f * collisions.contactDiameterPixels
 
         fun stateByteOffset(capacity: Int): Long = capacity.toLong() * CACHE_PLANES * Int.SIZE_BYTES
 

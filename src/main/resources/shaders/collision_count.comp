@@ -16,6 +16,21 @@ uniform int uNeighborCellRadius;
 uniform int uAdaptive;
 uniform int uSubstepIndex;
 uniform int uBounded;
+#include "collision_material.glsl"
+#ifdef RIGID
+#include "collision_rigid.glsl"
+
+// Counts the pair once for the blocks in it (collision_rigid.glsl).
+void countPairContact(uint first, uint second) {
+    int firstGroup = groupOf(first);
+    int secondGroup = groupOf(second);
+    if (firstGroup >= 0 && secondGroup >= 0) {
+        countPartnerContact(min(firstGroup, secondGroup), max(firstGroup, secondGroup));
+    } else if (firstGroup >= 0 || secondGroup >= 0) {
+        countLooseContact(max(firstGroup, secondGroup));
+    }
+}
+#endif
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uGridWidth;
@@ -39,6 +54,10 @@ void main() {
         bodies[id].xy * vec2(uGridWidth, uGridHeight)
     ));
     float diameterSquared = uDiameterPixels * uDiameterPixels;
+#ifdef RIGID
+    int group = groupOf(id);
+    if (group >= 0) countWallContacts(group, positionPixels);
+#endif
     for (int dy = -uNeighborCellRadius; dy <= uNeighborCellRadius; ++dy) {
         for (int dx = -uNeighborCellRadius; dx <= uNeighborCellRadius; ++dx) {
             ivec2 cell = wrapCell(home + ivec2(dx, dy));
@@ -46,7 +65,7 @@ void main() {
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             while (encoded != 0u) {
                 uint otherId = encoded - 1u;
-                if (otherId > id) {
+                if (otherId > id && hardPair(id, otherId)) {
                     // The solver and cached counter must agree at the strict
                     // cutoff; prevent context-dependent FMA contraction here.
                     precise vec2 delta =
@@ -54,9 +73,12 @@ void main() {
                     // Walls: no minimum image, bodies across an edge never touch.
                     if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     precise float distanceSquared = dot(delta, delta);
-                    if (distanceSquared < diameterSquared) {
+                    if (distanceSquared < contactReachSquared(id, otherId)) {
                         atomicAdd(contactCounts[id], 1u);
                         atomicAdd(contactCounts[otherId], 1u);
+#ifdef RIGID
+                        countPairContact(id, otherId);
+#endif
                     }
                 }
                 encoded = collisionNext[otherId];

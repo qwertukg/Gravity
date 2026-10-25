@@ -27,8 +27,14 @@ computed by GPU compute shaders.
   reflection or velocity changes. Key `B` switches to walls at the screen
   edges and back, without restarting (see [Walls](#walls)).
 - Each body's position and velocity are stored in an SSBO as
-  `vec4(x, y, vx, vy)` in normalized coordinates. Every body has unit mass.
-- Initial positions are uniformly random across the screen and initial
+  `vec4(x, y, vx, vy)` in normalized coordinates. A parallel material buffer
+  holds `vec4(mass, friction, solid, unused)`: every body has unit mass
+  except the bodies of
+  [rectangular blocks](#rectangular-blocks), and every body has the friction
+  coefficient `--friction` (`0` by default).
+- The interactive start is described in [Start](#start). The uniform start
+  (`--scenario=none`, and every benchmark and diagnostic run) works as
+  follows. Initial positions are uniformly random across the screen and initial
   velocities are zero. The seed is generated with `SecureRandom` and printed
   to the console.
 - Bodies are never merged or removed. New bodies are added only by firing
@@ -127,10 +133,21 @@ scenario changes.
   small screen tiles, so neighbouring bodies have neighbouring IDs and every
   neighbor search reads nearby memory. It is a pure permutation and costs
   about 0.1 ms at 400k bodies.
-- Bodies are modeled as smooth circles with a restitution coefficient of `0`.
-- A symmetric Jacobi correction removes penetration and approaching normal
-  velocity. Position correction is converted to velocity with
-  `Δv = Δx/Δt`.
+- Bodies are modeled as circles with a restitution coefficient of `0`.
+- A Jacobi correction removes penetration and approaching normal velocity.
+  Each body of a pair takes the other's share of the pair mass,
+  `m_j / (m_i + m_j)`, so the impulses are equal and opposite and momentum is
+  kept; equal masses split a correction in half. Position correction is
+  converted to velocity with `Δv = Δx/Δt`.
+- Coulomb friction acts on the tangential relative velocity. The pair
+  coefficient is `sqrt(μ_i μ_j)`; the tangential change is at most `μ` times
+  the normal change of the same pass and never reverses sliding. A wall uses
+  the body's own coefficient. With `μ = 0` (the default) the friction code is
+  skipped and results are bit for bit those of smooth bodies.
+- Gravity weighs every body by its mass: CIC deposit, exact near-field
+  sources, and cell monopoles (cell masses are summed in `1/256` units, exact
+  for unit masses). Gravity is normalized to the total mass. A uniform field
+  accelerates every body alike, so buoyancy comes from collisions alone.
 - Pressure is written only by the final collision pass. Body color follows an
   HSV gradient from cyan through green and yellow to red; values above
   `--pressure-max` are clamped to red.
@@ -185,6 +202,153 @@ unchanged.
 - Geometry is recomputed from monotonic time at most 30 times per second and
   rendered every frame from a retained GPU buffer.
 
+### Rectangular blocks
+
+Dragging with the right mouse button outlines a rectangle with a green dashed
+frame; releasing it fills the rectangle with hexagonally packed bodies at
+rest, with the same contact diameter as every other body. The overlay shows
+the future body count as `Block bodies:` while dragging. A block that would
+exceed `--capacity` is skipped, like a projectile.
+
+The bodies of a block are glued into one rigid body. Each of them still
+collides, feels gravity and the uniform field and hits walls on its own;
+after every collision pass the block is projected onto the rigid motion that
+best fits its bodies (2D shape matching: centre of mass, best-fit rotation,
+and the velocity and angular velocity that keep its momentum and angular
+momentum). A hit therefore pushes and spins the whole block, and a block
+dropped onto a wall stays a rectangle.
+
+- Members are listed per block and padded to whole 256-body workgroups, so
+  every workgroup sums a single block in shared memory: no float atomics, and
+  the result does not depend on scheduling.
+- Spatial sorting renames bodies; the scatter records every body's new ID and
+  the member lists follow it.
+- Up to `256` blocks per session; `C`, `R` and scenario changes remove them.
+  Without blocks the passes are skipped.
+- A GPU test checks that a block hit off centre keeps its shape to `1e-2 px`,
+  moves, spins and conserves momentum.
+
+Blocks collide as solids. Each block gets a shape from its own bodies, a
+signed distance field on a grid in its frame (`GlueShape`): outside it is the
+distance to the nearest member less a body radius, so a body touches the
+block where it touches a member; inside, the members are closed into one
+solid and the field points out of the nearest face. The field is smoothed,
+so a face is flat instead of rippled by its members, while a corner stays at
+its member. Any glued body gets its shape this way, whatever its outline.
+
+- A contact with a member is a contact with the block: its normal and depth
+  come from the shape, and the correction is split by the block's rigid
+  response (mass, inertia, arm), not by the mass of one member. Contacts
+  solved side by side split a body's mass over them (mass splitting), so a
+  block in many contacts is never overshot: a block shares its mass equally
+  among its partners (the floor, each block, each loose body), and with a
+  partner among the pairs of bodies touching it, so the floor under a stack
+  carries it at once. Each body of a pair still takes only its own equal and
+  opposite share; momentum is kept.
+- Split impulse: the push out of a block or a wall moves positions only;
+  speeds change by impulses alone. Turning the push into speed, as loose
+  bodies do, would throw a body back as fast as it came.
+- Restitution `--block-restitution` (`0.2`) between blocks and against
+  walls; a loose body gets the larger of its own and the block's, liquid
+  none; below `20` diameters a second nothing bounces, so resting stays
+  rest. The impulses of a block reach their speed over a few passes, so each
+  pair of blocks, or block and wall, remembers its approach speed while the
+  impact lasts and aims at that times the restitution.
+- Coulomb friction `--block-friction` (`0.5`) against walls and other blocks:
+  the tangential impulse never exceeds friction times the normal one, along
+  the block's rigid response in that direction.
+- A body that crossed the outline during a substep is pushed back where it
+  came in (sphere tracing along its path), so a fast bullet cannot be pushed
+  on through, however thin the block.
+- A body whose centre still ends up inside a block is put back on the outline
+  at once, position only. Between blocks the blocks themselves move apart by
+  their masses; a body wedged between two blocks, or between a block and a
+  wall, moves the blocks instead. A block is never left in a wall: its hull
+  is kept inside. Where a wall, or bodies a wall holds, push a block back,
+  the block also loses its speed into them, with its friction along the
+  wall, so a held block never builds up speed it could burst free with.
+- A block's spin comes from its members' speeds about the arms of its pose,
+  not from where its members were pushed to: a member pushed out of a wall
+  stands for its whole block and moves far.
+- Members of one block never collide with each other.
+- Collision passes with this code are compiled separately (`RIGID`) and run
+  only while blocks exist; without blocks the passes are the plain ones.
+- GPU tests shoot bullets up to `6000 px/s`, a `100 px` cannonball and a
+  block into blocks, crush two blocks against a wall, stack and sink blocks
+  in a pile and in liquid: nothing passes through a block, no block reaches
+  into a wall, and a centre found within a block's outline is at most a
+  fraction of a body diameter deep, only at impacts.
+- GPU tests drop and throw blocks onto the floor, walls and each other and
+  measure the restitution, slide them on the floor and on a block against
+  Coulomb's law, and strike a small block with a big one and the other way
+  round against the one-dimensional impact of their masses.
+
+Every body of a block has the mass `--block-density` (`0.5` by default;
+`0.05–10`), the other bodies have unit mass, so a block's mass grows with its
+area: a big block takes a hit with less speed than a small one. Falling and
+floating do not depend on mass, only on density, as for real bodies. With the field on and walls, a
+light block dropped onto a pile floats at its surface and a heavy one sinks
+into it; GPU tests check both. Without liquid mode the pile is a granular
+solid: equal frictionless discs lock into a hexagonal packing, so a block
+finds its level where it lands, as on sand. A light block buried deep in a
+pile stays there, and a heavy one stops once the pile below can carry it. In
+[liquid mode](#liquid-mode) a light block rises from the bottom and a heavy
+one sinks to it.
+
+### Liquid mode
+
+Key `L` (or `--liquid=true`) turns the bodies outside blocks into a liquid.
+It is a position-based fluid (Macklin & Müller 2013) solved on the GPU once
+per physics step, after the collision substeps:
+
+1. A linked-list grid with cells no smaller than the kernel radius `h`
+   (`--liquid-kernel`, `2` contact diameters) is built once per step.
+2. `--liquid-iterations` (`12`) Jacobi iterations solve the density
+   constraint `C = max(ρ/ρ0 − 1, 0)` of every liquid body, with the 2D poly6
+   kernel for density and the spiky kernel for its gradient. The rest density
+   `ρ0` is that of the hexagonal packing, so the liquid keeps the spacing of
+   ordinary bodies. The constraint only pushes, so a free surface never
+   clumps. Corrections become velocity as `Δv = Δx/Δt`.
+3. XSPH viscosity (`--liquid-viscosity`, `0.1`) smooths the flow between
+   liquid bodies.
+
+- Liquid bodies do not collide with each other as hard discs, so they never
+  lock into a packing and flow under any pressure. Walls stay hard contacts.
+  Against a block the liquid's own pressure does the work; a hard contact is
+  only the guard that puts a liquid body back on the block's outline when
+  it gets inside, position only. Turning that push into speed would blast
+  the liquid that carries a block away from under it.
+- Block bodies count in the density around them and take the reaction of
+  the liquid scaled by the mass ratio, so every pair keeps its momentum; the
+  rigid projection spreads it over the block. Buoyancy follows: a block of
+  `--block-density` below `1` floats, above `1` sinks.
+- Every pass searches around the cell a body had when the grid was built,
+  so a pair is seen from both sides even when bodies cross cells during the
+  iterations. Momentum is kept exactly; a GPU test checks it with a block in
+  a violently expanding blob.
+- Walls are filled with virtual rows continuing the hexagonal packing (their
+  poly6 density along a row has a closed form), so liquid against a wall
+  reads the rest density instead of packing onto it. Where a correction
+  would push a body through a wall it stops at its radius and loses the
+  velocity into the wall; otherwise the next collision substep would turn
+  that push into a bounce, and a deep pool would boil at its floor.
+- Deep or strongly pressed liquid needs enough iterations: with `4`, a pool
+  `200 px` deep or a self-gravitating liquid planet keeps stirring itself up
+  (RMS speeds of `70–220 px/s` from rest), because Jacobi leaves a residual
+  in the pressed core. With `12` and viscosity `0.1` both stay at a few px/s
+  and the liquid compresses by about 2%. A GPU test starts both at rest and
+  fails with the old settings.
+- Pressure colours show the compression `C`.
+- Cost on the `calm` benchmark (`3440×1440`, RTX 2060 SUPER): at 50,000
+  bodies the liquid passes take `1.07 ms` and the step costs the same as
+  without the liquid (`2.12 ms`), since pairs of liquid bodies skip the hard
+  contact count; at 200,000 bodies they take `2.7 ms` and the step grows
+  from `3.4` to `5.4 ms`. Fewer `--liquid-iterations` are cheaper for
+  shallow liquid.
+- GPU tests: a column collapses into a level pool of the expected depth, a
+  light block rises from the bottom, a heavy one sinks, deep and
+  self-gravitating liquid stays calm, momentum is kept.
+
 ### Overlay and console
 
 The upper-left overlay shows:
@@ -193,7 +357,8 @@ The upper-left overlay shows:
 - current body count;
 - body count in a projectile of the selected size;
 - time scale as a percentage;
-- future projectile speed while the left mouse button is held.
+- future projectile speed while the left mouse button is held;
+- future block body count while the right mouse button is held.
 
 Controls are shown in the lower-left corner. Both blocks and the scenario
 buttons share one UI layer: STB Easy Font text on the same translucent panels. Every two seconds the console reports body count, FPS,
@@ -201,8 +366,8 @@ smoothed GPU frame time, and FFT grid size.
 
 ### Scenarios
 
-Ten buttons in the top-right corner restart the simulation in a prepared
-scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
+The upper ten buttons in the top-right corner restart the simulation in a
+prepared scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
 is normalized to the current body count (see [Gravity](#gravity)). Distances and body counts are
 authored for a `1440 px` tall screen; distances scale with its height and
 counts with its area (never above the authored counts).
@@ -237,12 +402,43 @@ enclosed mass fraction minus the uniform background removed by the periodic
 solver. One physics step takes about 3–10 ms per scenario on a `3440×1440`
 screen.
 
+### Block scenarios
+
+The buttons below them are the scenes [glued blocks](#rectangular-blocks)
+were checked on; the GPU tests `BlockPenetrationTest` and `BlockDynamicsTest`
+run the same scenes and `BlockScenarioRunTest` runs these buttons. Each
+brings its own environment: walls, no gravity between bodies, the downward
+field where it needs one, and liquid mode where it says so. The walls,
+gravity, liquid and field set before come back with the next scenario above.
+Blocks have mass `0.5` per body unless said otherwise.
+
+| Scenario | `--scenario=` | Field | Setup |
+|---|---|---|---|
+| Bullets into blocks | `bullets` | off | `30 px` bullets at `3000` and `6000 px/s` into `20 px` blocks, a `20 px` one at `3000 px/s` into a `3 px` plate |
+| Cannonball into a block | `cannonball` | off | `100 px` ball at `4000 px/s` into a `40 px` block |
+| Cannonball crushes blocks | `crush` | off | the same ball presses a block into a block at the right wall |
+| Block dropped onto a block | `stack` | down | a block falls onto a long block on the floor |
+| Big block on a small one | `big-on-small` | down | laid on its middle it rests; laid off the edge it tips off and leans |
+| Block rams a block | `ram` | off | a block at `1500 px/s` into a resting one |
+| Heavy block into a pile | `pile` | down | a block of mass `3` per body falls into a granular layer |
+| Blocks sink and rise in liquid | `liquid` | down, liquid | mass `3` sinks, `0.3` rises from the bottom of a pool |
+| Blocks bounce off the floor | `bounce` | down | drops from `100` and `300 px` |
+| Block thrown into a wall | `wall` | off | `600 px/s` into the right wall |
+| Small and big blocks collide | `masses` | off | small into big above, big into small below, at `400 px/s` |
+| Blocks slide with friction | `sliding` | down | at `300 px/s` on the floor and on a long block |
+| Bodies bounce off blocks | `bodies` | off | single bodies at `300 px/s` into a small and a big block |
+| Slow body against a block | `slow-body` | down | a body rolls at `20 px/s` into a block resting on the floor |
+| Blocks thrown and spun | `thrown` | down | one thrown at an angle, one spinning at `3 rad/s` |
+| Blocks on liquid drops | `drops` | down, liquid | a heavy and a light block fall onto a dozen drops on the floor |
+
 ## Controls
 
 | Input | Action |
 |---|---|
 | Hold and drag LMB | Select projectile direction and speed; show prediction |
 | Release LMB | Spawn a projectile at the initial press position |
+| Hold and drag RMB | Outline a rectangle between the press point and the cursor |
+| Release RMB | Fill the rectangle with bodies glued into one rigid block |
 | LMB on a top-right button | Restart in that scenario |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |
@@ -254,6 +450,7 @@ screen.
 | `↑` `↓` `←` `→` | Toggle a uniform gravity field in that direction |
 | `C` | Remove all bodies; projectiles can be fired into the empty screen |
 | `G` | Toggle gravity between bodies; the uniform field and collisions stay |
+| `L` | Toggle liquid mode for bodies outside blocks |
 | `R` | Create a new GPU session and restart the current scenario |
 | `Esc` | Exit |
 
@@ -261,7 +458,9 @@ screen.
 
 - 64-bit Windows or Linux.
 - JDK 18 installed; the build explicitly uses `jvmToolchain(18)`.
-- A GPU and driver supporting OpenGL 4.3 Core, compute shaders, and SSBOs.
+- A GPU and driver supporting OpenGL 4.3 Core, compute shaders, and SSBOs,
+  with at least 9 storage buffers per compute shader (the specification
+  minimum is 8; current NVIDIA, AMD and Intel drivers allow 16 or more).
 - A primary monitor accessible through GLFW. The application opens fullscreen
   on that monitor at its current resolution.
 - Internet access on the first Gradle Wrapper run to download Gradle and Maven
@@ -295,6 +494,33 @@ Run with options:
 ```
 
 Only `--key=value` syntax is supported.
+
+### Start
+
+A plain run starts the Cosmic web scenario as a liquid falling under the
+downward field into a box bounded by the screen edges, with gravity between
+bodies off:
+
+| Option | Default | Runtime key |
+|---|---|---|
+| `--scenario=NAME` | `cosmic-web` | scenario buttons, `R` |
+| `--walls=true\|false` | `true` | `B` |
+| `--mutual-gravity=true\|false` | `false` | `G` |
+| `--field=DIRECTIONS` | `down` | arrows |
+| `--liquid=true\|false` | `true` | `L` |
+
+`NAME` is `none` (the uniform random start of `--bodies`) or one of
+`turbulent-cloud`, `galaxy`, `galaxy-collision`, `spinning-planet`,
+`planetary-impact`, `ringed-planet`, `binary-stars`, `galaxy-flyby`,
+`planetary-system`, `cosmic-web`. `DIRECTIONS` is `off` or a comma-separated
+list of `up`, `down`, `left`, `right`.
+
+Benchmarks and diagnostic starts (`--benchmark`, `--frames`, `--bodies`,
+`--square-test`, `--disc-test`, `--fft-validate`) keep the start their
+measurements were taken with: uniform bodies on the torus, gravity between
+bodies on, no field and no liquid. Any option above still overrides it.
+Walls need an FFT grid of at most `1024` cells per axis; with a larger
+`--grid` the session starts on the torus.
 
 ### Body size
 
@@ -364,6 +590,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--sort-interval=N` | `2` | Physics steps between spatial reorderings of the body arrays, `N ≥ 0`; `0` disables it |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |
+| `--friction=F` | `0` | Coulomb friction coefficient of every body, `F ≥ 0` |
 | `--coincident-distance-epsilon=F` | `1e-12` | Squared-distance epsilon for coincident bodies, `F > 0` |
 | `--adaptive-displacement-fraction=F` | `0.25` | Allowed displacement as a fraction of body diameter, `0–1` |
 | `--adaptive-penetration-fraction=F` | `0.125` | Penetration trigger as a fraction of body diameter, `0–1` |
@@ -390,6 +617,17 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--projectile-size-step=F` | `10` | Diameter increment selected by keys `1–9` |
 | `--projectile-max-diameter=F` | `100` | Diameter selected by key `0` |
 | `--projectile-plus-bodies=N` | `50000 / S²` | Projectile body count selected by key `+` |
+| `--block-density=F` | `0.5` | Mass of each body of an RMB block, `0.05–10`; other bodies have `1` |
+| `--block-friction=F` | `0.5` | Coulomb friction of RMB blocks against walls and blocks; with a loose body, the geometric mean with `--friction` |
+| `--block-restitution=F` | `0.2` | Restitution of RMB blocks against walls and blocks, and the least a loose body gets off one, `0–1` |
+| `--liquid=true\|false` | `true` | Start in liquid mode (key `L` toggles it); see [Start](#start) |
+| `--scenario=NAME` | `cosmic-web` | Start scenario, cosmic or [block](#block-scenarios), or `none`; see [Start](#start) |
+| `--walls=true\|false` | `true` | Start with walls at the screen edges (key `B`) |
+| `--mutual-gravity=true\|false` | `false` | Start with gravity between bodies (key `G`) |
+| `--field=DIRECTIONS` | `down` | Start field directions, or `off` (arrow keys) |
+| `--liquid-kernel=F` | `2` | Liquid kernel radius in contact diameters, `1.5–4` |
+| `--liquid-iterations=N` | `12` | Liquid density iterations per physics step, `1–16` |
+| `--liquid-viscosity=F` | `0.1` | XSPH viscosity per physics step, `0–1` |
 | `--preview-period-px=F` | `6` | Projectile-preview dash period |
 | `--benchmark-projectile-x=F` | `0.25` | Normalized benchmark projectile X origin |
 | `--benchmark-projectile-y=F` | `0.5` | Normalized benchmark projectile Y origin |

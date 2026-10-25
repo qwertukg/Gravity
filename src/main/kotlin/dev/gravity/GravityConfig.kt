@@ -19,6 +19,8 @@ data class GravityConfig(
     val collisions: CollisionConfig = CollisionConfig(),
     val trajectory: TrajectoryConfig = TrajectoryConfig(),
     val projectiles: ProjectileConfig = ProjectileConfig(),
+    val liquid: LiquidConfig = LiquidConfig(),
+    val start: StartConfig = StartConfig(),
     val presentation: PresentationConfig = PresentationConfig(),
     val diagnostics: DiagnosticsConfig = DiagnosticsConfig(),
 ) {
@@ -65,6 +67,7 @@ data class GravityConfig(
             "diameter",
             "collision-neighbor-radius",
             "restitution",
+            "friction",
             "coincident-distance-epsilon",
             "adaptive-collisions",
             "collision-cache",
@@ -98,6 +101,17 @@ data class GravityConfig(
             "projectile-size-step",
             "projectile-max-diameter",
             "projectile-plus-bodies",
+            "block-density",
+            "block-friction",
+            "block-restitution",
+            "scenario",
+            "walls",
+            "mutual-gravity",
+            "field",
+            "liquid",
+            "liquid-kernel",
+            "liquid-iterations",
+            "liquid-viscosity",
             "preview-period-px",
             "frames",
             "square-test",
@@ -307,6 +321,10 @@ data class GravityConfig(
                         "restitution",
                         defaults.collisions.restitutionCoefficient,
                     ),
+                    friction = floatValue(
+                        "friction",
+                        defaults.collisions.friction,
+                    ),
                     coincidentDistanceSquaredEpsilon = floatValue(
                         "coincident-distance-epsilon",
                         defaults.collisions.coincidentDistanceSquaredEpsilon,
@@ -392,6 +410,18 @@ data class GravityConfig(
                         "projectile-plus-bodies",
                         scaledCount(defaults.projectiles.plusKeyBodyCount),
                     ),
+                    blockDensity = floatValue(
+                        "block-density",
+                        defaults.projectiles.blockDensity,
+                    ),
+                    blockFriction = floatValue(
+                        "block-friction",
+                        defaults.projectiles.blockFriction,
+                    ),
+                    blockRestitution = floatValue(
+                        "block-restitution",
+                        defaults.projectiles.blockRestitution,
+                    ),
                     previewPeriodPixels = floatValue(
                         "preview-period-px",
                         defaults.projectiles.previewPeriodPixels,
@@ -417,6 +447,35 @@ data class GravityConfig(
                         defaults.projectiles.benchmarkVelocityY,
                     ),
                 ),
+                liquid = LiquidConfig(
+                    kernelRadiusDiameters = floatValue(
+                        "liquid-kernel",
+                        defaults.liquid.kernelRadiusDiameters,
+                    ),
+                    iterations = intValue(
+                        "liquid-iterations",
+                        defaults.liquid.iterations,
+                    ),
+                    viscosity = floatValue(
+                        "liquid-viscosity",
+                        defaults.liquid.viscosity,
+                    ),
+                ),
+                start = run {
+                    // Benchmarks and diagnostic starts keep the uniform start
+                    // they were measured with; explicit options still win.
+                    val diagnostic = listOf("benchmark", "frames", "square-test", "disc-test", "fft-validate")
+                        .any { it in values } || stringValue("bodies", "GRAVITY_BODIES") != null
+                    val startDefaults = if (diagnostic) StartConfig.UNIFORM else defaults.start
+                    StartConfig(
+                        scenario = values["scenario"]?.let(StartConfig::parseScenario)
+                            ?: startDefaults.scenario.takeIf { "scenario" !in values },
+                        walls = booleanValue("walls", startDefaults.walls),
+                        mutualGravity = booleanValue("mutual-gravity", startDefaults.mutualGravity),
+                        field = values["field"]?.let(StartConfig::parseField) ?: startDefaults.field,
+                        liquid = booleanValue("liquid", startDefaults.liquid),
+                    )
+                },
                 presentation = PresentationConfig(
                     // Fewer, larger bodies: a column holds 1/s as many layers.
                     // Measured cluster pressure falls as about s^-1.2 (p99 is
@@ -607,6 +666,8 @@ data class CollisionConfig(
     val contactDiameterPixels: Float = REFERENCE_DIAMETER_PIXELS,
     val neighborCellRadius: Int = 1,
     val restitutionCoefficient: Float = 0f,
+    /** Coulomb friction coefficient given to every body; 0 is smooth. */
+    val friction: Float = 0f,
     val coincidentDistanceSquaredEpsilon: Float = 1e-12f,
     val adaptive: Boolean = false,
     val neighborCache: Boolean = true,
@@ -628,6 +689,7 @@ data class CollisionConfig(
         }
         require(neighborCellRadius in 1..4)
         require(restitutionCoefficient in 0f..1f)
+        require(friction >= 0f && friction.isFinite())
         require(
             coincidentDistanceSquaredEpsilon > 0f &&
                 coincidentDistanceSquaredEpsilon.isFinite(),
@@ -674,6 +736,18 @@ data class ProjectileConfig(
     val digitDiameterStepPixels: Float = 10f,
     val maximumDiameterPixels: Float = 100f,
     val plusKeyBodyCount: Int = 50_000,
+    /** Mass of each body of an RMB block; other bodies have unit mass. */
+    val blockDensity: Float = 0.5f,
+    /**
+     * Coulomb friction of RMB blocks, against walls and each other; with a
+     * loose body the pair takes the geometric mean with `--friction`.
+     */
+    val blockFriction: Float = 0.5f,
+    /**
+     * Restitution of RMB blocks against walls and each other, and the least a
+     * loose body gets off a block; slow contacts never bounce.
+     */
+    val blockRestitution: Float = 0.2f,
     val previewPeriodPixels: Float = 6f,
     val benchmarkOriginX: Float = 0.25f,
     val benchmarkOriginY: Float = 0.5f,
@@ -691,6 +765,11 @@ data class ProjectileConfig(
             "maximum projectile diameter must cover digit 9"
         }
         require(plusKeyBodyCount > 0)
+        require(blockDensity in MINIMUM_DENSITY..MAXIMUM_DENSITY) {
+            "block density must be in $MINIMUM_DENSITY..$MAXIMUM_DENSITY"
+        }
+        require(blockFriction >= 0f && blockFriction.isFinite()) { "block friction must be non-negative" }
+        require(blockRestitution in 0f..1f) { "block restitution must be in 0..1" }
         require(previewPeriodPixels > 0f && previewPeriodPixels.isFinite())
         require(benchmarkOriginX in 0f..1f)
         require(benchmarkOriginY in 0f..1f)
@@ -705,6 +784,86 @@ data class ProjectileConfig(
             maximumDiameterPixels
         } else {
             digit * digitDiameterStepPixels
+        }
+    }
+
+    companion object {
+        /** Body masses are summed per gravity cell in 1/256 units. */
+        const val MINIMUM_DENSITY = 0.05f
+        const val MAXIMUM_DENSITY = 10f
+    }
+}
+
+/**
+ * Liquid mode (key L): bodies that are not part of a block become a
+ * position-based fluid instead of colliding as hard discs.
+ */
+data class LiquidConfig(
+    /** Kernel radius in contact diameters. */
+    val kernelRadiusDiameters: Float = 2f,
+    /**
+     * Density-constraint iterations per physics step. Deep or strongly pressed
+     * liquid (a 100k-body pool, a self-gravitating planet) needs about 12 for
+     * Jacobi to settle; with fewer the residual keeps stirring it.
+     */
+    val iterations: Int = 12,
+    /** XSPH viscosity per physics step. */
+    val viscosity: Float = 0.1f,
+) {
+    init {
+        require(kernelRadiusDiameters in 1.5f..4f) { "liquid kernel must be 1.5..4 diameters" }
+        require(iterations in 1..16) { "liquid iterations must be in 1..16" }
+        require(viscosity in 0f..1f) { "liquid viscosity must be in 0..1" }
+    }
+}
+
+/**
+ * State the interactive session starts in: a liquid scenario falling under
+ * the downward field into a box. Keys B, G, L and the arrows change it at
+ * runtime; the scenario buttons and R restart. Benchmarks and diagnostic
+ * starts use [UNIFORM] unless these options are given.
+ */
+data class StartConfig(
+    /** Scenario to start in; null is the uniform random start of --bodies. */
+    val scenario: MenuScenario? = Scenario.COSMIC_WEB,
+    /** Walls at the screen edges instead of the torus (key B). */
+    val walls: Boolean = true,
+    /** Gravity between bodies (key G). */
+    val mutualGravity: Boolean = false,
+    /** Uniform field directions (arrow keys). */
+    val field: Set<FieldDirection> = setOf(FieldDirection.DOWN),
+    /** Liquid mode (key L). */
+    val liquid: Boolean = true,
+) {
+    companion object {
+        /** The start benchmarks and diagnostics were measured with. */
+        val UNIFORM = StartConfig(
+            scenario = null,
+            walls = false,
+            mutualGravity = true,
+            field = emptySet(),
+            liquid = false,
+        )
+
+        /** A scenario name such as cosmic-web or bullets, or none for the uniform start. */
+        fun parseScenario(value: String): MenuScenario? {
+            val name = value.lowercase()
+            if (name == "none") return null
+            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries
+            return scenarios.firstOrNull { it.optionName == name }
+                ?: throw IllegalArgumentException(
+                    "Unknown --scenario: $value; use none or " +
+                        scenarios.joinToString(", ") { it.optionName },
+                )
+        }
+
+        /** Comma-separated directions such as down or down,left; off for none. */
+        fun parseField(value: String): Set<FieldDirection> {
+            if (value.lowercase() == "off") return emptySet()
+            return value.split(',').map { part ->
+                FieldDirection.entries.firstOrNull { it.label == part.trim().lowercase() }
+                    ?: throw IllegalArgumentException("Unknown --field direction: $part; use up, down, left, right or off")
+            }.toCollection(LinkedHashSet())
         }
     }
 }

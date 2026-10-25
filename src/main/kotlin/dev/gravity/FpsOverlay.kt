@@ -10,6 +10,7 @@ class FpsOverlay(
 ) : AutoCloseable {
     private val controlText =
         "LMB drag: aim / fire\n" +
+            "RMB drag: glued rectangular block\n" +
             "1-9: bullet size step ${projectileConfig.digitDiameterStepPixels.toInt()} px\n" +
             "0: bullet size ${projectileConfig.maximumDiameterPixels.toInt()} px\n" +
             "+: bullet of ${projectileConfig.plusKeyBodyCount} bodies\n" +
@@ -20,6 +21,7 @@ class FpsOverlay(
             "Arrows: uniform gravity on / off\n" +
             "C: clear all bodies\n" +
             "G: gravity between bodies on / off\n" +
+            "L: liquid on / off\n" +
             "R: reset\n" +
             "Esc: exit"
     private val layer = UiLayer(
@@ -32,9 +34,11 @@ class FpsOverlay(
     private var renderedProjectileBodies = -1
     private var renderedTimeScaleBits = Long.MIN_VALUE
     private var renderedFutureSpeedBits = Long.MIN_VALUE
+    private var renderedBlockBodies: Int? = -1
     private var renderedBounded = false
     private var renderedField = ""
     private var renderedMutualGravity = true
+    private var renderedLiquid = false
 
     fun render(
         fps: Double,
@@ -42,9 +46,11 @@ class FpsOverlay(
         projectileBodies: Int,
         timeScale: Double,
         futureProjectileSpeed: Double?,
+        blockBodies: Int?,
         bounded: Boolean,
         field: String,
         mutualGravity: Boolean,
+        liquid: Boolean,
     ) {
         val fpsBits = fps.toRawBits()
         val timeScaleBits = timeScale.toRawBits()
@@ -54,24 +60,29 @@ class FpsOverlay(
             projectileBodies != renderedProjectileBodies ||
             timeScaleBits != renderedTimeScaleBits ||
             futureSpeedBits != renderedFutureSpeedBits ||
+            blockBodies != renderedBlockBodies ||
             bounded != renderedBounded ||
             field != renderedField ||
-            mutualGravity != renderedMutualGravity
+            mutualGravity != renderedMutualGravity ||
+            liquid != renderedLiquid
         ) {
             val projectileSpeed = futureProjectileSpeed?.let {
                 String.format(Locale.ROOT, "%.1f px/s", it)
             } ?: "-"
+            val block = blockBodies?.toString() ?: "-"
             val text = String.format(
                 Locale.ROOT,
-                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nSpace: %s\nField: %s\nGravity: %s",
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nBlock bodies: %s\nSpace: %s\nField: %s\nGravity: %s\nLiquid: %s",
                 fps,
                 activeBodies,
                 projectileBodies,
                 timeScale * 100.0,
                 projectileSpeed,
+                block,
                 if (bounded) "walls" else "torus",
                 field,
                 if (mutualGravity) "on" else "off",
+                if (liquid) "on" else "off",
             )
             val margin = config.overlayMarginPixels
             val lineHeight = config.overlayLineHeightPixels
@@ -99,9 +110,11 @@ class FpsOverlay(
             renderedProjectileBodies = projectileBodies
             renderedTimeScaleBits = timeScaleBits
             renderedFutureSpeedBits = futureSpeedBits
+            renderedBlockBodies = blockBodies
             renderedBounded = bounded
             renderedField = field
             renderedMutualGravity = mutualGravity
+            renderedLiquid = liquid
         }
 
         layer.draw()

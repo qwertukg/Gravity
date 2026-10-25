@@ -53,6 +53,13 @@ tasks.test {
     exclude("**/CollisionShaderIntegrationTest.class")
     exclude("**/ParticleRendererTest.class")
     exclude("**/SpatialSortIntegrationTest.class")
+    exclude("**/RigidBlockIntegrationTest.class")
+    exclude("**/BuoyancyIntegrationTest.class")
+    exclude("**/FrictionIntegrationTest.class")
+    exclude("**/LiquidIntegrationTest.class")
+    exclude("**/BlockPenetrationTest.class")
+    exclude("**/BlockDynamicsTest.class")
+    exclude("**/BlockScenarioRunTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -64,6 +71,13 @@ tasks.register<Test>("gpuTest") {
     include("**/CollisionShaderIntegrationTest.class")
     include("**/ParticleRendererTest.class")
     include("**/SpatialSortIntegrationTest.class")
+    include("**/RigidBlockIntegrationTest.class")
+    include("**/BuoyancyIntegrationTest.class")
+    include("**/FrictionIntegrationTest.class")
+    include("**/LiquidIntegrationTest.class")
+    include("**/BlockPenetrationTest.class")
+    include("**/BlockDynamicsTest.class")
+    include("**/BlockScenarioRunTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }
@@ -73,6 +87,24 @@ tasks.register<JavaExec>("collisionBenchmark") {
     group = "verification"
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "dev.gravity.CollisionBenchmark"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
+}
+
+tasks.register<JavaExec>("liquidBenchmark") {
+    description = "Measure liquid mode physics on the GPU without opening a visible window."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.LiquidBenchmark"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
+}
+
+tasks.register<JavaExec>("liquidEquivalence") {
+    description = "Record or compare one liquid solve and liquid-mode collision passes on fixed states."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.LiquidEquivalenceCheck"
     dependsOn(tasks.testClasses)
     jvmArgs("-Xms512m", "-Xmx2g")
 }

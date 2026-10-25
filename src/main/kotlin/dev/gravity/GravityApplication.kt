@@ -16,7 +16,9 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_KEY_B
 import org.lwjgl.glfw.GLFW.GLFW_KEY_C
 import org.lwjgl.glfw.GLFW.GLFW_KEY_G
+import org.lwjgl.glfw.GLFW.GLFW_KEY_L
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
+import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_RIGHT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_FORWARD_COMPAT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_PROFILE
@@ -84,19 +86,39 @@ private data class ProjectileGesture(
     val diameterPixels: Float,
 )
 
+/** A screen rectangle in physics pixels (origin bottom-left). */
+private data class BlockGesture(
+    val minX: Float,
+    val minY: Float,
+    val maxX: Float,
+    val maxY: Float,
+)
+
 class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var window = 0L
     private var pipeline: GravityPipeline? = null
     private var particleRenderer: ParticleRenderer? = null
     private var trajectoryProgram: GlProgram? = null
     private var projectilePreviewProgram: GlProgram? = null
+    private var blockPreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
     private var scenarioMenu: ScenarioMenu? = null
-    private var scenario: Scenario? = null
-    private var requestedScenario: Scenario? = null
+    private var scenario: MenuScenario? = config.start.scenario
+    private var requestedScenario: MenuScenario? = null
+    /** Blocks of the current block scenario, glued after its loose bodies. */
+    private var scenarioBlocks: List<ScenarioBlock> = emptyList()
+    /**
+     * The walls, gravity, liquid and field the user had before a block
+     * scenario took them over; they come back with the next cosmic scenario.
+     */
+    private var savedEnvironment: Environment? = null
     private var sessionConfig = config
     /** Screen-edge walls instead of the torus; kept across resets. */
-    private var bounded = false
+    private var bounded = config.start.walls && GravityPipeline.supportsWalls(config.gravity).also { supported ->
+        if (config.start.walls && !supported) {
+            System.err.println("Walls need an FFT grid of at most 1024 cells per axis; starting on the torus")
+        }
+    }
     private var vao = 0
     private var timer: GpuTimer? = null
     private var profiler: GpuProfiler? = null
@@ -106,9 +128,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var stopRequested = false
     private var clearRequested = false
     /** G: gravity between bodies; kept across resets. */
-    private var mutualGravity = true
+    private var mutualGravity = config.start.mutualGravity
+    /** L: bodies outside blocks behave as a liquid; kept across resets. */
+    private var liquid = config.start.liquid
     /** Arrow-key fields, each toggled independently; opposite arrows cancel. */
-    private val fieldDirections = LinkedHashSet<FieldDirection>()
+    private val fieldDirections = LinkedHashSet(config.start.field)
     private var paused = false
     private val simulationSpeed = SimulationSpeed(
         scalePerScroll = config.presentation.timeScalePerScroll,
@@ -123,6 +147,10 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var dragOriginY = 0f
     private var draggingProjectile = false
     private var pendingProjectile: ProjectileGesture? = null
+    private var blockOriginX = 0f
+    private var blockOriginY = 0f
+    private var draggingBlock = false
+    private var pendingBlock: BlockGesture? = null
     private var projectileDiameterPixels = config.projectiles.defaultDiameterPixels
     private var projectileBodyCount = 0
     private val plusKeyProjectileDiameterPixels by lazy {
@@ -152,6 +180,10 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             "/shaders/projectile_preview.vert",
             "/shaders/trajectory.frag",
         )
+        blockPreviewProgram = GlProgram.graphics(
+            "/shaders/block_preview.vert",
+            "/shaders/trajectory.frag",
+        )
         vao = glGenVertexArrays()
         fpsOverlay = FpsOverlay(
             viewportWidth,
@@ -167,6 +199,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         }
 
         var active = sessionConfig.particles.initialBodies
+        active += spawnScenarioBlocks(simulation, active)
         initializeSimulation(simulation, active)
         activateFullscreenWindow()
         render(
@@ -174,6 +207,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             fps = 0.0,
             trajectoryVisible = false,
             futureProjectileSpeed = null,
+            block = null,
         )
         glfwSwapBuffers(window)
         glfwPollEvents()
@@ -197,7 +231,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
 
         while (!glfwWindowShouldClose(window)) {
             if (resetRequested) {
-                requestedScenario?.let { scenario = it }
+                requestedScenario?.let(::selectScenario)
                 requestedScenario = null
                 // C clears the screen: a fresh session with no active bodies;
                 // projectiles can be fired into it.
@@ -216,6 +250,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 simulation = createSimulation()
                 pipeline = simulation
                 active = if (clearing) 0 else sessionConfig.particles.initialBodies
+                if (!clearing) active += spawnScenarioBlocks(simulation, active)
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
                 timer = if (profiler == null) {
@@ -226,6 +261,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 initializeSimulation(simulation, active)
                 pendingProjectile = null
                 draggingProjectile = false
+                pendingBlock = null
+                draggingBlock = false
                 trajectoryUpdates.reset()
                 displayedFps = 0.0
                 overlayFrames = 0
@@ -292,6 +329,29 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 }
                 pendingProjectile = null
             }
+            pendingBlock?.let { block ->
+                val spawned = simulation.spawnBlock(
+                    firstBody = active,
+                    minX = block.minX,
+                    minY = block.minY,
+                    maxX = block.maxX,
+                    maxY = block.maxY,
+                )
+                if (spawned > 0) {
+                    active += spawned
+                    System.err.printf(
+                        Locale.ROOT,
+                        "block=%,d bodies  size=%.0fx%.0f px  total=%,d%n",
+                        spawned,
+                        block.maxX - block.minX,
+                        block.maxY - block.minY,
+                        active,
+                    )
+                } else if (blockBodyCount(block) > 0) {
+                    System.err.println("Block skipped: particle capacity or the ${RigidBlocks.MAXIMUM_GROUPS}-block limit is reached")
+                }
+                pendingBlock = null
+            }
             if (stopRequested) {
                 simulation.stopBodies(active)
                 stopRequested = false
@@ -341,6 +401,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 overlayFrames = 0
                 overlayWindowStart = overlayNow
             }
+            val block = if (draggingBlock) currentBlock() else null
             val futureProjectileSpeed = when {
                 !draggingProjectile -> null
                 trajectory == null -> 0.0
@@ -352,6 +413,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 fps = displayedFps,
                 trajectoryVisible = trajectory != null || benchmarkTrajectoryVisible,
                 futureProjectileSpeed = futureProjectileSpeed,
+                block = block,
             )
             profiler?.end(GpuStage.RENDER)
             profiler?.endFrame()
@@ -453,6 +515,10 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 mutualGravity = !mutualGravity
                 pipeline?.mutualGravity = mutualGravity
             }
+            if (key == GLFW_KEY_L && action == GLFW_PRESS) {
+                liquid = !liquid
+                pipeline?.liquid = liquid
+            }
             if (key == GLFW_KEY_C && action == GLFW_PRESS) {
                 clearRequested = true
                 resetRequested = true
@@ -496,6 +562,20 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             cursorY = y
         }
         glfwSetMouseButtonCallback(window) { _, button, action, _ ->
+            if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+                when (action) {
+                    GLFW_PRESS -> {
+                        blockOriginX = cursorX.toFloat()
+                        blockOriginY = viewportHeight - cursorY.toFloat()
+                        draggingBlock = true
+                    }
+                    org.lwjgl.glfw.GLFW.GLFW_RELEASE -> {
+                        if (draggingBlock) pendingBlock = currentBlock()
+                        draggingBlock = false
+                    }
+                }
+                return@glfwSetMouseButtonCallback
+            }
             if (button != GLFW_MOUSE_BUTTON_LEFT) return@glfwSetMouseButtonCallback
             val physicsX = cursorX.toFloat()
             val physicsY = viewportHeight - cursorY.toFloat()
@@ -555,7 +635,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 "seed=${config.particles.seed?.toString() ?: "random"}, " +
                 "profile=${config.diagnostics.profile}, " +
                 "benchmark=${config.diagnostics.benchmarkScenario?.name?.lowercase() ?: "off"}, " +
-                "foreground=$foreground; LMB drag fires a " +
+                "foreground=$foreground; RMB drag creates a glued rectangular block; LMB drag fires a " +
                 "${projectileDiameterPixels.toInt()}px projectile; " +
                 "digits 1-9 use ${config.projectiles.digitDiameterStepPixels.toInt()}px steps; " +
                 "0 selects ${config.projectiles.maximumDiameterPixels.toInt()}px; " +
@@ -583,29 +663,75 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
     }
 
+    /** The rectangle between the RMB press point and the cursor. */
+    private fun currentBlock(): BlockGesture {
+        val x = cursorX.toFloat().coerceIn(0f, viewportWidth.toFloat())
+        val y = (viewportHeight - cursorY.toFloat()).coerceIn(0f, viewportHeight.toFloat())
+        return BlockGesture(
+            minX = minOf(blockOriginX, x),
+            minY = minOf(blockOriginY, y),
+            maxX = maxOf(blockOriginX, x),
+            maxY = maxOf(blockOriginY, y),
+        )
+    }
+
+    private fun blockBodyCount(block: BlockGesture) =
+        RectangularBlock.bodyCount(
+            config.collisions.contactDiameterPixels,
+            block.maxX - block.minX,
+            block.maxY - block.minY,
+        )
+
     /**
      * Starts the selected scenario, or the configured uniform start when none
      * is selected. Gravity is normalised to the session's initial body count.
      */
     private fun createSimulation(): GravityPipeline {
         val current = scenario
-        val state = current?.bodies(
-            ScenarioSpace(
-                widthPixels = viewportWidth.toFloat(),
-                heightPixels = viewportHeight.toFloat(),
-                gravitationalConstant = config.gravity.gravitationalConstant,
-                contactDiameterPixels = config.collisions.contactDiameterPixels,
-            ),
-            seed = config.particles.seed ?: java.security.SecureRandom().nextLong(),
+        val space = ScenarioSpace(
+            widthPixels = viewportWidth.toFloat(),
+            heightPixels = viewportHeight.toFloat(),
+            gravitationalConstant = config.gravity.gravitationalConstant,
+            contactDiameterPixels = config.collisions.contactDiameterPixels,
         )
+        val seed = config.particles.seed ?: java.security.SecureRandom().nextLong()
+        val state: FloatArray?
+        when (current) {
+            is BlockScenario -> {
+                val setup = current.setup(space, seed)
+                state = setup.bodies
+                scenarioBlocks = setup.blocks
+                // A block scenario brings its own box, field and liquid; the
+                // user's come back with the next cosmic scenario.
+                if (savedEnvironment == null) {
+                    savedEnvironment = Environment(bounded, mutualGravity, liquid, fieldDirections.toSet())
+                }
+                bounded = GravityPipeline.supportsWalls(config.gravity)
+                mutualGravity = false
+                liquid = current.liquid
+                fieldDirections.clear()
+                if (current.field) fieldDirections += FieldDirection.DOWN
+            }
+            is Scenario -> {
+                state = current.bodies(space, seed)
+                scenarioBlocks = emptyList()
+            }
+            null -> {
+                state = null
+                scenarioBlocks = emptyList()
+            }
+        }
+        val blockBodies = scenarioBlocks.sumOf {
+            RectangularBlock.bodyCount(config.collisions.contactDiameterPixels, it.maxX - it.minX, it.maxY - it.minY)
+        }
         sessionConfig = if (state == null) {
             config
         } else {
             val bodies = state.size / 4
-            System.err.printf(Locale.ROOT, "scenario=%s bodies=%,d%n", current.title, bodies)
+            System.err.printf(Locale.ROOT, "scenario=%s bodies=%,d%n", current!!.title, bodies + blockBodies)
             config.copy(
                 particles = config.particles.copy(
-                    capacity = maxOf(config.particles.capacity, bodies),
+                    capacity = maxOf(config.particles.capacity, bodies + blockBodies),
                     initialBodies = bodies,
                     squareTestPixels = null,
                     discTestRadiusPixels = null,
@@ -621,8 +747,54 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             bounded = bounded,
         ).also {
             it.mutualGravity = mutualGravity
+            it.liquid = liquid
             applyField(it)
         }
+    }
+
+    /** Walls, gravity between bodies, liquid mode and the field, as toggled by B, G, L and the arrows. */
+    private data class Environment(
+        val bounded: Boolean,
+        val mutualGravity: Boolean,
+        val liquid: Boolean,
+        val field: Set<FieldDirection>,
+    )
+
+    /**
+     * Makes [next] the scenario of the coming reset. Leaving block scenarios
+     * brings back the environment they took over (createSimulation).
+     */
+    private fun selectScenario(next: MenuScenario) {
+        if (next !is BlockScenario) {
+            savedEnvironment?.let {
+                bounded = it.bounded
+                mutualGravity = it.mutualGravity
+                liquid = it.liquid
+                fieldDirections.clear()
+                fieldDirections += it.field
+            }
+            savedEnvironment = null
+        }
+        scenario = next
+    }
+
+    /** Glues the blocks of the scenario after [firstBody]; returns their bodies. */
+    private fun spawnScenarioBlocks(simulation: GravityPipeline, firstBody: Int): Int {
+        var spawned = 0
+        for (block in scenarioBlocks) {
+            spawned += simulation.spawnBlock(
+                firstBody = firstBody + spawned,
+                minX = block.minX,
+                minY = block.minY,
+                maxX = block.maxX,
+                maxY = block.maxY,
+                density = block.density,
+                velocityX = block.velocityX,
+                velocityY = block.velocityY,
+                spin = block.spin,
+            )
+        }
+        return spawned
     }
 
     private fun applyField(simulation: GravityPipeline) {
@@ -660,6 +832,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         fps: Double,
         trajectoryVisible: Boolean,
         futureProjectileSpeed: Double?,
+        block: BlockGesture?,
     ) {
         particleRenderer!!.render(pipeline!!, activeBodies)
         glBindVertexArray(vao)
@@ -702,15 +875,35 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 TORUS_PREVIEW_INSTANCES,
             )
         }
+        if (block != null) {
+            val period = config.projectiles.previewPeriodPixels
+            val horizontalDashes =
+                ((block.maxX - block.minX) / period).roundToInt().coerceAtLeast(1)
+            val verticalDashes =
+                ((block.maxY - block.minY) / period).roundToInt().coerceAtLeast(1)
+            blockPreviewProgram!!.use()
+            blockPreviewProgram!!.vec2(
+                "uViewport",
+                viewportWidth.toFloat(),
+                viewportHeight.toFloat(),
+            )
+            blockPreviewProgram!!.vec2("uMinPixels", block.minX, block.minY)
+            blockPreviewProgram!!.vec2("uMaxPixels", block.maxX, block.maxY)
+            blockPreviewProgram!!.int("uHorizontalDashes", horizontalDashes)
+            blockPreviewProgram!!.int("uVerticalDashes", verticalDashes)
+            glDrawArrays(GL_LINES, 0, 4 * (horizontalDashes + verticalDashes))
+        }
         fpsOverlay!!.render(
             bounded = bounded,
             field = fieldDirections.joinToString(" ") { it.label }.ifEmpty { "off" },
             mutualGravity = mutualGravity,
+            liquid = liquid,
             fps = fps,
             activeBodies = activeBodies,
             projectileBodies = projectileBodyCount,
             timeScale = simulationSpeed.scale,
             futureProjectileSpeed = futureProjectileSpeed,
+            blockBodies = block?.let(::blockBodyCount),
         )
         scenarioMenu!!.render(scenario, cursorX, cursorY)
     }
@@ -790,6 +983,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         fpsOverlay?.close()
         scenarioMenu?.close()
         projectilePreviewProgram?.close()
+        blockPreviewProgram?.close()
         trajectoryProgram?.close()
         particleRenderer?.close()
         pipeline?.close()

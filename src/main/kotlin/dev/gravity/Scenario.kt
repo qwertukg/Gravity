@@ -54,11 +54,55 @@ data class ScenarioSpace(
     }
 }
 
+/** A start offered by the scenario menu. */
+sealed interface MenuScenario {
+    val title: String
+    /** Name for --scenario, e.g. cosmic-web. */
+    val optionName: String
+}
+
+/**
+ * A rectangle of bodies glued into a block (GravityPipeline.spawnBlock), in
+ * pixels, with its mass per body and the rigid motion it starts with.
+ */
+data class ScenarioBlock(
+    val minX: Float,
+    val minY: Float,
+    val maxX: Float,
+    val maxY: Float,
+    val density: Float,
+    val velocityX: Float = 0f,
+    val velocityY: Float = 0f,
+    val spin: Float = 0f,
+)
+
 /** Bodies of one scenario, in pixels and px/s; y points up as in physics. */
 class ScenarioBuilder(val space: ScenarioSpace, val random: Random) {
     private var data = FloatArray(4 * 1024)
     var count = 0
         private set
+    /** Glued blocks, spawned after the loose bodies. */
+    val blocks = ArrayList<ScenarioBlock>()
+
+    fun block(
+        minX: Float,
+        minY: Float,
+        maxX: Float,
+        maxY: Float,
+        density: Float,
+        velocityX: Float = 0f,
+        velocityY: Float = 0f,
+        spin: Float = 0f,
+    ) {
+        blocks += ScenarioBlock(minX, minY, maxX, maxY, density, velocityX, velocityY, spin)
+    }
+
+    /** A packed round ball of loose bodies, like a projectile of [diameter] px. */
+    fun ball(diameter: Float, centerX: Float, centerY: Float, velocityX: Float, velocityY: Float) {
+        CircularProjectile.offsets(space.contactDiameterPixels, diameter).forEach {
+            add(centerX + it.x, centerY + it.y, velocityX, velocityY)
+        }
+    }
 
     fun add(x: Float, y: Float, velocityX: Float = 0f, velocityY: Float = 0f) {
         if (data.size < (count + 1) * 4) data = data.copyOf(data.size * 2)
@@ -278,7 +322,7 @@ private fun List<Wave>.rms(power: Int): Float = sqrt(sumOf { wave ->
  * survives the collisions, and a dominant central mass, because a light disc
  * around it rarely collides with itself.
  */
-enum class Scenario(val title: String, private val build: ScenarioBuilder.() -> Unit) {
+enum class Scenario(override val title: String, private val build: ScenarioBuilder.() -> Unit) : MenuScenario {
     TURBULENT_CLOUD("Turbulent cloud", {
         // A rotating cloud stirred by divergence-free eddies (from a random
         // stream function). Mostly held up by its spin, it flattens into a
@@ -521,6 +565,8 @@ enum class Scenario(val title: String, private val build: ScenarioBuilder.() -> 
             }
         }
     });
+
+    override val optionName: String get() = name.lowercase().replace('_', '-')
 
     fun bodies(space: ScenarioSpace, seed: Long): FloatArray {
         val builder = ScenarioBuilder(space, Random(seed))

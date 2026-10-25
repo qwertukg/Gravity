@@ -1,0 +1,143 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) readonly buffer Partials { vec4 partials[]; };
+layout(std430, binding = 1) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    float shapes[];
+};
+uniform vec2 uViewport;
+uniform int uBounded;
+uniform float uBodyRadius;
+// After a collision pass, the contact memory of the pass is settled and the
+// speed agrees with what held the block.
+uniform int uContactPass;
+uniform float uSubstepDt;
+uniform float uBlockFriction;
+
+shared vec4 sharedA[256];
+shared vec4 sharedB[256];
+
+// A push out of what cannot give way says the block moves into it: the
+// block loses what speed it has against the push, at most the push over a
+// substep, and that stop brings Coulomb friction along it with [friction].
+// The speed is never turned round, so a push adds no bounce; impulses do.
+// Left alone the speed into the support builds up while the position is
+// held: the block hovers, creeps, and bursts free.
+vec2 stopAgainst(vec2 velocity, vec2 push, float friction) {
+    float distance = length(push);
+    if (distance == 0.0) return velocity;
+    vec2 direction = push / distance;
+    float against = dot(velocity, direction);
+    if (against >= 0.0) return velocity;
+    float stop = min(-against, distance / uSubstepDt);
+    velocity += direction * stop;
+    vec2 sliding = velocity - dot(velocity, direction) * direction;
+    float slidingSpeed = length(sliding);
+    if (slidingSpeed > 0.0) velocity -= sliding * (min(slidingSpeed, friction * stop) / slidingSpeed);
+    return velocity;
+}
+
+// One workgroup per group: adds the tile partials and fits the rigid motion
+// that keeps the group's momentum and angular momentum.
+void main() {
+    uint group = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    ivec4 tiles = groups[group].tiles;
+    vec4 a = vec4(0.0);
+    vec4 b = vec4(0.0);
+    for (int tile = tiles.x + int(lane); tile < tiles.x + tiles.y; tile += 256) {
+        a += partials[2 * tile];
+        b += partials[2 * tile + 1];
+    }
+    sharedA[lane] = a;
+    sharedB[lane] = b;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (lane < stride) {
+            sharedA[lane] += sharedA[lane + stride];
+            sharedB[lane] += sharedB[lane + stride];
+        }
+        barrier();
+    }
+    if (uContactPass != 0) {
+        // An impact lasts while its contacts push the pair towards the speed
+        // it aims for. It is over once they touch without pushing, or once
+        // the pair has been apart a few passes; brief gaps while the impulses
+        // of a block converge do not end it.
+        for (int partner = int(lane); partner < CONTACT_PARTNERS; partner += 256) {
+            int key = int(group) * CONTACT_PARTNERS + partner;
+            int state = contactStates[key];
+            if (state == CONTACT_PUSHING) {
+                impacts[key] = max(impacts[key], nextImpacts[key]);
+                idlePasses[key] = 0;
+            } else if (state == CONTACT_TOUCHING) {
+                impacts[key] = 0;
+                idlePasses[key] = 0;
+            } else if (impacts[key] != 0 && ++idlePasses[key] >= IMPACT_IDLE_PASSES) {
+                impacts[key] = 0;
+                idlePasses[key] = 0;
+            }
+            nextImpacts[key] = 0;
+            contactStates[key] = 0;
+            pairContacts[key] = 0;
+        }
+    }
+    if (lane != 0u) return;
+
+    RigidGroup rigid = groups[group];
+    float mass = rigid.scalars.z;
+    vec2 center = sharedA[0].xy / mass;
+    vec2 velocity = sharedA[0].zw / mass;
+    // Best-fit rotation of the rest shape onto the current positions.
+    vec2 fit = vec2(sharedB[0].y, sharedB[0].x);
+    float fitLength = length(fit);
+    vec2 rotation = fitLength > 0.0 ? fit / fitLength : rigid.motion.zw;
+    // L about the centre (rigid_reduce.comp).
+    float angularMomentum = sharedB[0].z;
+    float inertia = rigid.scalars.y;
+    float angularVelocity = inertia > 0.0 ? angularMomentum / inertia : 0.0;
+
+    center += rigid.frame.xy;
+    // Out of the blocks it was pressed into, position only: their contacts
+    // change the speeds, keeping the momentum (collision_rigid_contact.glsl).
+    center += vec2(rigid.guard.xy - rigid.guard.zw) / GUARD_SCALE;
+    rigid.guard = ivec4(0);
+    // Off bodies a wall holds: the wall carries the block through them.
+    vec2 support = vec2(rigid.support.xy - rigid.support.zw) / GUARD_SCALE;
+    rigid.support = ivec4(0);
+    center += support;
+    if (uContactPass != 0) velocity = stopAgainst(velocity, support, 0.0);
+    if (uBounded == 0) {
+        center -= floor(center / uViewport) * uViewport;
+    } else {
+        // A block never reaches into a wall, however hard it is pressed: its
+        // member contacts with the wall share the block with all its other
+        // contacts and may not have pushed it out yet. Its hull is what
+        // reaches a wall first: move it back inside, and stop it as the wall
+        // would, with the block's friction against it.
+        vec2 low = vec2(1e30);
+        vec2 high = vec2(-1e30);
+        for (int point = 0; point < rigid.tiles.w; point++) {
+            vec2 rest = vec2(shapes[rigid.tiles.z + 2 * point], shapes[rigid.tiles.z + 2 * point + 1]);
+            vec2 arm = vec2(rotation.x * rest.x - rotation.y * rest.y, rotation.y * rest.x + rotation.x * rest.y);
+            low = min(low, arm);
+            high = max(high, arm);
+        }
+        vec2 shift = max(vec2(uBodyRadius) - (center + low), vec2(0.0)) -
+            max(center + high + uBodyRadius - uViewport, vec2(0.0));
+        // A block wider than the screen stays where it is.
+        shift *= vec2(lessThan(high - low + 2.0 * uBodyRadius, uViewport));
+        center += shift;
+        if (uContactPass != 0) velocity = stopAgainst(velocity, shift, uBlockFriction);
+    }
+    rigid.frame = vec4(center, center);
+    rigid.motion = vec4(velocity, rotation);
+    rigid.scalars.x = angularVelocity;
+    groups[group] = rigid;
+}

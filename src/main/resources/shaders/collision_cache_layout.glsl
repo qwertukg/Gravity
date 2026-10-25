@@ -37,3 +37,14 @@ uniform int uIdBits;
 uint headBody(uint head, uint epoch) {
     return (head >> uint(uIdBits)) == epoch ? head & ((1u << uint(uIdBits)) - 1u) : 0u;
 }
+
+// Liquid mode: a fluid body only makes hard pairs with solid bodies. Every
+// build tags the tiles of SOLID_TILE x SOLID_TILE cells that hold a solid body
+// with its epoch, so a fluid body skips a stencil without one. A stale or
+// colliding tag only costs a needless walk.
+const int SOLID_TILE = 8;
+uniform int uSolidTileWidth;
+
+int solidTile(ivec2 cell) {
+    return cell.x / SOLID_TILE + cell.y / SOLID_TILE * uSolidTileWidth;
+}

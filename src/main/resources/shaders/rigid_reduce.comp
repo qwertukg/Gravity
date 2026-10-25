@@ -1,0 +1,58 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Members { int members[]; };
+layout(std430, binding = 2) readonly buffer Rest { vec2 rest[]; };
+layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
+layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
+layout(std430, binding = 5) writeonly buffer Partials { vec4 partials[]; };
+uniform vec2 uViewport;
+uniform int uBounded;
+
+shared vec4 sharedA[256];
+shared vec4 sharedB[256];
+
+// One tile of one group: sums of position and velocity, the rotation fit
+// terms r0 x p and r0 . p, and the angular momentum term r x v. Positions are
+// taken relative to the group's previous centre (minimum image on the torus),
+// so the centre and rotation come out of a single pass because sum(r0) = 0.
+// The arm r of the angular momentum is the member's place in the previous
+// pose, R r0, not its position now: a member pushed out of a wall or a block
+// moves far for its whole block (collision_rigid_contact.glsl), and that
+// distance must not turn its speed into spin. Since sum(r0) = 0 it is the
+// angular momentum about the centre.
+void main() {
+    uint tile = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uint member = tile * 256u + lane;
+    int body = members[member];
+    vec4 a = vec4(0.0);
+    vec4 b = vec4(0.0);
+    if (body >= 0) {
+        vec2 reference = groups[tileGroups[tile]].frame.xy;
+        vec4 state = bodies[body];
+        vec2 position = state.xy * uViewport - reference;
+        if (uBounded == 0) position -= floor(position / uViewport + vec2(0.5)) * uViewport;
+        vec2 velocity = state.zw * uViewport;
+        vec2 offset = rest[member];
+        vec2 rotation = groups[tileGroups[tile]].motion.zw;
+        vec2 arm = vec2(rotation.x * offset.x - rotation.y * offset.y, rotation.y * offset.x + rotation.x * offset.y);
+        a = vec4(position, velocity);
+        b = vec4(cross2(offset, position), dot(offset, position), cross2(arm, velocity), 0.0);
+    }
+    sharedA[lane] = a;
+    sharedB[lane] = b;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (lane < stride) {
+            sharedA[lane] += sharedA[lane + stride];
+            sharedB[lane] += sharedB[lane + stride];
+        }
+        barrier();
+    }
+    if (lane == 0u) {
+        partials[2u * tile] = sharedA[0];
+        partials[2u * tile + 1u] = sharedB[0];
+    }
+}

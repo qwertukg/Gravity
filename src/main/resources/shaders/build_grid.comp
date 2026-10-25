@@ -6,6 +6,9 @@ layout(std430, binding = 1) buffer Density { uint density[]; };
 layout(std430, binding = 2) buffer Heads { int heads[]; };
 layout(std430, binding = 3) buffer NextBody { int nextBody[]; };
 layout(std430, binding = 4) buffer CellCounts { int cellCounts[]; };
+// Aggregate cell mass in 1/CELL_MASS_UNITS units; exact for unit masses.
+layout(std430, binding = 5) buffer CellMasses { uint cellMasses[]; };
+layout(std430, binding = 6) readonly buffer Materials { vec4 materials[]; };
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -13,6 +16,7 @@ uniform int uMeshHeight;
 uniform int uPhysicalWidth;
 uniform int uPhysicalHeight;
 uniform int uMassScale;
+const float CELL_MASS_UNITS = 256.0;
 
 ivec2 wrapCell(ivec2 cell) {
     if (cell.x < 0) cell.x += uPhysicalWidth;
@@ -47,6 +51,7 @@ void main() {
     if (id >= uint(uCount)) return;
 
     vec2 p = bodies[id].xy;
+    float mass = materials[id].x;
     vec2 gridPosition = p * vec2(uPhysicalWidth, uPhysicalHeight) - 0.5;
     ivec2 base = ivec2(floor(gridPosition));
     vec2 fraction = fract(gridPosition);
@@ -57,6 +62,7 @@ void main() {
         fraction.x * fraction.y
     );
     float scale = float(uMassScale);
+    weights *= mass;
     atomicAdd(density[densityIndex(base)], uint(round(weights.x * scale)));
     atomicAdd(density[densityIndex(base + ivec2(1, 0))], uint(round(weights.y * scale)));
     atomicAdd(density[densityIndex(base + ivec2(0, 1))], uint(round(weights.z * scale)));
@@ -65,6 +71,6 @@ void main() {
     ivec2 home = ivec2(floor(p * vec2(uPhysicalWidth, uPhysicalHeight)));
     uint homeIndex = cellIndex(home);
     nextBody[id] = atomicExchange(heads[homeIndex], int(id));
-    // Bodies have unit mass: a cell's count is its exact aggregate mass.
     atomicAdd(cellCounts[homeIndex], 1);
+    atomicAdd(cellMasses[homeIndex], uint(round(mass * CELL_MASS_UNITS)));
 }
