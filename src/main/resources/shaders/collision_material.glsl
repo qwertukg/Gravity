@@ -72,21 +72,22 @@ float contactReachSquared(uint first, uint second) {
 #endif
 
 // The top bit of a body's contact count says that it touches a block
-// (RIGID passes). A block holds a body off position-only (split impulse), so
-// the body cannot move apart from the bodies it overlaps there: their push
-// turned into speed, as loose bodies take it, would only build up, pass after
-// pass, wherever bodies crowd into a crater or a crack, until they burst
-// out. A pair where either body is held moves apart by position alone; both
-// bodies read both bits, so the pair stays equal and opposite.
+// (RIGID passes). Above the count itself, a loose body's word also counts
+// the block members it touches: its pairs with the members of one block are
+// one contact with the block, solved once each (collision_rigid_contact.glsl).
 const uint HELD_BIT = 0x80000000u;
+const uint CONTACT_COUNT_MASK = 0xfffffu;
+const uint MEMBER_CONTACT_SHIFT = 20u;
+const uint MEMBER_CONTACT_ONE = 1u << MEMBER_CONTACT_SHIFT;
 
 uint contactsOf(uint count) {
-    return count & ~HELD_BIT;
+    return count & CONTACT_COUNT_MASK;
 }
 
-bool heldPair(uint firstCount, uint secondCount) {
-    return ((firstCount | secondCount) & HELD_BIT) != 0u;
+uint memberContactsOf(uint count) {
+    return (count >> MEMBER_CONTACT_SHIFT) & 0x7ffu;
 }
+
 
 // Every pair with a solid body stays a hard contact, so liquid cannot seep
 // through a block however much it is compressed; walls act on every body.

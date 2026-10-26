@@ -1,7 +1,7 @@
 // Overcompression relief, in the RIGID variants of both collision solvers. A
 // fast impact presses bodies onto a block, whose guard puts them back on its
-// outline, and bodies a block holds move apart by position alone, each body's
-// correction shared among all its contacts (1/N): a crowd of N bodies in one
+// outline, and the bodies move apart with each body's correction shared
+// among all its contacts (1/N): a crowd of N bodies in one
 // point spreads by about 1/sqrt(N) of a diameter a pass and never comes apart
 // while the impact presses on, hundreds deep in one pixel and the bodies
 // behind them as deep. Equal discs touch at most six others unless they

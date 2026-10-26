@@ -68,6 +68,37 @@ void sumOverLanes(uint lane) {
     }
 }
 
+// Settles the contact memory of the pairs of [group] after a contact pass.
+// An impact lasts while its contacts push the pair towards the speed it
+// aims for. It is over once they touch without pushing, once the pair has
+// been apart a few passes, or once it has pushed for IMPACT_PUSHING_PASSES
+// without getting there; brief gaps while the impulses of a block converge
+// do not end it. A pair belongs to its lower block, so only
+// partners from this one on, the walls and the loose bodies are kept.
+void settleContacts(uint group, uint lane) {
+    int partners = uGroupCount - int(group);
+    for (int index = int(lane); index < partners + 5; index += 256) {
+        int partner = index < partners ? int(group) + index : MAXIMUM_GROUPS + index - partners;
+        int key = int(group) * CONTACT_PARTNERS + partner;
+        int state = contactStates[key];
+        if (state == CONTACT_PUSHING) {
+            int speed = max(impacts[key] & IMPACT_SPEED_MASK, nextImpacts[key]);
+            int age = (impacts[key] >> IMPACT_AGE_SHIFT) + 1;
+            impacts[key] = speed == 0 || age > IMPACT_PUSHING_PASSES ? 0 : speed | (age << IMPACT_AGE_SHIFT);
+            idlePasses[key] = 0;
+        } else if (state == CONTACT_TOUCHING) {
+            impacts[key] = 0;
+            idlePasses[key] = 0;
+        } else if (impacts[key] != 0 && ++idlePasses[key] >= IMPACT_IDLE_PASSES) {
+            impacts[key] = 0;
+            idlePasses[key] = 0;
+        }
+        nextImpacts[key] = 0;
+        contactStates[key] = 0;
+        pairContacts[key] = 0;
+    }
+}
+
 // Adds up the tile partials of [group] and fits the rigid motion that keeps
 // the group's momentum and angular momentum.
 void fit(uint group, uint lane) {
@@ -81,32 +112,7 @@ void fit(uint group, uint lane) {
     sharedA[lane] = a;
     sharedB[lane] = b;
     sumOverLanes(lane);
-    if (uContactPass != 0) {
-        // An impact lasts while its contacts push the pair towards the speed
-        // it aims for. It is over once they touch without pushing, or once
-        // the pair has been apart a few passes; brief gaps while the impulses
-        // of a block converge do not end it. A pair belongs to its lower
-        // block, so only partners from this one on, and the walls, are kept.
-        int partners = uGroupCount - int(group);
-        for (int index = int(lane); index < partners + 4; index += 256) {
-            int partner = index < partners ? int(group) + index : MAXIMUM_GROUPS + index - partners;
-            int key = int(group) * CONTACT_PARTNERS + partner;
-            int state = contactStates[key];
-            if (state == CONTACT_PUSHING) {
-                impacts[key] = max(impacts[key], nextImpacts[key]);
-                idlePasses[key] = 0;
-            } else if (state == CONTACT_TOUCHING) {
-                impacts[key] = 0;
-                idlePasses[key] = 0;
-            } else if (impacts[key] != 0 && ++idlePasses[key] >= IMPACT_IDLE_PASSES) {
-                impacts[key] = 0;
-                idlePasses[key] = 0;
-            }
-            nextImpacts[key] = 0;
-            contactStates[key] = 0;
-            pairContacts[key] = 0;
-        }
-    }
+    if (uContactPass != 0) settleContacts(group, lane);
     if (lane != 0u) return;
 
     RigidGroup rigid = groups[group];
@@ -184,8 +190,12 @@ void main() {
     ivec4 tiles = groups[group].tiles;
     // A tile freed by a block that broke up: no group's any more.
     if (int(tile) < tiles.x || int(tile) >= tiles.x + tiles.y) return;
-    // A sleeping block stays as it is (sleep_layout.glsl).
-    if (!groupIsAwake(int(group))) return;
+    // A sleeping block stays as it is (sleep_layout.glsl); what awake blocks
+    // counted against it this pass is still settled, by its first tile.
+    if (!groupIsAwake(int(group))) {
+        if (int(tile) == tiles.x && uContactPass != 0) settleContacts(group, lane);
+        return;
+    }
     uint member = tile * 256u + lane;
     int body = members[member];
     vec4 a = vec4(0.0);

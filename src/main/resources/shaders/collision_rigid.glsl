@@ -61,10 +61,14 @@ float contactReachSquared(vec4 firstMaterial, vec4 secondMaterial) {
     return reach * reach;
 }
 
-// Counts [contacts] contacts of block [group] with loose bodies, each a
-// partner of its own (partnerShare).
+// Counts [contacts] contacts of block [group] with loose bodies. The loose
+// bodies pressing on a block are one partner (partnerShare): the sand it
+// lies on, or that lies on it, however many grains, counted once by their
+// first contact.
 void countLooseContacts(int group, uint contacts) {
-    atomicAdd(groups[group].grid.w, int(contacts));
+    if (atomicAdd(pairContacts[contactKey(group, LOOSE_PARTNER)], int(contacts)) == 0) {
+        atomicAdd(groups[group].grid.w, 1);
+    }
 }
 
 void countLooseContact(int group) {
@@ -249,13 +253,15 @@ void supportGroup(int group, vec2 shift) {
 
 // Mass splitting: contacts solved side by side never push a block further
 // than one contact solved alone would, as each meets a share of its mass.
-// The block shares its mass equally among its partners, and with a partner
-// among the pairs of bodies touching it. Shared among all pairs alike, a
-// block a big one lies on would give the floor below a hundredth of the
-// support it needs per pass, and the stack would sink and creep. This is the
+// The block shares its mass equally among its partners (each block, each
+// wall, and the loose bodies as one), and with a partner among the pairs of
+// bodies touching it. Shared among all pairs alike, a block a big one lies on
+// would give the floor below a hundredth of the support it needs per pass,
+// and the stack would sink and creep; with every grain of sand a partner of
+// its own, a block lying on sand would give another block, or the floor, a
+// thousandth, and never stop against it by its impulses at all. This is the
 // factor the block's inverse mass is multiplied by; momentum is kept all the same.
 float partnerShare(int group, int partner) {
     float partners = float(max(groups[group].grid.w, 1));
-    if (partner < 0) return partners;
-    return partners * float(max(pairContacts[contactKey(group, partner)], 1));
+    return partners * float(max(pairContacts[contactKey(group, partner < 0 ? LOOSE_PARTNER : partner)], 1));
 }

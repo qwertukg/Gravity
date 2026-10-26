@@ -984,7 +984,7 @@ internal class RigidBlocks(
         private const val SHAPE_VALUES_PER_BODY = 16L
         private const val MINIMUM_SHAPE_VALUES = 1L shl 18
         /** Contact memory of rigid_layout.glsl: five ints per block and partner. */
-        private const val CONTACT_PARTNERS = MAXIMUM_GROUPS + 4
+        private const val CONTACT_PARTNERS = MAXIMUM_GROUPS + 5
         private const val CONTACT_KEYS = MAXIMUM_GROUPS.toLong() * CONTACT_PARTNERS
         private const val SHAPES_OFFSET = MAXIMUM_GROUPS.toLong() * GROUP_BYTES + 5 * CONTACT_KEYS * Int.SIZE_BYTES
         /** Ints before the broken lists: two counts per group. */

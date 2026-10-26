@@ -34,8 +34,9 @@ uniform int uNoHardPairs;
 #include "collision_crowd.glsl"
 #include "sleep_layout.glsl"
 
-// Set once this body touches a block (HELD_BIT).
+// Set once this body touches a block (HELD_BIT), and the members it touches.
 bool held = false;
+uint memberContacts = 0u;
 #ifdef RIGID
 // This body's block tag (blockTag), and whether it is a ghost of a crowded
 // cell, which meets no loose body (collision_cache_layout.glsl).
@@ -67,7 +68,7 @@ void countContact(uint id, uint other, uint otherTag, float distanceSquared, ino
             listContact(id, other, otherTag);
             contacts++;
             if (otherTag == 0u) looseContacts++;
-            if (ownTag == 0u && otherTag != 0u) held = true;
+            if (ownTag == 0u && otherTag != 0u) { held = true; memberContacts++; }
         }
         return;
     }
@@ -87,7 +88,7 @@ void countContact(uint id, uint other, uint otherTag, float distanceSquared, ino
         int group = groupOf(ownMaterial);
         int otherGroup = groupOf(otherMaterial);
         if (group >= 0 && group < otherGroup) countPartnerContact(group, otherGroup);
-        if (group < 0 && otherGroup >= 0) held = true;
+        if (group < 0 && otherGroup >= 0) { held = true; memberContacts++; }
         if (otherTag == 0u) looseContacts++;
 #endif
     }
@@ -270,7 +271,7 @@ void main() {
 #endif
     // Each invocation owns its count and ordered contact cache. No atomics,
     // scan, global sort or truncated list is needed.
-    contactCounts[id] = held ? contacts | HELD_BIT : contacts;
+    contactCounts[id] = held ? contacts | (min(memberContacts, 0x7ffu) << MEMBER_CONTACT_SHIFT) | HELD_BIT : contacts;
 #ifdef RIGID
     int group = groupOf(ownMaterial);
     // One add for all, not one per contact: a member a crowd presses on

@@ -151,7 +151,7 @@ internal object CollisionGpuAccess {
         val data = ints(field(neighborCache, "cache") as Int, capacity * 42)
         val counts = ints(pipeline, "collisionContactCounts", count)
         return Array(count) { id ->
-            IntArray(minOf(counts[id], 8)) { slot -> data[(34 + slot) * capacity + id] }
+            IntArray(minOf(counts[id] and 0xfffff, 8)) { slot -> data[(34 + slot) * capacity + id] }
         }
     }
 }

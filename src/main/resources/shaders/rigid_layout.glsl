@@ -18,11 +18,20 @@ struct RigidGroup {
 const int MAXIMUM_GROUPS = 256;
 const float GUARD_SCALE = 65536.0;
 // Contact memory per pair: a block's partners are the other blocks, then the
-// four walls (left, right, bottom, top). A pair belongs to its lower block.
-const int CONTACT_PARTNERS = MAXIMUM_GROUPS + 4;
+// four walls (left, right, bottom, top), then the loose bodies it touches, as
+// one partner (LOOSE_PARTNER). A pair belongs to its lower block.
+const int CONTACT_PARTNERS = MAXIMUM_GROUPS + 5;
 const int CONTACT_KEYS = MAXIMUM_GROUPS * CONTACT_PARTNERS;
-// Approach speeds are kept in 1/IMPACT_SCALE px/s.
+const int LOOSE_PARTNER = MAXIMUM_GROUPS + 4;
+// Approach speeds are kept in 1/IMPACT_SCALE px/s, in the low bits of the
+// impact word; above them, the passes the pair has been pushing for.
 const float IMPACT_SCALE = 16.0;
+const int IMPACT_SPEED_MASK = 0xffffff;
+const int IMPACT_AGE_SHIFT = 24;
+// Passes after which a pair still pushing towards its target has not got
+// there: it is held, under load or wedged, and the impact is over. Left on,
+// its contacts would push the pair apart for good.
+const int IMPACT_PUSHING_PASSES = 32;
 // How a pair met in a pass: touching, or still pushed towards its target speed.
 const int CONTACT_TOUCHING = 1;
 const int CONTACT_PUSHING = 2;

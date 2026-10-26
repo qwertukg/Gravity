@@ -78,8 +78,14 @@ void main() {
                         atomicAdd(contactCounts[otherId], 1u);
 #ifdef RIGID
                         countPairContact(id, otherId);
-                        if (groupOf(id) < 0 && groupOf(otherId) >= 0) atomicOr(contactCounts[id], HELD_BIT);
-                        if (groupOf(otherId) < 0 && groupOf(id) >= 0) atomicOr(contactCounts[otherId], HELD_BIT);
+                        if (groupOf(id) < 0 && groupOf(otherId) >= 0) {
+                            atomicOr(contactCounts[id], HELD_BIT);
+                            atomicAdd(contactCounts[id], MEMBER_CONTACT_ONE);
+                        }
+                        if (groupOf(otherId) < 0 && groupOf(id) >= 0) {
+                            atomicOr(contactCounts[otherId], HELD_BIT);
+                            atomicAdd(contactCounts[otherId], MEMBER_CONTACT_ONE);
+                        }
 #endif
                     }
                 }

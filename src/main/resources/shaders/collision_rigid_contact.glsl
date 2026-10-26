@@ -44,7 +44,7 @@ void storeFracture(uint id) {
 // approach speed the pair had when the impact began, remembered per pair
 // (rigid_layout.glsl), not at what is left of it.
 float restitutionTarget(int key, float normalSpeed, float restitution) {
-    float impact = max(float(impacts[key]) / IMPACT_SCALE, -normalSpeed);
+    float impact = max(float(impacts[key] & IMPACT_SPEED_MASK) / IMPACT_SCALE, -normalSpeed);
     // Thousands of contacts of a pair raise the same word: only one that
     // raises it touches it (the result is the same maximum).
     if (-normalSpeed > uRestingSpeed) {
@@ -144,7 +144,7 @@ vec2 probedNormal = vec2(0.0);
 // two blocks, the lower-numbered one's. Both bodies of the pair evaluate the
 // same expressions in the same order, so their impulses are equal and opposite.
 void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec2 ownVelocity, vec2 otherPixels,
-    vec2 otherVelocity, uint ownContacts, uint otherContacts, float driftDt,
+    vec2 otherVelocity, uint ownCount, uint otherCount, float driftDt,
     float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
     int ownGroup = groupOf(ownMaterial);
@@ -157,7 +157,10 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     vec2 probePixels = otherShape ? ownPixels : otherPixels;
     vec2 probeVelocity = otherShape ? ownVelocity : otherVelocity;
     vec2 memberVelocity = otherShape ? otherVelocity : ownVelocity;
-    uint probeContacts = otherShape ? ownContacts : otherContacts;
+    uint ownContacts = contactsOf(ownCount);
+    uint otherContacts = contactsOf(otherCount);
+    uint probeCount = otherShape ? ownCount : otherCount;
+    uint probeContacts = contactsOf(probeCount);
 
     // A fluid body is held off by the liquid; the shape only stops its centre.
     // Liquid rests in the dips between the members of a face, which the
@@ -190,17 +193,32 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     if (otherShape && probeGroup < 0) blockNormals += normal;
     vec2 point = probePixels - normal * probeRadius;
     // Inverse masses along a direction with mass splitting: a loose body
-    // splits by its own contact count, a block by its block's.
+    // splits its push by its own contact count, a block by its block's. The
+    // push out of the block moves positions only, so nothing else keeps a
+    // loose body from moving into the block: its impulse must take the whole
+    // approach, not its contact count's share of it, or speed into the block
+    // is left over pass after pass, position and speed part company, and the
+    // body rests on the block with the speed it never lost (uniform shares
+    // suit the loose pairs, whose pushes become speed). Its pairs with the
+    // members of the block are the one contact, found once (probedGroup),
+    // so each takes its share of that. The block stays shared among its
+    // partners; the pair's impulses are still equal and opposite, so
+    // momentum is kept.
     float probeShare = probeGroup >= 0 ? partnerShare(probeGroup, shapeGroup) / probeMaterial.x
         : float(max(probeContacts, 1u)) / probeMaterial.x;
+    float probeImpulseShare = probeGroup >= 0 ? probeShare
+        : float(max(memberContactsOf(probeCount), 1u)) / probeMaterial.x;
     float shapeShare = partnerShare(shapeGroup, probeGroup) / memberMaterial.x;
     // A sleeping partner is immovable: its term of the response is dropped.
     if (partnerSleeps) {
         if (otherShape) shapeShare = 0.0;
-        else probeShare = 0.0;
+        else { probeShare = 0.0; probeImpulseShare = 0.0; }
     }
-    float response = shapeShare * rigidResponse(shapeGroup, point, normal, driftDt) +
+    float shapeResponse = shapeShare * rigidResponse(shapeGroup, point, normal, driftDt);
+    float response = shapeResponse +
         (probeGroup >= 0 ? probeShare * rigidResponse(probeGroup, point, normal, driftDt) : probeShare);
+    float impulseResponse = shapeResponse +
+        (probeGroup >= 0 ? probeImpulseShare * rigidResponse(probeGroup, point, normal, driftDt) : probeImpulseShare);
 
     float side = otherShape ? 1.0 : -1.0;
     float ownMass = otherShape ? probeMaterial.x : memberMaterial.x;
@@ -235,19 +253,19 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     if (probeGroup >= 0) {
         int key = contactKey(shapeGroup, probeGroup);
         float target = restitutionTarget(key, normalSpeed, uBlockRestitution);
-        if (normalSpeed < target) velocityImpulse = (target - normalSpeed) / response;
+        if (normalSpeed < target) velocityImpulse = (target - normalSpeed) / impulseResponse;
         int state = normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING;
         if (contactStates[key] < state) atomicMax(contactStates[key], state);
     } else if (normalSpeed < 0.0) {
         float restitution = fluidProbe || normalSpeed > -uRestingSpeed ? 0.0
             : max(uRestitutionCoefficient, uBlockRestitution);
-        velocityImpulse = -(1.0 + restitution) * normalSpeed / response;
+        velocityImpulse = -(1.0 + restitution) * normalSpeed / impulseResponse;
     }
     velocityCorrection += ownNormal * (velocityImpulse * ownSample / ownMass);
     // A struck member: the impact runs into its block along ownNormal. Two
     // blocks share the energy of their contact; liquid breaks nothing.
     if (ownGroup >= 0 && !fluidProbe && -normalSpeed > uFractureSpeed) {
-        float energy = (normalSpeed * normalSpeed - uFractureSpeed * uFractureSpeed) / response;
+        float energy = (normalSpeed * normalSpeed - uFractureSpeed * uFractureSpeed) / impulseResponse;
         if (probeGroup >= 0) energy *= 0.5;
         recordFracture(ownNormal, -normalSpeed, energy * ownSample * uFractureEnergy / ownMass);
     }
@@ -259,7 +277,7 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     if (friction > 0.0 && velocityImpulse > 0.0 && slidingSpeed > 0.0) {
         vec2 tangent = sliding / slidingSpeed;
         float tangentResponse = shapeShare * rigidResponse(shapeGroup, point, tangent, driftDt) +
-            (probeGroup >= 0 ? probeShare * rigidResponse(probeGroup, point, tangent, driftDt) : probeShare);
+            (probeGroup >= 0 ? probeImpulseShare * rigidResponse(probeGroup, point, tangent, driftDt) : probeImpulseShare);
         float tangentImpulse = min(slidingSpeed / tangentResponse, friction * velocityImpulse);
         velocityCorrection -= tangent * (side * tangentImpulse * ownSample / ownMass);
     }

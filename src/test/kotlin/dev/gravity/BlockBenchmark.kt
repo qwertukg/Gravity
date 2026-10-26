@@ -228,7 +228,7 @@ object BlockBenchmark {
             "worst@(${worst.key % gw},${worst.key / gw}) kinds=${w.groupingBy(::kind).eachCount()} " +
             "sumSq=${sizes.sumOf { it.toLong() * it }}")
         // Contacts of the last pass: the solve's work grows with their square in a crowd.
-        val counts = CollisionGpuAccess.ints(pipeline, "collisionContactCounts", active).map { it and 0x7fffffff }
+        val counts = CollisionGpuAccess.ints(pipeline, "collisionContactCounts", active).map { it and 0xfffff }
         val bounds = intArrayOf(8, 16, 24, 32, 64, 128)
         println("contacts step=$step max=${counts.max()} " + bounds.joinToString(" ") { b -> ">$b: ${counts.count { it > b }}" } +
             " sum=${counts.sumOf { it.toLong() }} sumSq=${counts.sumOf { it.toLong() * it }}")
@@ -265,7 +265,7 @@ object BlockBenchmark {
         val cx = g[2]; val cy = g[3]; val cos = g[6]; val sin = g[7]
         val ox = g[16]; val oy = g[17]; val cell = g[18]
         val first = i(20); val gridW = i(21); val gridH = i(22)
-        val shapesOffset = (256 * 160 + 5 * 256 * 260 * 4) / 4
+        val shapesOffset = (256 * 160 + 5 * 256 * 261 * 4) / 4
         val all = CollisionGpuAccess.floats(groupsBuffer, shapesOffset + first + 2 * gridW * gridH)
         val values = all.copyOfRange(shapesOffset + first, shapesOffset + first + gridW * gridH)
         val slots = all.copyOfRange(shapesOffset + first + gridW * gridH, shapesOffset + first + 2 * gridW * gridH)

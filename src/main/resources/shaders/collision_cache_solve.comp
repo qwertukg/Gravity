@@ -116,8 +116,6 @@ uint ownCount = 0u;
 // Whether any body sleeps this step (STATE_ASLEEP).
 bool anyAsleep = false;
 #ifdef RIGID
-// Pushes apart from bodies of held pairs (HELD_BIT): position only.
-vec2 heldCorrection = vec2(0.0);
 // The sampling threshold of this body and the contacts it shares its
 // correction among (collision_crowd.glsl); a body solving all has its count.
 uint ownKeep = KEEP_ALL;
@@ -162,7 +160,7 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
     float reachSquared = contactReachSquared(ownMaterial, otherMaterial);
     if (distanceSquared < reachSquared && rigidPair(ownMaterial, otherMaterial)) {
         rigidContact(id, otherId, otherMaterial, positionPixels, velocityPixels, other.xy * uViewport, other.zw * uViewport,
-            ownContacts, contactsOf(contactCounts[otherId]), driftDt, effectiveSubstepDt,
+            ownCount, contactCounts[otherId], driftDt, effectiveSubstepDt,
             positionCorrection, velocityCorrection, pressure);
         return;
     }
@@ -213,8 +211,6 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
         vec2 push = normal * (share * penetration * pairWeight);
 #ifdef RIGID
         relieve(normal, share, penetration, pairWeight, crowd, float(crowd) / float(weightContacts), relativeVelocity);
-        if (heldPair(ownCount, contactCounts[otherId])) heldCorrection += push;
-        else
 #endif
         positionCorrection += push;
         if (relativeNormalSpeed < 0.0) {
@@ -431,7 +427,7 @@ void main() {
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
 #ifdef RIGID
-    vec2 relief = heldCorrection + reliefMove(blockNormals);
+    vec2 relief = reliefMove(blockNormals);
     positionPixels += relief;
     moved += relief;
 #endif

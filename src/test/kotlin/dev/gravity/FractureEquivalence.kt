@@ -152,7 +152,7 @@ object FractureEquivalence {
             val groupFloats = CollisionGpuAccess.floats(blocks.groups, 40)
             val first = groupFloats[20].toRawBits()
             val cells = groupFloats[21].toRawBits() * groupFloats[22].toRawBits()
-            val shapesOffset = (256 * 160 + 5 * 256 * 260 * 4) / 4
+            val shapesOffset = (256 * 160 + 5 * 256 * 261 * 4) / 4
             val shape = CollisionGpuAccess.floats(blocks.groups, shapesOffset + first + cells).copyOfRange(shapesOffset + first, shapesOffset + first + cells)
             return floatArrayOf(count.toFloat(), cells.toFloat()) +
                 FloatArray(count) { if (members[it] >= 0) 1f else 0f } + shape + groupFloats.copyOfRange(0, 20)

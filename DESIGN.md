@@ -81,9 +81,10 @@ handling, otherwise they cost the square of their size and never come apart:
   bodies; the rest are ghosts in a separate grid that only block members walk.
   Ghosts collide with blocks and walls, not with loose bodies, so pairs stay
   symmetric.
-- **Split impulse near blocks.** Two loose bodies overlapping where either
-  touches a block separate by position only; otherwise speed builds up pass
-  after pass in a crack or crater until they burst out.
+- **Against a block.** A loose body's impulse against a block takes its whole
+  approach speed, not its contact count's share of it: the block's push
+  moves positions only, so nothing else would stop it. Its pairs with the
+  block's members are one contact, found once and shared among them.
 
 ## Liquid
 
@@ -140,8 +141,8 @@ body. Up to `256` blocks exist at once.
 - **Contacts.** A contact with a member is a contact with the block: normal and
   depth come from the field, and the correction is split by the block's rigid
   response (mass, inertia, lever arm). Mass splitting shares a block among its
-  simultaneous partners (floor, each block, each loose body), so stacks are
-  never overshot.
+  simultaneous partners (the floor, each block, and the loose bodies touching
+  it as one), so stacks are never overshot.
 - **Split impulse.** Pushes out of blocks and walls move positions only; speed
   changes by impulses alone, so a body is not thrown back as fast as it came.
 - **No tunnelling.** A body that crossed the outline during a substep is
@@ -150,7 +151,9 @@ body. Up to `256` blocks exist at once.
   blocks instead. A block pressed against a wall loses its speed into it.
 - **Restitution** `--block-restitution` (`0.2`) between blocks and walls; each
   pair remembers its approach speed during the impact and aims at that times
-  restitution. Below `20` diameters/s nothing bounces, so rest stays rest.
+  restitution. Below `20` diameters/s nothing bounces, so rest stays rest. A
+  pair that has pushed for two steps without reaching its target is held,
+  under load or wedged: its impact is over and it merely touches.
 - **Friction** `--block-friction` (`0.5`) against walls and blocks, Coulomb
   along the rigid response.
 - **Mass.** A block's mass grows with its area; falling and floating depend on
