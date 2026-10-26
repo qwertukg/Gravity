@@ -128,7 +128,13 @@ scenario changes.
   stays within a conservative half-skin displacement bound. Actual contacts
   are checked on every substep and passed directly to the solver. Overflow
   uses complete linked-list traversal; fast scenes rebuild the ordinary grid.
-  All 16 substeps and the final contact pass are retained.
+  All 16 substeps and the final contact pass are retained, unless a frame
+  runs over its budget (below).
+- Frame budget. While a frame takes longer than `--gpu-budget-ms` (`9.5`) on
+  the GPU, the next steps run proportionally fewer collision substeps, down
+  to half; well under the budget they come back one a frame. The substeps
+  take most of a step, so a heavy impact keeps its frame rate and lands a
+  little softer; calm scenes keep all 16. The console reports the substeps.
 - Every second step the body arrays are reordered along a Morton curve of
   small screen tiles, so neighbouring bodies have neighbouring IDs and every
   neighbor search reads nearby memory. It is a pure permutation and costs
@@ -157,8 +163,9 @@ scenario changes.
 
 The primary arrays, FFT buffers, and spatial hashes remain in VRAM. Particle
 state is not copied to the CPU every frame. Blocking GPU readback is used only
-at the end of explicit diagnostic and benchmark runs, and when a block lost
-members, to split it into its pieces ([Breaking blocks](#breaking-blocks)).
+at the end of explicit diagnostic and benchmark runs. While breakable blocks
+exist, a small copy of them reaches the CPU after every step, so it can split
+a block into its pieces ([Breaking blocks](#breaking-blocks)).
 
 The average complexity of one physics step is
 `O(N + M log M + N·k)`, where `N` is the body count, `M` is the number of FFT
@@ -256,6 +263,34 @@ its member. Any glued body gets its shape this way, whatever its outline.
   out of it. The count pass marks such bodies in their contact count, and
   both bodies of a pair read both marks, so the pair stays equal and
   opposite.
+- Crushed crowds come apart. A fast impact presses bodies onto a block and
+  into one another, and contacts solved side by side share each body's
+  correction among all its contacts: a crowd of hundreds in one pixel would
+  spread by a fraction of a diameter a pass and never come apart while the
+  impact pressed on, every pass walking all its pairs. Equal discs touch at
+  most six others unless they overlap deeply, so a pair where either body
+  has more than `24` contacts and whose centres are closer than half a
+  diameter moves apart as if each had six, by position alone, at most half a
+  diameter a pass and never into a block it touches. A crowd of up to `48`
+  that has come to rest is left as it is, so sand packed into a crater stays
+  still. Uncrushed bodies are untouched, and without blocks the passes are
+  the plain ones. A `50,000`-body bullet (the `+` key) shot into a block
+  costs about half of what it did at `3000 px/s`, a quarter at `1500 px/s`; at
+  the slower speed more of the struck face chips off, as the crowd no longer
+  cushions it.
+- A crowd is sampled. A body with more than `32` loose contacts solves `16`
+  of them on average, picked by a hash of the pair below a threshold of
+  each body, so a pair is solved by both its bodies or neither and stays
+  equal and opposite; each shares the body among the sample, and its relief
+  stands for the pairs left out. The sum over a random sample estimates the
+  sum over all, so the crowd comes apart as a whole, as before. A loose body
+  solves all its contacts with blocks; a member a crowd presses on samples
+  its side of them and scales it by the pairs each stands for. Below `32`
+  contacts nothing changes. The count lists each body's contacts, a crowd
+  its sample, and a small list pass lists what the count could not, a long
+  list in a shared pool, so the solve walks no crowd; it is one call site,
+  small enough to keep the GPU busy. A `50,000`-body bullet at `3000 px/s`
+  takes about two thirds of the time it did, its slowest frames as well.
 - Restitution `--block-restitution` (`0.2`) between blocks and against
   walls; a loose body gets the larger of its own and the block's, liquid
   none; below `20` diameters a second nothing bounces, so resting stays
@@ -281,7 +316,9 @@ its member. Any glued body gets its shape this way, whatever its outline.
 - Members of one block never collide with each other. The neighbour grid
   tags each body with its block and each cell with the block all its bodies
   belong to, so a member deep inside a block, whose neighbourhood holds its
-  own block alone, does not look at a single neighbour.
+  own block alone, does not look at a single neighbour. Without liquid the
+  count pass tells a pair by these tags alone and reads no material, except
+  for two members of different blocks.
 - Collision passes with this code are compiled separately (`RIGID`) and run
   only while blocks exist; without blocks the passes are the plain ones.
 - GPU tests shoot bullets up to `6000 px/s`, a `100 px` cannonball and a
@@ -359,23 +396,30 @@ unbreakable.
   more than `1.2` diameters apart hold no longer together. The GPU flags a
   block whose broken member leaves its neighbours in more than one arc.
   After every step the GPU copies the blocks, their flags and which members
-  are left behind a fence, so nothing waits; the CPU looks at such a block
-  as soon as a copy is done and at any other that lost members within `8`
-  steps, usually one or two steps after the hit. As the copy is a step or
-  two old, a piece names the slots of its block, and the GPU gives it the
-  bodies they hold and the block's motion as they are when it is glued; a
-  member broken off in between leaves the piece at once. The CPU keeps
-  every block's lattice,
-  and searches spread from the neighbours of the members gone: one that
-  runs out of members before meeting the others has gone round a piece of
-  its own, so only the pieces that came away are walked. The largest piece
-  stays the block; every other one of at least `16` bodies becomes a block
-  of its own with the same rigid motion, its own shape and its own hull,
-  and smaller ones crumble into grains, as do pieces that find no free
-  block. The shapes of the pieces of a look are made on all CPU cores.
+  are left into memory the CPU reads directly, behind a fence; after the
+  next step the CPU waits for that copy, with the step after it already
+  queued, so the GPU never runs dry. Read through the GL queue instead, a
+  copy would wait for every step sent since. The CPU looks at a flagged
+  block at once and at any other that lost members within `8` steps,
+  usually one or two steps after the hit. As the copy is a step old, a
+  piece names the slots of its block, and the GPU gives it the bodies they
+  hold and the block's motion as they are when it is glued; a member broken
+  off in between leaves the piece at once. The CPU keeps every block's
+  lattice, and searches spread from the neighbours of the members gone: one
+  that runs out of members before meeting the others has gone round a piece
+  of its own, so only the pieces that came away are walked. The largest
+  piece stays the block; every other one of at least `16` bodies becomes a
+  block of its own with the same rigid motion, its own shape and its own
+  hull, and smaller ones crumble into grains, as do pieces that find no free
+  block. The search and the shapes of the pieces run on a thread of their
+  own (the shapes on all CPU cores): what it finds within `2 ms` is glued in
+  the same step, a bigger break in the next, so a block shattering into
+  hundreds of pieces never stalls a frame.
 - Breaking costs about `0.3 ms` of GPU time a step while a block of
   `330,000` bodies is shot to pieces at `6000 px/s` (`3440×1440`, RTX 2060
-  SUPER), and a look at it waits for nothing (`blockBenchmark`). A GPU test
+  SUPER), and a look at it waits for no more than the step before
+  (`blockBenchmark`, which queues two steps at most, as the swap chain
+  does). A GPU test
   checks that a ram cracks both blocks into pieces and keeps momentum to
   `1e-3`, that a fast ball cuts a thin plate in two, that a block dropped
   from high cracks and one dropped low does not, and that rest, slow
@@ -448,12 +492,15 @@ The upper-left overlay shows:
 
 Controls are shown in the lower-left corner. Both blocks and the scenario
 buttons share one UI layer: STB Easy Font text on the same translucent panels. Every two seconds the console reports body count, FPS,
-smoothed GPU frame time, and FFT grid size.
+smoothed GPU frame time, collision substeps (see the frame budget in
+[Integration and collisions](#integration-and-collisions)), and FFT grid
+size.
 
 ### Scenarios
 
-The upper ten buttons in the top-right corner restart the simulation in a
-prepared scenario (at most `200000` bodies each; `R` restarts the current one). Gravity
+`--scenario` starts the simulation in a prepared scenario (at most `200000`
+bodies each; `R` restarts the current one); the buttons in the top-right
+corner offer the [test scenarios](#test-scenarios) instead. Gravity
 is normalized to the current body count (see [Gravity](#gravity)). Distances and body counts are
 authored for a `1440 px` tall screen; distances scale with its height and
 counts with its area (never above the authored counts).
@@ -490,15 +537,15 @@ screen.
 
 ### Block scenarios
 
-The buttons below them are the scenes [glued blocks](#rectangular-blocks)
-were checked on; the GPU tests `BlockPenetrationTest` and `BlockDynamicsTest`
-run the same scenes with unbreakable blocks, and `BlockScenarioRunTest` and
-`BlockFractureTest` run these buttons as they start, blocks
+These are the scenes [glued blocks](#rectangular-blocks) were checked on,
+started with `--scenario`; the GPU tests `BlockPenetrationTest` and
+`BlockDynamicsTest` run the same scenes with unbreakable blocks, and
+`BlockScenarioRunTest` and `BlockFractureTest` run them as they start, blocks
 [breaking](#breaking-blocks) where they are hit hard enough. Each
 brings its own environment: walls, no gravity between bodies, the downward
 field where it needs one, and liquid mode where it says so. The walls,
-gravity, liquid and field set before come back with the next scenario above.
-Blocks have mass `0.5` per body unless said otherwise.
+gravity, liquid and field set before come back with the next cosmic
+scenario. Blocks have mass `0.5` per body unless said otherwise.
 
 | Scenario | `--scenario=` | Field | Setup |
 |---|---|---|---|
@@ -519,6 +566,30 @@ Blocks have mass `0.5` per body unless said otherwise.
 | Blocks thrown and spun | `thrown` | down | one thrown at an angle, one spinning at `3 rad/s` |
 | Blocks on liquid drops | `drops` | down, liquid | a heavy and a light block fall onto a dozen drops on the floor |
 
+### Test scenarios
+
+The buttons in the top-right corner, under a heading per group, are the
+scenes breaking blocks was measured on (`blockBenchmark`). Like the block
+scenarios each brings its own environment: walls, no gravity between bodies,
+the downward field where it needs one, liquid mode in the liquid group; the
+bullet is the `+` key's, `50,000` bodies (`266 px`). Blocks have mass `0.5`
+per body. `BlockScenarioRunTest` runs every one as it starts.
+
+| Group | Button | `--scenario=` | Field | Setup |
+|---|---|---|---|---|
+| Sand mode | 50k bullet into a wall | `wall-bullet` | off | the bullet at `3000 px/s` into the right wall |
+| Liquid mode | 50k bullet into a wall | `liquid-wall-bullet` | off, liquid | the same, the bullet a liquid |
+| Blocks | 50k bullet, 3000 px/s | `bullet` | off | the bullet into a `600×300 px` block |
+| Blocks | 50k bullet, 1500 px/s | `slow-bullet` | off | the same at `1500 px/s` |
+| Blocks | 50k bullet, big block | `big-block-bullet` | off | at `3000 px/s` into a `1000×500 px` block |
+| Blocks | 50k bullet, small block | `small-block-bullet` | off | at `3000 px/s` into a `300×200 px` block |
+| Blocks | 50k bullet, unbreakable | `unbreakable-bullet` | off | at `3000 px/s` into a `600×300 px` block that never breaks |
+| Blocks | Cannonball, 4000 px/s | `shot` | off | a `100 px` ball into a `600×300 px` block |
+| Blocks | Cannonball, big block | `big-shot` | off | a `100 px` ball at `6000 px/s` into a `900×400 px` block |
+| Blocks | Two blocks ram | `ramming` | off | two `320 px` blocks into each other at `1500 px/s` each |
+| Blocks | Block into sand | `sand-drop` | down | a `400×100 px` block at `2500 px/s` into a `60 px` sand bed |
+| Blocks | Sand into a block | `crater` | down | a `30 px` ball of sand at `1500 px/s` down into a block on the floor |
+
 ## Controls
 
 | Input | Action |
@@ -527,7 +598,7 @@ Blocks have mass `0.5` per body unless said otherwise.
 | Release LMB | Spawn a projectile at the initial press position |
 | Hold and drag RMB | Outline a rectangle between the press point and the cursor |
 | Release RMB | Fill the rectangle with bodies glued into one rigid block |
-| LMB on a top-right button | Restart in that scenario |
+| LMB on a top-right button | Restart in that test scenario |
 | `1`–`9` | Select a projectile diameter of `10–90 px` |
 | `0` | Select a projectile diameter of `100 px` |
 | `+` | Select a projectile of `50000` bodies |
@@ -591,7 +662,7 @@ bodies off:
 
 | Option | Default | Runtime key |
 |---|---|---|
-| `--scenario=NAME` | `cosmic-web` | scenario buttons, `R` |
+| `--scenario=NAME` | `cosmic-web` | test scenario buttons, `R` |
 | `--walls=true\|false` | `true` | `B` |
 | `--mutual-gravity=true\|false` | `false` | `G` |
 | `--field=DIRECTIONS` | `down` | arrows |
@@ -600,7 +671,9 @@ bodies off:
 `NAME` is `none` (the uniform random start of `--bodies`) or one of
 `turbulent-cloud`, `galaxy`, `galaxy-collision`, `spinning-planet`,
 `planetary-impact`, `ringed-planet`, `binary-stars`, `galaxy-flyby`,
-`planetary-system`, `cosmic-web`. `DIRECTIONS` is `off` or a comma-separated
+`planetary-system`, `cosmic-web`, or a name from the tables of
+[block scenarios](#block-scenarios) and [test scenarios](#test-scenarios).
+`DIRECTIONS` is `off` or a comma-separated
 list of `up`, `down`, `left`, `right`.
 
 Benchmarks and diagnostic starts (`--benchmark`, `--frames`, `--bodies`,
@@ -675,6 +748,7 @@ because changing them at runtime would invalidate compiled shader layouts.
 | `--adaptive-collisions=true\|false` | `false` | GPU-adaptive collision substeps; `--collisions` remains the maximum |
 | `--collision-cache=true\|false` | `true` | Reuse exact broad-phase candidates and current contacts; no substeps or contacts removed |
 | `--collision-skin=F` | `0.5 × S` | Neighbor-cache distance reserve in pixels, `F > 0`; affects search cost only |
+| `--gpu-budget-ms=F` | `9.5` | GPU time of a frame above which fewer collision substeps run, down to half; `0` keeps all |
 | `--sort-interval=N` | `2` | Physics steps between spatial reorderings of the body arrays, `N ≥ 0`; `0` disables it |
 | `--collision-neighbor-radius=N` | `1` | Collision-cell search radius, `1–4` |
 | `--restitution=F` | `0` | Collision restitution coefficient, `0–1` |

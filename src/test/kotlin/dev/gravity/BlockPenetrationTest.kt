@@ -289,9 +289,11 @@ class BlockPenetrationTest {
         const val MAXIMUM_TURN = 0.0175f
         /**
          * Deepest a centre may be found within the outline, in diameters, at
-         * impacts and while blocks sink or rise, and under a crush.
+         * impacts and while blocks sink or rise, and under a crush. At
+         * impacts half a pixel at most: a member of a block a crowd presses
+         * on samples its contacts (collision_crowd.glsl).
          */
-        const val DYNAMIC_DEPTH = 0.4f
+        const val DYNAMIC_DEPTH = 0.45f
         const val CRUSH_DEPTH = 0.75f
     }
 }

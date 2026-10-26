@@ -1,8 +1,19 @@
 // Structure of arrays, one lane per body. These are cache capacities, never
 // contact limits: overflowing bodies traverse the complete reference grid.
+// Only RIGID passes sample crowds (collision_crowd.glsl).
 const uint NEIGHBOR_SLOTS = 32u;
-const uint CONTACT_SLOTS = 8u;
-const uint CACHE_PLANES = 2u + NEIGHBOR_SLOTS + CONTACT_SLOTS;
+const uint CONTACT_SLOTS = 48u;
+// RIGID passes (collision_crowd.glsl): the sampling threshold of a crowded
+// body, or KEEP_ALL; the contacts it shares its correction among; how many
+// contacts its slots list, or UNLISTED, or with POOLED how many the pool
+// lists from the offset in POOL_PLANE (collision_cache_list.comp).
+const uint KEEP_PLANE = 2u + NEIGHBOR_SLOTS + CONTACT_SLOTS;
+const uint KEPT_PLANE = KEEP_PLANE + 1u;
+const uint LIST_PLANE = KEPT_PLANE + 1u;
+const uint POOL_PLANE = LIST_PLANE + 1u;
+const uint CACHE_PLANES = POOL_PLANE + 1u;
+const uint UNLISTED = 0xffffffffu;
+const uint POOLED = 0x80000000u;
 const uint DIRECT_GRID = 0xffffffffu;
 uniform int uCapacity;
 
@@ -18,6 +29,7 @@ const uint STATE_REBUILDS = 2u;       // rebuild counter (diagnostics)
 const uint STATE_DIRECT = 3u;         // this pass uses the ordinary contact grid
 const uint STATE_DENSE_SAMPLES = 4u;  // sampled dense bodies of the current count
 const uint STATE_GRID_EPOCH = 5u;     // tag of the retained linked grid
+const uint STATE_POOL = 6u;           // entries of the contact pool taken this pass
 
 uint stateOffset(uint word) {
     return CACHE_PLANES * uint(uCapacity) + word;

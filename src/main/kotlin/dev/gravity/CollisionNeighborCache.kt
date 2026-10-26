@@ -26,7 +26,9 @@ import kotlin.math.min
  * included without estimating velocities or reducing the iteration budget.
  *
  * Fixed-size per-body caches are accelerators, not limits. Overflow traverses
- * the complete retained reference grid. Counts and solver use the same ordered
+ * the complete retained reference grid; with blocks, crowds are sampled
+ * instead (collision_crowd.glsl) and a list pass lists what the count could
+ * not, so the solve meets lists. Counts and solver use the same ordered
  * candidates; the contact formulas and float precision are retained. The strict
  * contact predicate uses precise arithmetic in both implementations so driver
  * FMA contraction cannot make counting disagree with solving at the cutoff.
@@ -72,6 +74,11 @@ internal class CollisionNeighborCache(
     private val hardSolve = GlProgram.compute("/shaders/collision_cache_solve.comp")
     private val rigidSolve = GlProgram.compute("/shaders/collision_cache_solve.comp", "RIGID")
     private val counts = listOf(hardCount, rigidCount)
+    // Lists the sample of each crowd between the RIGID count and solve.
+    private val rigidList = GlProgram.compute("/shaders/collision_cache_list.comp", "RIGID")
+    // Lists longer than the slots hold: members of blocks crowds press on.
+    private val poolEntries = 2 * capacity
+    private val pool = buffer(poolEntries.toLong() * Int.SIZE_BYTES)
     private val solves = listOf(hardSolve, rigidSolve)
 
     // Heads store (epoch << idBits) | (id + 1); id + 1 never exceeds capacity.
@@ -99,12 +106,12 @@ internal class CollisionNeighborCache(
         val cellSize = min(width.toDouble() / gridWidth, height.toDouble() / gridHeight)
         val searchRadius = max(collision.neighborCellRadius, ceil(candidateRadius / cellSize).toInt())
             .coerceAtMost(max(gridWidth, gridHeight))
-        (listOf(drift) + builds + counts + solves).forEach { program ->
+        (listOf(drift, rigidList) + builds + counts + solves).forEach { program ->
             program.use()
             program.int("uAdaptive", if (collision.adaptive) 1 else 0)
             program.int("uCapacity", capacity)
         }
-        (builds + counts + solves).forEach { program ->
+        (listOf(rigidList) + builds + counts + solves).forEach { program ->
             program.use()
             program.int("uGridWidth", gridWidth)
             program.int("uGridHeight", gridHeight)
@@ -117,9 +124,8 @@ internal class CollisionNeighborCache(
         drift.use()
         drift.vec2("uViewport", width.toFloat(), height.toFloat())
         drift.float("uTimeStep", collision.timeStep)
-        drift.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
         drift.float("uReuseDistanceSquared", reuseDistance * reuseDistance)
-        (counts + solves).forEach { program ->
+        (listOf(rigidList) + counts + solves).forEach { program ->
             program.use()
             program.int("uSearchRadius", searchRadius)
             program.int("uNeighborCellRadius", collision.neighborCellRadius)
@@ -135,9 +141,10 @@ internal class CollisionNeighborCache(
             solve.int("uDenseContactThreshold", collision.denseContactThreshold)
             solve.float("uRestitutionCoefficient", collision.restitutionCoefficient)
             solve.float("uCoincidentDistanceSquaredEpsilon", collision.coincidentDistanceSquaredEpsilon)
-            solve.float("uSubstepDt", collision.timeStep / collision.maximumSubsteps)
             solve.float("uTimeStep", collision.timeStep)
         }
+        rigidList.use()
+        rigidList.int("uPoolEntries", poolEntries)
         rigidSolve.use()
         rigidSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
         rigidSolve.float("uRestingSpeed", restingSpeed(collision))
@@ -156,6 +163,8 @@ internal class CollisionNeighborCache(
         active: Int,
         kickDt: Float,
         driftDt: Float,
+        /** The substep of this step, also for its final pass without drift. */
+        substepDt: Float,
         writePressure: Boolean,
         substep: Int?,
         bounded: Boolean,
@@ -184,6 +193,7 @@ internal class CollisionNeighborCache(
         drift.int("uCount", active)
         drift.float("uKickDt", kickDt)
         drift.float("uDriftDt", driftDt)
+        drift.float("uSubstepDt", substepDt)
         drift.int("uBounded", if (bounded) 1 else 0)
         drift.int("uRigidGroups", rigidGroups)
         bind(0, input)
@@ -234,6 +244,14 @@ internal class CollisionNeighborCache(
         bind(7, cellTags)
         dispatch(active, substep)
         barrier()
+        if (rigidGroups > 0) {
+            iteration(rigidList, substep)
+            rigidList.int("uCount", active)
+            rigidList.int("uBounded", if (bounded) 1 else 0)
+            bind(11, pool)
+            dispatch(active, substep)
+            barrier()
+        }
         profiler?.end(GpuStage.COLLISION_COUNT)
 
         profiler?.begin(GpuStage.COLLISION_SOLVE)
@@ -241,6 +259,7 @@ internal class CollisionNeighborCache(
         iteration(solve, substep)
         solve.int("uCount", active)
         solve.int("uWritePressure", if (writePressure) 1 else 0)
+        solve.float("uSubstepDt", substepDt)
         solve.int("uBounded", if (bounded) 1 else 0)
         solve.int("uLiquid", if (liquid) 1 else 0)
         if (rigidGroups > 0) solve.float("uDriftDt", driftDt)
@@ -286,16 +305,16 @@ internal class CollisionNeighborCache(
     private fun barrier() = glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     override fun close() {
-        (listOf(drift) + builds + counts + solves).forEach(GlProgram::close)
-        intArrayOf(references, cache, nodes, solidTiles, cellTags).forEach(::glDeleteBuffers)
+        (listOf(drift, rigidList) + builds + counts + solves).forEach(GlProgram::close)
+        intArrayOf(references, cache, nodes, solidTiles, cellTags, pool).forEach(::glDeleteBuffers)
     }
 
     companion object {
         // Matches collision_cache_layout.glsl: two metadata planes, 32
-        // candidates and 8 contacts, then the control words. Overflow always
-        // has a complete fallback.
-        const val CACHE_PLANES = 42
-        const val STATE_WORDS = 6
+        // candidates, 48 contacts and the four planes of crowds and longer
+        // lists, then the control words. Overflow always has a complete fallback.
+        const val CACHE_PLANES = 86
+        const val STATE_WORDS = 7
         const val STATE_POPULATION = 1
         const val STATE_REBUILDS = 2
         const val STATE_DIRECT = 3

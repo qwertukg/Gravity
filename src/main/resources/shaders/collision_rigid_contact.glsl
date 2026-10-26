@@ -9,6 +9,8 @@ uniform float uBlockRestitution;
 uniform float uRestingSpeed;
 // Position-only move of this body out of blocks and walls.
 vec2 rigidShift = vec2(0.0);
+// Outward normals of the blocks this loose body touches (reliefMove).
+vec2 blockNormals = vec2(0.0);
 
 // Fracture (rigid_fracture.comp). A block's material breaks where an impact
 // is faster than [uFractureSpeed], the speed at which the stress of the
@@ -117,6 +119,18 @@ vec2 resolveGuards(vec2 positionPixels, float driftDt) {
     return shift;
 }
 
+// A member of a crowd solves a sample of its loose contacts
+// (collision_crowd.glsl), each standing for this many; its loose partners
+// solve all theirs, so its block gets their impulses as many times as it
+// should on average.
+float memberSample = 1.0;
+
+// This body's depth in the last block it probed and the normal out of it:
+// the same for every member of that block it touches.
+int probedGroup = -1;
+float probedPenetration = 0.0;
+vec2 probedNormal = vec2(0.0);
+
 // A pair with at least one member. The shape is the member's block; between
 // two blocks, the lower-numbered one's. Both bodies of the pair evaluate the
 // same expressions in the same order, so their impulses are equal and opposite.
@@ -151,8 +165,20 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     float slop = probeGroup >= 0 && impacts[contactKey(shapeGroup, probeGroup)] != 0
         ? SPECULATIVE_DIAMETERS * uDiameterPixels : 0.0;
     vec2 normal;
-    float penetration = shapeContact(shapeGroup, probePixels, probeVelocity, probeRadius, slop, driftDt, normal);
+    float penetration;
+    if (otherShape && shapeGroup == probedGroup) {
+        penetration = probedPenetration;
+        normal = probedNormal;
+    } else {
+        penetration = shapeContact(shapeGroup, probePixels, probeVelocity, probeRadius, slop, driftDt, normal);
+        if (otherShape) {
+            probedGroup = shapeGroup;
+            probedPenetration = penetration;
+            probedNormal = normal;
+        }
+    }
     if (normal == vec2(0.0) || penetration <= -slop) return;
+    if (otherShape && probeGroup < 0) blockNormals += normal;
     vec2 point = probePixels - normal * probeRadius;
     // Inverse masses along a direction with mass splitting: a loose body
     // splits by its own contact count, a block by its block's.
@@ -164,6 +190,7 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
 
     float side = otherShape ? 1.0 : -1.0;
     float ownMass = otherShape ? probeMaterial.x : memberMaterial.x;
+    float ownSample = !otherShape && probeGroup < 0 ? memberSample : 1.0;
     vec2 ownNormal = normal * side;
     float impulse = max(penetration, 0.0) / response;
     // The guard (above) for a body whose centre is beyond the outline.
@@ -184,7 +211,7 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     }
     // The liquid presses fluid against a block on its own: for a fluid body
     // the guard is the whole contact.
-    if (!fluidProbe) rigidShift += ownNormal * (impulse / ownMass);
+    if (!fluidProbe) rigidShift += ownNormal * (impulse * ownSample / ownMass);
 
     vec2 relativeVelocity = probeVelocity - memberVelocity;
     float normalSpeed = dot(relativeVelocity, normal);
@@ -201,13 +228,13 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
             : max(uRestitutionCoefficient, uBlockRestitution);
         velocityImpulse = -(1.0 + restitution) * normalSpeed / response;
     }
-    velocityCorrection += ownNormal * (velocityImpulse / ownMass);
+    velocityCorrection += ownNormal * (velocityImpulse * ownSample / ownMass);
     // A struck member: the impact runs into its block along ownNormal. Two
     // blocks share the energy of their contact; liquid breaks nothing.
     if (ownGroup >= 0 && !fluidProbe && -normalSpeed > uFractureSpeed) {
         float energy = (normalSpeed * normalSpeed - uFractureSpeed * uFractureSpeed) / response;
         if (probeGroup >= 0) energy *= 0.5;
-        recordFracture(ownNormal, -normalSpeed, energy * uFractureEnergy / ownMass);
+        recordFracture(ownNormal, -normalSpeed, energy * ownSample * uFractureEnergy / ownMass);
     }
     // Coulomb friction: the tangential impulse stops the sliding at most, and
     // never exceeds friction times the normal impulse.
@@ -219,11 +246,11 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
         float tangentResponse = shapeShare * rigidResponse(shapeGroup, point, tangent, driftDt) +
             (probeGroup >= 0 ? probeShare * rigidResponse(probeGroup, point, tangent, driftDt) : probeShare);
         float tangentImpulse = min(slidingSpeed / tangentResponse, friction * velocityImpulse);
-        velocityCorrection -= tangent * (side * tangentImpulse / ownMass);
+        velocityCorrection -= tangent * (side * tangentImpulse * ownSample / ownMass);
     }
     if (uWritePressure != 0) {
         if (uAdaptive != 0) atomicMax(adaptiveState[1], floatBitsToUint(penetration));
-        pressure += 0.5 / float(max(max(ownContacts, otherContacts), 1u)) * (
+        pressure += 0.5 * ownSample / float(max(max(ownContacts, otherContacts), 1u)) * (
             penetration / effectiveSubstepDt + max(-normalSpeed, 0.0)
         );
     }

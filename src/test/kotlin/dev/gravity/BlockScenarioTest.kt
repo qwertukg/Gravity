@@ -10,14 +10,23 @@ class BlockScenarioTest {
     private val diameter = CollisionConfig.REFERENCE_DIAMETER_PIXELS
 
     @Test
+    fun `every scenario has a name of its own for --scenario`() {
+        val names = (Scenario.entries + BlockScenario.entries + TestScenario.entries).map { it.optionName }
+        assertTrue(names.size == names.toSet().size, "duplicate names in $names")
+    }
+
+    @Test
     fun `every block scenario fits the screen without overlaps at the start`() {
         for ((width, height) in screens) {
             val space = ScenarioSpace(width, height, 0.035f, diameter)
-            for (scenario in BlockScenario.entries) {
+            for (scenario in BlockScenario.entries + TestScenario.entries) {
                 val setup = scenario.setup(space, seed = 1234L)
                 val count = setup.bodies.size / 4
                 assertTrue(count in 1..Scenario.MAXIMUM_BODIES, "${scenario.title}: $count bodies")
-                assertTrue(setup.blocks.isNotEmpty(), "${scenario.title} has blocks")
+                // A bullet into a wall needs none.
+                if (scenario !is TestScenario || scenario.group == TestGroup.BLOCKS) {
+                    assertTrue(setup.blocks.isNotEmpty(), "${scenario.title} has blocks")
+                }
                 for (block in setup.blocks) {
                     assertTrue(block.minX >= 0f && block.minY >= 0f && block.maxX <= width && block.maxY <= height, "${scenario.title}: $block on screen")
                     assertTrue(RectangularBlock.bodyCount(diameter, block.maxX - block.minX, block.maxY - block.minY) > 0, "${scenario.title}: $block has bodies")

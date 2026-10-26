@@ -1,6 +1,11 @@
 package dev.gravity
 
 import org.lwjgl.opengl.GL11.glFinish
+import org.lwjgl.opengl.GL32.GL_SYNC_FLUSH_COMMANDS_BIT
+import org.lwjgl.opengl.GL32.GL_SYNC_GPU_COMMANDS_COMPLETE
+import org.lwjgl.opengl.GL32.glClientWaitSync
+import org.lwjgl.opengl.GL32.glDeleteSync
+import org.lwjgl.opengl.GL32.glFenceSync
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
@@ -10,16 +15,20 @@ import kotlin.math.sqrt
  * Breaking blocks on the GPU: big blocks struck fast, measured from the
  * moment of the shot. Prints the wall time per step (splitting included), the
  * GPU stages, and what the run left with a hash of the final state, so
- * revisions can be compared for speed and for identical results.
+ * revisions can be compared for speed and for identical results. At most
+ * [FRAMES_IN_FLIGHT] steps are queued, as SwapBuffers holds the application:
+ * a CPU racing ahead would only measure how deep the driver queues.
  *
  * Arguments: label, scenes (comma separated, all by default), repetitions.
  */
 object BlockBenchmark {
     private const val WIDTH = 3440
     private const val HEIGHT = 1440
+    private const val FRAMES_IN_FLIGHT = 2
     private val STEPS = System.getenv("BLOCK_STEPS")?.toInt() ?: 240
 
-    private enum class Scene { SHOT, BIG, RAM, SAND }
+    /** BULLET and SLOW_BULLET: the `+` key's bullet of 50,000 bodies, at 3000 and 1500 px/s. */
+    private enum class Scene { SHOT, BIG, RAM, SAND, BULLET, SLOW_BULLET }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -44,7 +53,7 @@ object BlockBenchmark {
         val config = GravityConfig(
             particles = ParticleConfig(capacity = 420_000, initialBodies = loose.size / 4, seed = 1,
                 spatialSortInterval = if (System.getenv("BLOCK_DUMP") != null) 0 else 2),
-            collisions = CollisionConfig(adaptive = false),
+            collisions = CollisionConfig(adaptive = false, maximumSubsteps = SUBSTEPS),
             projectiles = if (UNBREAKABLE) ProjectileConfig(blockStrength = Float.POSITIVE_INFINITY) else ProjectileConfig(),
         )
         val profiler = GpuProfiler(STEPS + 1, 512, STEPS + 16)
@@ -62,6 +71,12 @@ object BlockBenchmark {
                     Scene.BIG -> {
                         active += pipeline.spawnBlock(active, cx - 450f, cy - 200f, cx + 450f, cy + 200f, 0.5f)
                         active += pipeline.spawnProjectile(active, if (CLOSE) cx - 502f else cx - 800f, cy + 50f, 6000f, 0f, 100f)
+                    }
+                    Scene.BULLET, Scene.SLOW_BULLET -> {
+                        val bullet = CircularProjectile.diameterForBodyCount(diameter, ProjectileConfig().plusKeyBodyCount)
+                        val speed = if (scene == Scene.BULLET) 3000f else 1500f
+                        active += pipeline.spawnBlock(active, cx - 300f, cy - 150f, cx + 300f, cy + 150f, 0.5f)
+                        active += pipeline.spawnProjectile(active, cx - 304f - 0.5f * bullet, cy + 22f, speed, 0f, bullet)
                     }
                     Scene.RAM -> {
                         active += pipeline.spawnBlock(active, cx - 350f, cy - 160f, cx - 30f, cy + 160f, 0.5f, velocityX = 1500f)
@@ -87,17 +102,40 @@ object BlockBenchmark {
                 pipeline.initializeAcceleration(active)
                 glFinish()
                 val start = System.nanoTime()
+                val queued = ArrayDeque<Long>()
+                val governor = SubstepGovernor(config.collisions.maximumSubsteps, if (GOVERNOR) config.collisions.gpuBudgetMillis else 0.0)
+                var substepSum = 0L
                 repeat(STEPS) { frame ->
+                    while (queued.size >= FRAMES_IN_FLIGHT) {
+                        val fence = queued.removeFirst()
+                        glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, Long.MAX_VALUE)
+                        glDeleteSync(fence)
+                    }
                     profiler.beginFrame(frame.toLong())
                     pipeline.step(active)
                     profiler.endFrame()
-                    if (PROBE && (frame + 1) % 20 == 0) probe(pipeline, active, frame + 1)
+                    if (GOVERNOR) {
+                        profiler.poll()
+                        pipeline.collisionSubsteps = governor.update(profiler.latestFrameMillis)
+                    }
+                    substepSum += pipeline.collisionSubsteps
+                    queued.addLast(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0))
+                    if (PROBE && (frame + 1) % 10 == 0) probe(pipeline, active, frame + 1)
                 }
+                queued.forEach(::glDeleteSync)
                 glFinish()
                 val wall = (System.nanoTime() - start) / 1e6 / STEPS
                 profiler.poll()
                 val summary = profiler.summary()
                 check(summary.frames == STEPS && profiler.droppedFrames == 0L) { "Incomplete: ${summary.frames}/$STEPS" }
+                if (SERIES) {
+                    // The physics step, count and solve per ten steps: where an impact costs.
+                    profiler.frames().chunked(10).forEachIndexed { chunk, frames ->
+                        fun average(stage: GpuStage) = frames.map { it.milliseconds[stage.ordinal] }.filter { !it.isNaN() }.average()
+                        println(String.format(Locale.ROOT, "series %3d step=%6.2f count=%6.2f solve=%6.2f", chunk * 10,
+                            average(GpuStage.PHYSICS_STEP), average(GpuStage.COLLISION_COUNT), average(GpuStage.COLLISION_SOLVE)))
+                    }
+                }
                 fun mean(stage: GpuStage) = summary[stage]?.averageMillis ?: 0.0
                 fun p95(stage: GpuStage) = summary[stage]?.p95Millis ?: 0.0
                 val blocks = CollisionGpuAccess.rigidBlocks(pipeline)
@@ -132,17 +170,24 @@ object BlockBenchmark {
                 String.format(Locale.ROOT,
                     "%-5s run=%d bodies=%d wall=%.3f gpuStep=%.3f gpuStepP95=%.3f drift=%.3f build=%.3f count=%.3f " +
                         "solve=%.3f rigid=%.3f fracture=%.3f split=%.3f splits=%d grains=%d pieces=%d " +
-                        "px=%.1f py=%.1f energy=%.4e rebuilds=%d hash=%016x",
+                        "px=%.1f py=%.1f energy=%.4e rebuilds=%d substeps=%.1f hash=%016x",
                     scene.name.lowercase(), repetition, active, wall, mean(GpuStage.PHYSICS_STEP), p95(GpuStage.PHYSICS_STEP),
                     mean(GpuStage.COLLISION_DRIFT), mean(GpuStage.COLLISION_BUILD), mean(GpuStage.COLLISION_COUNT),
                     mean(GpuStage.COLLISION_SOLVE), mean(GpuStage.RIGID_PROJECTION), mean(GpuStage.RIGID_FRACTURE),
-                    blocks.splitNanos / 1e6 / STEPS, blocks.splits, grains, pieces, momentumX, momentumY, energy, CollisionGpuAccess.rebuilds(pipeline), hash,
+                    blocks.splitNanos / 1e6 / STEPS, blocks.splits, grains, pieces, momentumX, momentumY, energy, CollisionGpuAccess.rebuilds(pipeline),
+                    substepSum.toDouble() / STEPS, hash,
                 )
             }
         }
     }
 
     private val PROBE = System.getenv("BLOCK_PROBE") != null
+    /** Collision substeps of every step, or at most when governed. */
+    private val SUBSTEPS = System.getenv("BLOCK_SUBSTEPS")?.toInt() ?: CollisionConfig().maximumSubsteps
+    /** Runs fewer collision substeps while a step takes longer than the budget, as the application does. */
+    private val GOVERNOR = System.getenv("BLOCK_GOVERNOR") != null
+    /** Prints the GPU time of every ten steps. */
+    private val SERIES = System.getenv("BLOCK_SERIES") != null
     /** Blocks that never break: no fracture, no split, for comparing revisions state by state. */
     private val UNBREAKABLE = System.getenv("BLOCK_UNBREAKABLE") != null
     /** Shots start at their target, so a few steps compare whole impacts. */
@@ -176,6 +221,11 @@ object BlockBenchmark {
         println("probe step=$step maxCell=${sizes.max()} cells>4=${crowded.size} bodiesIn>4=${crowded.values.sumOf { it.size }} kinds=$kinds " +
             "worst@(${worst.key % gw},${worst.key / gw}) kinds=${w.groupingBy(::kind).eachCount()} " +
             "sumSq=${sizes.sumOf { it.toLong() * it }}")
+        // Contacts of the last pass: the solve's work grows with their square in a crowd.
+        val counts = CollisionGpuAccess.ints(pipeline, "collisionContactCounts", active).map { it and 0x7fffffff }
+        val bounds = intArrayOf(8, 16, 24, 32, 64, 128)
+        println("contacts step=$step max=${counts.max()} " + bounds.joinToString(" ") { b -> ">$b: ${counts.count { it > b }}" } +
+            " sum=${counts.sumOf { it.toLong() }} sumSq=${counts.sumOf { it.toLong() * it }}")
         if (System.getenv("BLOCK_FIELD")?.toInt() == step) {
             val px = ((worst.key % gw) + 0.5f) * WIDTH / gw
             val py = ((worst.key / gw) + 0.5f) * HEIGHT / gh

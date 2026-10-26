@@ -8,9 +8,9 @@ import org.lwjgl.opengl.GL11.GL_NO_ERROR
 import org.lwjgl.opengl.GL11.glGetError
 
 /**
- * Every block scenario of the menu runs as the application starts it, blocks
- * breaking, and stays sound: finite, blocks out of the walls, no loose body
- * (grains broken off included) deep in a block.
+ * Every block scenario and every test scenario of the menu runs as the
+ * application starts it, blocks breaking, and stays sound: finite, blocks out
+ * of the walls, no loose body (grains broken off included) deep in a block.
  */
 class BlockScenarioRunTest {
     private val width = 1920
@@ -20,11 +20,15 @@ class BlockScenarioRunTest {
     @Test
     fun `block scenarios run soundly`() {
         val space = ScenarioSpace(width.toFloat(), height.toFloat(), GravityFieldConfig().gravitationalConstant, diameter)
-        for (scenario in BlockScenario.entries) {
+        for (scenario in BlockScenario.entries + TestScenario.entries) {
             val setup = scenario.setup(space, seed = 1234L)
             val count = setup.bodies.size / 4
             CollisionGpuContext().use {
-                val config = GravityConfig(particles = ParticleConfig(capacity = count + 100_000, initialBodies = count, seed = 1))
+                val blockBodies = setup.blocks.sumOf { RectangularBlock.bodyCount(diameter, it.maxX - it.minX, it.maxY - it.minY) }
+                val config = GravityConfig(
+                    particles = ParticleConfig(capacity = count + blockBodies + 1_000, initialBodies = count, seed = 1),
+                    projectiles = if (scenario.unbreakable) ProjectileConfig(blockStrength = Float.POSITIVE_INFINITY) else ProjectileConfig(),
+                )
                 GravityPipeline(config, width, height, null, setup.bodies, bounded = true).use { pipeline ->
                     pipeline.mutualGravity = false
                     pipeline.liquid = scenario.liquid

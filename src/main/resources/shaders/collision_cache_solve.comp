@@ -9,6 +9,9 @@ layout(std430, binding = 4) readonly buffer ContactCounts { uint contactCounts[]
 layout(std430, binding = 5) writeonly buffer Pressures { float pressures[]; };
 layout(std430, binding = 6) buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 7) buffer Cache { uint cache[]; };
+#ifdef RIGID
+layout(std430, binding = 11) readonly buffer Pool { uint pool[]; };
+#endif
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
@@ -36,7 +39,9 @@ const float MAXIMUM_UNIT = 0.99999994;
 #ifdef RIGID
 #include "collision_rigid.glsl"
 #include "collision_rigid_contact.glsl"
+#include "collision_relief.glsl"
 #endif
+#include "collision_crowd.glsl"
 // A wall is an immovable body: the moving body takes the whole correction
 // that a pair would split, with the same restitution and position-to-velocity
 // conversion as body-body contacts.
@@ -104,6 +109,16 @@ uint ownCount = 0u;
 #ifdef RIGID
 // Pushes apart from bodies of held pairs (HELD_BIT): position only.
 vec2 heldCorrection = vec2(0.0);
+// The sampling threshold of this body and the contacts it shares its
+// correction among (collision_crowd.glsl); a body solving all has its count.
+uint ownKeep = KEEP_ALL;
+uint ownKept = 0u;
+
+// A loose pair a crowded body leaves out of its sample, told before anything
+// of the other body is read.
+bool sampledOut(uint id, uint other, uint otherTag) {
+    return ownKeep != KEEP_ALL && pairKey(id, other) > ownKeep && otherTag == 0u;
+}
 #endif
 
 void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocityPixels,
@@ -112,6 +127,9 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
 #ifdef RIGID
     vec4 otherMaterial = materials[otherId];
     if (!hardPair(ownMaterial, otherMaterial)) return;
+    // A crowded body solves the sample of its loose partners alone; its list
+    // may hold more (collision_cache_count.comp).
+    if (ownKeep != KEEP_ALL && !isMember(otherMaterial) && pairKey(id, otherId) > ownKeep) return;
 #else
     if (!hardPair(id, otherId)) return;
 #endif
@@ -142,10 +160,19 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
             ? delta / distance
             : fallbackNormal(id, otherId);
         float penetration = uDiameterPixels - distance;
-        float pairWeight = 1.0 / float(max(
-            max(ownContacts, contactsOf(contactCounts[otherId])),
-            1u
-        ));
+        uint crowd = max(ownContacts, contactsOf(contactCounts[otherId]));
+        uint weightContacts = crowd;
+#ifdef RIGID
+        // A crowded body solves a sample of its loose pairs, each pair in the
+        // sample of both its bodies, and shares among those it samples.
+        uint otherKeep = cache[cacheOffset(KEEP_PLANE, otherId)];
+        if ((ownKeep & otherKeep) != KEEP_ALL) {
+            if (pairKey(id, otherId) > min(ownKeep, otherKeep)) return;
+            weightContacts = max(ownKept,
+                otherKeep != KEEP_ALL ? cache[cacheOffset(KEPT_PLANE, otherId)] : contactsOf(contactCounts[otherId]));
+        }
+#endif
+        float pairWeight = 1.0 / float(max(weightContacts, 1u));
 
 #ifdef RIGID
         vec4 pairOwn = ownMaterial;
@@ -166,6 +193,7 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
 
         vec2 push = normal * (share * penetration * pairWeight);
 #ifdef RIGID
+        relieve(normal, share, penetration, pairWeight, crowd, float(crowd) / float(weightContacts), relativeVelocity);
         if (heldPair(ownCount, contactCounts[otherId])) heldCorrection += push;
         else
 #endif
@@ -208,6 +236,15 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
     }
 }
 
+// Beyond every contact reach (contactReachSquared), in diameters squared.
+const float GATHER_REACH_SQUARED = 2.25;
+
+bool withinReach(vec2 positionPixels, vec2 otherPosition) {
+    vec2 delta = positionPixels - otherPosition * uViewport;
+    if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+    return dot(delta, delta) < GATHER_REACH_SQUARED * uDiameterPixels * uDiameterPixels;
+}
+
 // This pass's count is complete, so its density samples choose the broad
 // phase of the next pass here instead of in a separate one-thread dispatch.
 // No other invocation of this dispatch reads these words.
@@ -236,47 +273,102 @@ void main() {
 #ifdef RIGID
     driftDt = uAdaptive != 0 && uDriftDt != 0.0 ? effectiveSubstepDt : uDriftDt;
     ownMaterial = materials[id];
+    ownKeep = cache[cacheOffset(KEEP_PLANE, id)];
+    ownKept = ownKeep != KEEP_ALL ? cache[cacheOffset(KEPT_PLANE, id)] : ownContacts;
+    if (ownKeep != KEEP_ALL && isMember(ownMaterial)) memberSample = float(ownKept) / float(SAMPLED_CONTACTS);
 #endif
     if (uWritePressure != 0 && uAdaptive != 0) {
         atomicMax(adaptiveState[3], ownContacts);
         if (ownContacts >= uint(uDenseContactThreshold)) atomicAdd(adaptiveState[4], 1u);
     }
-    if (ownContacts <= CONTACT_SLOTS) {
-        // The empty case runs zero iterations; retain the original epilogue
-        // rather than copying body and changing floating-point round trips.
-        for (uint i = 0u; i < ownContacts; i++) {
+    // A body whose contacts its slots do not list walks its candidates or
+    // the grid, and gathers those within reach into its slots, a round at a
+    // time, in the order of the walk. The contacts are solved in one place:
+    // the shader stays small enough to run fast, and the lanes of a crowd
+    // solve side by side instead of each waiting at every candidate for any
+    // lane meeting a contact there. The empty case runs zero iterations.
+#ifdef RIGID
+    // Count lists what a crowded body samples (collision_crowd.glsl), the
+    // list pass the rest, in the pool what the slots cannot hold.
+    uint listLength = cache[cacheOffset(LIST_PLANE, id)];
+    bool pooled = listLength != UNLISTED && (listLength & POOLED) != 0u;
+    uint poolOffset = pooled ? cache[cacheOffset(POOL_PLANE, id)] : 0u;
+    if (pooled) listLength &= ~POOLED;
+#else
+    uint listLength = ownContacts <= CONTACT_SLOTS ? ownContacts : UNLISTED;
+    bool pooled = false;
+    uint poolOffset = 0u;
+#endif
+    bool walking = listLength == UNLISTED;
+    uint neighbors = walking ? cache[cacheOffset(0u, id)] : 0u;
+    bool listed = neighbors <= NEIGHBOR_SLOTS;
+    uint epoch = 0u;
+    ivec2 origin = ivec2(0);
+    ivec2 size = ivec2(0);
+    if (walking && !listed) {
+        uint referenceCell = cache[cacheOffset(1u, id)];
+        epoch = cache[stateOffset(STATE_GRID_EPOCH)];
+        ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
+        int radius = neighbors == DIRECT_GRID ? uNeighborCellRadius : uSearchRadius;
+        origin = stencilOrigin(home, radius);
+        size = stencilSize(radius);
+    }
+    // A grid built in this pass holds the positions of this pass.
+    bool fresh = neighbors == DIRECT_GRID;
+    // The next candidate or cell of the walk, and the body next in that cell.
+    int next = 0;
+    uint encoded = 0u;
+    bool finished = !walking;
+    do {
+        uint round = walking ? 0u : listLength;
+        while (walking && round < CONTACT_SLOTS) {
+            uint other;
+            vec2 otherPosition;
+            if (listed) {
+                if (next >= int(neighbors)) {
+                    finished = true;
+                    break;
+                }
+                other = cache[cacheOffset(2u + uint(next), id)];
+                next++;
+#ifdef RIGID
+                if (sampledOut(id, other, nodes[other].tag)) continue;
+#endif
+                otherPosition = inputBodies[other].xy;
+            } else {
+                if (encoded == 0u) {
+                    if (next >= size.x * size.y) {
+                        finished = true;
+                        break;
+                    }
+                    ivec2 cell = wrapCell(origin + ivec2(next % size.x, next / size.x));
+                    next++;
+                    encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
+                    continue;
+                }
+                other = encoded - 1u;
+                GridNode node = nodes[other];
+                encoded = node.next;
+                if (other == id) continue;
+#ifdef RIGID
+                if (sampledOut(id, other, node.tag)) continue;
+#endif
+                otherPosition = fresh ? node.position : inputBodies[other].xy;
+            }
+            if (!withinReach(positionPixels, otherPosition)) continue;
+            cache[cacheOffset(2u + NEIGHBOR_SLOTS + round, id)] = other;
+            round++;
+        }
+        for (uint i = 0u; i < round; i++) {
+#ifdef RIGID
+            uint other = pooled ? pool[poolOffset + i] : cache[cacheOffset(2u + NEIGHBOR_SLOTS + i, id)];
+#else
             uint other = cache[cacheOffset(2u + NEIGHBOR_SLOTS + i, id)];
+#endif
             accumulateContact(id, other, positionPixels, velocityPixels, ownContacts,
                 effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
         }
-    } else {
-        uint neighbors = cache[cacheOffset(0u, id)];
-        if (neighbors <= NEIGHBOR_SLOTS) {
-            for (uint i = 0u; i < neighbors; i++) {
-                uint other = cache[cacheOffset(2u + i, id)];
-                accumulateContact(id, other, positionPixels, velocityPixels, ownContacts,
-                    effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-            }
-        } else {
-            uint referenceCell = cache[cacheOffset(1u, id)];
-            uint epoch = cache[stateOffset(STATE_GRID_EPOCH)];
-            ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
-            int radius = neighbors == DIRECT_GRID ? uNeighborCellRadius : uSearchRadius;
-            ivec2 size = stencilSize(radius);
-            for (int y = 0; y < size.y; y++) {
-                for (int x = 0; x < size.x; x++) {
-                    ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
-                    uint encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
-                    while (encoded != 0u) {
-                        uint other = encoded - 1u;
-                        if (other != id) accumulateContact(id, other, positionPixels, velocityPixels,
-                            ownContacts, effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
-                        encoded = nodes[other].next;
-                    }
-                }
-            }
-        }
-    }
+    } while (!finished);
 #ifdef RIGID
     float ownFriction = ownMaterial.y;
 #else
@@ -291,6 +383,7 @@ void main() {
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
 #ifdef RIGID
     positionPixels += heldCorrection;
+    positionPixels += reliefMove(blockNormals);
 #endif
     vec2 position;
 #ifdef RIGID

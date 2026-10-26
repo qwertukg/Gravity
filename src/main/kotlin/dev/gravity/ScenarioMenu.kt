@@ -2,7 +2,7 @@ package dev.gravity
 
 /**
  * Column of scenario buttons in the top-right corner, in window pixels: the
- * cosmic scenarios, then, a little apart, the experiments with blocks.
+ * test scenarios, under a heading per group (TestGroup).
  */
 class ScenarioMenu(
     viewportWidth: Int,
@@ -19,15 +19,32 @@ class ScenarioMenu(
         fun contains(x: Float, y: Float) = x in left..<right && y in top..<bottom
     }
 
-    private val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries
-    private val buttonWidth = scenarios.maxOf { UiLayer.panelWidth(it.title) }
+    /** A group's heading: text alone, not a button. */
+    private class Heading(val title: String, val left: Float, val top: Float)
+
+    private val groups = TestGroup.entries.map { group -> group to TestScenario.entries.filter { it.group == group } }
+        .filter { it.second.isNotEmpty() }
+    private val buttonWidth = (TestScenario.entries.map { it.title } + groups.map { it.first.title })
+        .maxOf { UiLayer.panelWidth(it) }
     private val buttonHeight = UiLayer.panelHeight("", config.overlayLineHeightPixels)
-    private val buttons = scenarios.mapIndexed { index, scenario ->
+    private val headings = ArrayList<Heading>()
+    private val buttons = ArrayList<Button>()
+
+    init {
         val left = viewportWidth - config.overlayMarginPixels - buttonWidth
-        val section = if (scenario is BlockScenario) SECTION_GAP_PIXELS else 0f
-        val top = config.overlayMarginPixels + index * (buttonHeight + GAP_PIXELS) + section
-        Button(scenario, left, top, left + buttonWidth, top + buttonHeight)
+        var top = config.overlayMarginPixels
+        for ((index, entry) in groups.withIndex()) {
+            val (group, scenarios) = entry
+            if (index > 0) top += SECTION_GAP_PIXELS
+            headings += Heading(group.title, left, top)
+            top += buttonHeight + GAP_PIXELS
+            for (scenario in scenarios) {
+                buttons += Button(scenario, left, top, left + buttonWidth, top + buttonHeight)
+                top += buttonHeight + GAP_PIXELS
+            }
+        }
     }
+
     private val layer = UiLayer(viewportWidth, viewportHeight, MAXIMUM_QUADS)
     private var renderedActive: MenuScenario? = null
     private var renderedHover: MenuScenario? = null
@@ -41,6 +58,7 @@ class ScenarioMenu(
         val hover = scenarioAt(cursorX, cursorY)
         if (!built || active != renderedActive || hover != renderedHover) {
             layer.begin()
+            for (heading in headings) layer.text(heading.title, heading.left, heading.top)
             for (button in buttons) {
                 val color = when (button.scenario) {
                     active -> ACTIVE_COLOR

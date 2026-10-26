@@ -37,6 +37,8 @@ void main() {
     if (id == 0u && cache[stateOffset(STATE_POPULATION)] != uint(uCount)) {
         atomicOr(cache[stateOffset(STATE_REBUILD)], 1u);
     }
+    // No list of this pass is in the contact pool yet (collision_cache_list.comp).
+    if (id == 0u) cache[stateOffset(STATE_POOL)] = 0u;
     vec4 body = bodies[id];
     float driftDt = uAdaptive != 0 && uDriftDt != 0.0
         ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;

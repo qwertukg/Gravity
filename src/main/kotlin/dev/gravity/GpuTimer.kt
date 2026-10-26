@@ -258,6 +258,9 @@ class GpuProfiler(
 
     fun summary(): GpuProfileSummary = GpuProfileSummary.from(completed.toList())
 
+    /** The completed frames kept, oldest first. */
+    fun frames(): List<GpuFrameProfile> = completed.toList()
+
     override fun close() {
         check(current == null) { "Cannot close an active GPU profile frame" }
         slots.forEach { slot -> slot.queries.forEach(::glDeleteQueries) }

@@ -34,6 +34,7 @@ const float MAXIMUM_UNIT = 0.99999994;
 #ifdef RIGID
 #include "collision_rigid.glsl"
 #include "collision_rigid_contact.glsl"
+#include "collision_relief.glsl"
 // Pushes apart from bodies of held pairs (HELD_BIT): position only.
 vec2 heldCorrection = vec2(0.0);
 #endif
@@ -206,6 +207,8 @@ void main() {
 
                         vec2 push = normal * (share * penetration * pairWeight);
 #ifdef RIGID
+                        relieve(normal, share, penetration, pairWeight,
+                            max(ownContacts, contactsOf(contactCounts[otherId])), 1.0, relativeVelocity);
                         if (heldPair(ownCount, contactCounts[otherId])) heldCorrection += push;
                         else
 #endif
@@ -261,6 +264,7 @@ void main() {
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
 #ifdef RIGID
     positionPixels += heldCorrection;
+    positionPixels += reliefMove(blockNormals);
 #endif
     vec2 position;
 #ifdef RIGID

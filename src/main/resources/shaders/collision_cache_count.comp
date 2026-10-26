@@ -30,43 +30,61 @@ uniform int uNoHardPairs;
 #include "collision_rigid.glsl"
 #endif
 
-float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition) {
-    // The reference counter evaluates an unordered pair in ascending ID order
-    // and increments BOTH counts. Preserve that orientation here as well:
-    // reversing an expression that the driver contracts into an FMA can change
-    // its last bit at the strict contact threshold. The own position comes from
-    // a register instead of a reload; the operands are the same floats.
-    bool ownFirst = id < other;
-    vec2 firstPixels = (ownFirst ? position : otherPosition) * uViewport;
-    precise vec2 delta = firstPixels - (ownFirst ? otherPosition : position) * uViewport;
-    // Walls: no minimum image, bodies across an edge never touch.
-    if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
-    precise float distanceSquared = dot(delta, delta);
-    return distanceSquared;
-}
+#include "collision_crowd.glsl"
 
 // Set once this body touches a block (HELD_BIT).
 bool held = false;
-
-void countContact(uint id, uint other, float distanceSquared, inout uint contacts) {
 #ifdef RIGID
+// This body's block tag (blockTag).
+uint ownTag = 0u;
+// Contacts with loose bodies (collision_crowd.glsl).
+uint looseContacts = 0u;
+// The contacts listed in the slots for the solve, in the order met. A body
+// crowded in the last pass lists only the loose ones below twice its last
+// sampling threshold: the sample it will take, unless its crowd changed a lot.
+uint listed = 0u;
+uint listedKey = KEEP_ALL;
+
+void listContact(uint id, uint other, uint otherTag) {
+    if (otherTag == 0u && listedKey != KEEP_ALL && pairKey(id, other) > listedKey) return;
+    if (listed < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + listed, id)] = other;
+    listed++;
+}
+#endif
+
+// [otherTag] is the other body's block tag in the grid (GridNode.tag).
+void countContact(uint id, uint other, uint otherTag, float distanceSquared, inout uint contacts) {
+#ifdef RIGID
+    // Without liquid a pair not of two blocks is told by the block tags alone:
+    // it is hard and meets at a diameter (collision_rigid.glsl), and no
+    // material is read.
+    if (uLiquid == 0 && (ownTag == 0u || otherTag == 0u)) {
+        if (distanceSquared < uDiameterPixels * uDiameterPixels) {
+            listContact(id, other, otherTag);
+            contacts++;
+            if (otherTag == 0u) looseContacts++;
+            if (ownTag == 0u && otherTag != 0u) held = true;
+        }
+        return;
+    }
     vec4 otherMaterial = materials[other];
     if (!hardPair(ownMaterial, otherMaterial)) return;
     if (distanceSquared < contactReachSquared(ownMaterial, otherMaterial)) {
+        listContact(id, other, otherTag);
 #else
     if (!hardPair(id, other)) return;
     if (distanceSquared < contactReachSquared(id, other)) {
-#endif
         if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
+#endif
         contacts++;
 #ifdef RIGID
         // Each body sees the pair: the member of the lower block counts it,
-        // or the member when the other is loose.
+        // or the member when the other is loose, all its loose ones at once.
         int group = groupOf(ownMaterial);
         int otherGroup = groupOf(otherMaterial);
-        if (group >= 0 && otherGroup < 0) countLooseContact(group);
-        else if (group >= 0 && group < otherGroup) countPartnerContact(group, otherGroup);
+        if (group >= 0 && group < otherGroup) countPartnerContact(group, otherGroup);
         if (group < 0 && otherGroup >= 0) held = true;
+        if (otherTag == 0u) looseContacts++;
 #endif
     }
 }
@@ -120,14 +138,24 @@ void main() {
     vec2 position = bodies[id].xy;
 #ifdef RIGID
     ownMaterial = materials[id];
-    uint ownTag = blockTag(ownMaterial);
+    ownTag = blockTag(ownMaterial);
+    // A hint only: the list is checked below, and listed again if it falls short.
+    uint lastKeep = cache[cacheOffset(KEEP_PLANE, id)];
+    if (lastKeep != KEEP_ALL) listedKey = min(lastKeep, 0x7fffffffu) << 1;
 #endif
     uint neighbors = rebuild ? 0u : cache[cacheOffset(0u, id)];
     uint contacts = 0u;
     if (!rebuild && neighbors <= NEIGHBOR_SLOTS) {
         for (uint i = 0u; i < neighbors; i++) {
             uint other = cache[cacheOffset(2u + i, id)];
-            countContact(id, other, pairDistanceSquared(id, position, other, bodies[other].xy), contacts);
+            // The lists are rebuilt whenever a body changes block, so the
+            // grid's tags are current.
+#ifdef RIGID
+            uint otherTag = nodes[other].tag;
+#else
+            uint otherTag = 0u;
+#endif
+            countContact(id, other, otherTag, pairDistanceSquared(id, position, other, bodies[other].xy), contacts);
         }
     } else {
         uint referenceCell;
@@ -147,6 +175,8 @@ void main() {
         skip = skip || ownTag != 0u && ownBlockOnly(home, radius, epoch, ownTag);
 #endif
         ivec2 size = skip ? ivec2(0) : stencilSize(radius);
+#ifdef RIGID
+#endif
         for (int y = 0; y < size.y; y++) {
             for (int x = 0; x < size.x; x++) {
                 ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
@@ -169,7 +199,10 @@ void main() {
                         // toggling it must rebuild the lists.
                         if (rebuild && !direct) {
 #ifdef RIGID
-                            if (distanceSquared <= uCandidateRadiusSquared && hardPair(ownMaterial, materials[other])) {
+                            // Members of one block are left out above, so without
+                            // liquid every pair is hard.
+                            if (distanceSquared <= uCandidateRadiusSquared &&
+                                (uLiquid == 0 || hardPair(ownMaterial, materials[other]))) {
 #else
                             if (distanceSquared <= uCandidateRadiusSquared && hardPair(id, other)) {
 #endif
@@ -177,7 +210,7 @@ void main() {
                                 neighbors++;
                             }
                         }
-                        countContact(id, other, distanceSquared, contacts);
+                        countContact(id, other, node.tag, distanceSquared, contacts);
                     }
                     encoded = node.next;
                 }
@@ -185,11 +218,30 @@ void main() {
         }
         if (rebuild) cache[cacheOffset(0u, id)] = direct ? DIRECT_GRID : neighbors;
     }
+#ifdef RIGID
+    // The sampling threshold of a crowded body, and for a loose one the
+    // contacts it shares its correction among: all with blocks and the loose
+    // ones sampled; for a member its loose contacts, which its sample stands for.
+    bool crowded = looseContacts > CROWDED_CONTACTS;
+    uint keep = crowded ? sampleThreshold(looseContacts) : KEEP_ALL;
+    cache[cacheOffset(KEEP_PLANE, id)] = keep;
+    if (crowded) {
+        cache[cacheOffset(KEPT_PLANE, id)] = ownTag == 0u
+            ? contacts - looseContacts + SAMPLED_CONTACTS : looseContacts;
+    }
+    // The list serves when it holds every pair the solve keeps; else the list
+    // pass lists them again.
+    bool complete = listed <= CONTACT_SLOTS && listedKey >= keep;
+    cache[cacheOffset(LIST_PLANE, id)] = complete ? listed : UNLISTED;
+#endif
     // Each invocation owns its count and ordered contact cache. No atomics,
     // scan, global sort or truncated list is needed.
     contactCounts[id] = held ? contacts | HELD_BIT : contacts;
 #ifdef RIGID
     int group = groupOf(ownMaterial);
+    // One add for all, not one per contact: a member a crowd presses on
+    // would queue hundreds on the same word.
+    if (group >= 0 && looseContacts > 0u) countLooseContacts(group, looseContacts);
     if (group >= 0) countWallContacts(group, position * uViewport);
 #endif
     // Cheap density sampling steers the NEXT pass to the ordinary grid when

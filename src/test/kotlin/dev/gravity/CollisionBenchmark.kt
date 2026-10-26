@@ -35,7 +35,7 @@ object CollisionBenchmark {
                         }?.bodies(ScenarioSpace(3440f, 1440f, GravityFieldConfig().gravitationalConstant, CollisionConfig.REFERENCE_DIAMETER_PIXELS), 20260730)
                         val bodies = scenarioState?.let { it.size / 4 }
                             ?: (scenario.substringAfter('-').removeSuffix("k").toInt() * 1000)
-                        var particles = ParticleConfig(420_000, bodies, if (scenario.startsWith("square")) 632 else null, 20260730)
+                        var particles = ParticleConfig(420_000, bodies, if (scenario.startsWith("square")) 632 else null, seed = 20260730)
                         if (sortInterval != null) particles = particles.copy(spatialSortInterval = sortInterval)
                         val config = GravityConfig(
                             particles = particles,

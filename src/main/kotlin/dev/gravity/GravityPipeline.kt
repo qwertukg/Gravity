@@ -139,8 +139,17 @@ class GravityPipeline(
     private val domainAspect = viewportWidth.toFloat() / viewportHeight
     private val viewportWidthFloat = viewportWidth.toFloat()
     private val viewportHeightFloat = viewportHeight.toFloat()
-    private val collisionSubstep =
-        config.collisions.timeStep / config.collisions.maximumSubsteps
+    /**
+     * Collision substeps of the next steps: all of them, or fewer while the
+     * application keeps a frame within its GPU budget (SubstepGovernor).
+     * Adaptive collisions choose their own.
+     */
+    var collisionSubsteps = config.collisions.maximumSubsteps
+        set(value) {
+            field = if (config.collisions.adaptive) config.collisions.maximumSubsteps
+            else value.coerceIn(1, config.collisions.maximumSubsteps)
+        }
+    private val collisionSubstep get() = config.collisions.timeStep / collisionSubsteps
     private val neighborRadiusX =
         ceil(
             config.gravity.localSearchSigmaMultiplier *
@@ -429,7 +438,8 @@ class GravityPipeline(
             profiler?.end(GpuStage.COLLISION_ADAPTIVE)
         }
         profiler?.begin(GpuStage.COLLISION_SUBSTEPS)
-        repeat(config.collisions.maximumSubsteps) { substep ->
+        rigidBlocks.substepSeconds = collisionSubstep
+        repeat(collisionSubsteps) { substep ->
             resolveCollisions(
                 activeBodies = activeBodies,
                 kickDt = if (substep == 0) config.collisions.timeStep else 0f,
@@ -906,7 +916,7 @@ class GravityPipeline(
         bind(9, rigidBlocks.groups)
         bind(10, rigidBlocks.fractures)
         neighborCache?.let {
-            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, writePressure, substepIndex, bounded, liquid, solidBodies, rigidBlocks.size)
+            it.resolve(bodies, collisionBodies, acceleration, activeBodies, kickDt, driftDt, collisionSubstep, writePressure, substepIndex, bounded, liquid, solidBodies, rigidBlocks.size)
             val swap = bodies
             bodies = collisionBodies
             collisionBodies = swap

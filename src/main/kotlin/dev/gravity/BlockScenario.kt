@@ -7,19 +7,48 @@ import kotlin.random.Random
 class BlockSetup(val bodies: FloatArray, val blocks: List<ScenarioBlock>)
 
 /**
+ * A start that brings its own environment: the box of the screen's walls,
+ * no gravity between bodies, the downward field where [field] says so,
+ * liquid mode where [liquid] says so, and the blocks to glue.
+ */
+sealed interface BlockScene : MenuScenario {
+    val field: Boolean
+    val liquid: Boolean
+    /** Blocks never break here, whatever --block-strength says. */
+    val unbreakable: Boolean get() = false
+
+    fun setup(space: ScenarioSpace, seed: Long): BlockSetup
+}
+
+/** Builds a block scene: its loose bodies normalised and its blocks. */
+internal fun blockSetup(title: String, space: ScenarioSpace, seed: Long, build: ScenarioBuilder.() -> Unit): BlockSetup {
+    val builder = ScenarioBuilder(space, Random(seed))
+    builder.build()
+    // A body parked in a top corner keeps even a scene of blocks alone
+    // from starting without bodies.
+    if (builder.count == 0) builder.add(space.contactDiameterPixels, space.heightPixels - space.contactDiameterPixels)
+    require(builder.count <= Scenario.MAXIMUM_BODIES) {
+        "$title has ${builder.count} bodies; the limit is ${Scenario.MAXIMUM_BODIES}"
+    }
+    // Unlike the cosmic scenarios, the net momentum stays: it is the shot.
+    return BlockSetup(builder.normalized(), builder.blocks.toList())
+}
+
+/**
  * Experiments with glued blocks: the scenes their behaviour was checked on
- * (BlockPenetrationTest, BlockDynamicsTest), one button each. They all run in
- * the box of the screen's walls without gravity between bodies, with the
+ * (BlockPenetrationTest, BlockDynamicsTest), started with --scenario; the
+ * menu offers the test scenarios instead (TestScenario). They all run in the
+ * box of the screen's walls without gravity between bodies, with the
  * downward field where [field] says so and in liquid mode where [liquid]
  * says so. Sizes and speeds are authored for a 1440 px tall screen and scale
  * with it, like the field.
  */
 enum class BlockScenario(
     override val title: String,
-    val field: Boolean,
-    val liquid: Boolean,
+    override val field: Boolean,
+    override val liquid: Boolean,
     private val build: ScenarioBuilder.() -> Unit,
-) : MenuScenario {
+) : BlockScene {
     BULLETS("Bullets into blocks", field = false, liquid = false, {
         // 3000 and 6000 px/s into 20 px blocks, and 3000 px/s into a 3 px plate.
         for ((lane, shot) in listOf(
@@ -143,18 +172,7 @@ enum class BlockScenario(
 
     override val optionName: String get() = name.lowercase().replace('_', '-')
 
-    fun setup(space: ScenarioSpace, seed: Long): BlockSetup {
-        val builder = ScenarioBuilder(space, Random(seed))
-        builder.build()
-        // A body parked in a top corner keeps even a scene of blocks alone
-        // from starting without bodies.
-        if (builder.count == 0) builder.add(space.contactDiameterPixels, space.heightPixels - space.contactDiameterPixels)
-        require(builder.count <= Scenario.MAXIMUM_BODIES) {
-            "$title has ${builder.count} bodies; the limit is ${Scenario.MAXIMUM_BODIES}"
-        }
-        // Unlike the cosmic scenarios, the net momentum stays: it is the shot.
-        return BlockSetup(builder.normalized(), builder.blocks.toList())
-    }
+    override fun setup(space: ScenarioSpace, seed: Long): BlockSetup = blockSetup(title, space, seed, build)
 
     private companion object {
         const val BLOCK_DENSITY = 0.5f

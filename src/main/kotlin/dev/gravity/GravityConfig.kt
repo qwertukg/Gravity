@@ -72,6 +72,7 @@ data class GravityConfig(
             "adaptive-collisions",
             "collision-cache",
             "collision-skin",
+            "gpu-budget-ms",
             "sort-interval",
             "adaptive-displacement-fraction",
             "adaptive-penetration-fraction",
@@ -341,6 +342,10 @@ data class GravityConfig(
                     neighborSkinPixels = floatValue(
                         "collision-skin",
                         defaults.collisions.neighborSkinPixels * sizeScale,
+                    ),
+                    gpuBudgetMillis = doubleValue(
+                        "gpu-budget-ms",
+                        defaults.collisions.gpuBudgetMillis,
                     ),
                     allowedDisplacementFraction = floatValue(
                         "adaptive-displacement-fraction",
@@ -677,6 +682,11 @@ data class CollisionConfig(
     val adaptive: Boolean = false,
     val neighborCache: Boolean = true,
     val neighborSkinPixels: Float = 0.5f,
+    /**
+     * GPU time of a frame (ms) above which the application runs fewer
+     * collision substeps, down to half (SubstepGovernor); 0 never does.
+     */
+    val gpuBudgetMillis: Double = 9.5,
     val allowedDisplacementFraction: Float = 0.25f,
     val allowedPenetrationFraction: Float = 0.125f,
     val denseContactThreshold: Int = 4,
@@ -686,6 +696,7 @@ data class CollisionConfig(
     init {
         require(timeStep > 0f && timeStep.isFinite())
         require(neighborSkinPixels > 0f && neighborSkinPixels.isFinite())
+        require(gpuBudgetMillis >= 0.0 && gpuBudgetMillis.isFinite())
         require(maximumSubsteps in 1..16) {
             "collision substeps must be in 1..16"
         }
@@ -861,7 +872,7 @@ data class StartConfig(
         fun parseScenario(value: String): MenuScenario? {
             val name = value.lowercase()
             if (name == "none") return null
-            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries
+            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries + TestScenario.entries
             return scenarios.firstOrNull { it.optionName == name }
                 ?: throw IllegalArgumentException(
                     "Unknown --scenario: $value; use none or " +

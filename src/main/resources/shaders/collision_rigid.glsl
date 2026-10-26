@@ -61,10 +61,14 @@ float contactReachSquared(vec4 firstMaterial, vec4 secondMaterial) {
     return reach * reach;
 }
 
-// Counts a contact of block [group] with a loose body, a partner of its own
-// (partnerShare).
+// Counts [contacts] contacts of block [group] with loose bodies, each a
+// partner of its own (partnerShare).
+void countLooseContacts(int group, uint contacts) {
+    atomicAdd(groups[group].grid.w, int(contacts));
+}
+
 void countLooseContact(int group) {
-    atomicAdd(groups[group].grid.w, 1);
+    countLooseContacts(group, 1u);
 }
 
 // Counts a contact of block [group] with block [partner]. A block's partners
@@ -183,7 +187,10 @@ float shapeContact(int group, vec2 bodyPixels, vec2 bodyVelocity, float radius, 
             float pathLength = max(length(path), 1e-6);
             float t = 0.0;
             vec2 crossing = startGradient;
-            for (int step = 0; step < 24 && travel > surface && t < 1.0; step++) {
+            // Between two ends above the surface the field dips at most to
+            // the meeting point of their bounds: then no step can find it.
+            bool apart = value > surface && travel + value - 1.5 * pathLength > 2.0 * surface;
+            for (int step = 0; step < 24 && !apart && travel > surface && t < 1.0; step++) {
                 t = min(t + (travel - outline) / (1.5 * pathLength), 1.0);
                 travel = sampleShape(group, start + path * t, crossing);
             }

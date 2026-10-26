@@ -1,0 +1,107 @@
+#version 430 core
+layout(local_size_x = 256) in;
+// Lists for the RIGID solve, after the count: a body whose count could not
+// list what the solve needs lists its contacts with blocks and the loose ones
+// its threshold samples (collision_crowd.glsl): mostly a body whose crowd
+// changed, or a member of a block a crowd presses on, with all its contacts.
+// A list its slots cannot hold goes to the contact pool, walked again. The
+// walk is the count's, in a pass small enough to run fast; the solve then
+// meets every body as a list instead of walking it, and walks only when the
+// pool runs out.
+#include "collision_cache_layout.glsl"
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Heads { uint heads[]; };
+layout(std430, binding = 2) readonly buffer Nodes { GridNode nodes[]; };
+layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
+layout(std430, binding = 5) buffer Cache { uint cache[]; };
+layout(std430, binding = 11) writeonly buffer Pool { uint pool[]; };
+uniform int uPoolEntries;
+uniform int uCount;
+uniform int uGridWidth;
+uniform int uGridHeight;
+uniform int uSearchRadius;
+uniform int uNeighborCellRadius;
+uniform vec2 uViewport;
+uniform float uDiameterPixels;
+uniform int uAdaptive;
+uniform int uSubstepIndex;
+uniform int uBounded;
+#include "collision_cache_grid.glsl"
+#include "collision_crowd.glsl"
+
+// This body's block tag (GridNode.tag).
+uint ownTag = 0u;
+
+// The pool offset of a second walk, or UNLISTED for the first, into the slots.
+uint poolOffset = UNLISTED;
+
+// Every body within reach: the solve tells the contacts apart again. A loose
+// body touches within a diameter, liquid closer; a member meets another
+// block's within SPECULATIVE_DIAMETERS more (collision_rigid.glsl).
+void listContact(uint id, uint other, uint otherTag, float distanceSquared, uint keep, inout uint listed) {
+    if (other == id || ownTag != 0u && otherTag == ownTag) return;
+    float reach = ownTag != 0u && otherTag != 0u ? 1.5 * uDiameterPixels : uDiameterPixels;
+    if (!(distanceSquared < reach * reach)) return;
+    if (otherTag == 0u && pairKey(id, other) > keep) return;
+    if (poolOffset != UNLISTED) pool[poolOffset + listed] = other;
+    else if (listed < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + listed, id)] = other;
+    listed++;
+}
+
+// Lists the contacts of body [id] for the solve; returns how many.
+uint walk(uint id, vec2 position, uint keep) {
+    uint neighbors = cache[cacheOffset(0u, id)];
+    uint listed = 0u;
+    if (neighbors <= NEIGHBOR_SLOTS) {
+        for (uint i = 0u; i < neighbors; i++) {
+            uint other = cache[cacheOffset(2u + i, id)];
+            listContact(id, other, nodes[other].tag, pairDistanceSquared(id, position, other, bodies[other].xy), keep, listed);
+        }
+    } else {
+        uint referenceCell = cache[cacheOffset(1u, id)];
+        uint epoch = cache[stateOffset(STATE_GRID_EPOCH)];
+        ivec2 home = ivec2(referenceCell % uint(uGridWidth), referenceCell / uint(uGridWidth));
+        int radius = neighbors == DIRECT_GRID ? uNeighborCellRadius : uSearchRadius;
+        // A grid built in this pass holds the positions of this pass.
+        bool fresh = neighbors == DIRECT_GRID;
+        ivec2 size = stencilSize(radius);
+        for (int y = 0; y < size.y; y++) {
+            for (int x = 0; x < size.x; x++) {
+                ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
+                uint encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
+                while (encoded != 0u) {
+                    uint other = encoded - 1u;
+                    GridNode node = nodes[other];
+                    vec2 otherPosition = fresh ? node.position : bodies[other].xy;
+                    listContact(id, other, node.tag, pairDistanceSquared(id, position, other, otherPosition), keep, listed);
+                    encoded = node.next;
+                }
+            }
+        }
+    }
+    return listed;
+}
+
+void main() {
+    if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    if (cache[cacheOffset(LIST_PLANE, id)] != UNLISTED) return;
+    uint keep = cache[cacheOffset(KEEP_PLANE, id)];
+    vec2 position = bodies[id].xy;
+    ownTag = nodes[id].tag;
+    uint listed = walk(id, position, keep);
+    if (listed > CONTACT_SLOTS) {
+        uint offset = atomicAdd(cache[stateOffset(STATE_POOL)], listed);
+        if (offset + listed > uint(uPoolEntries)) {
+            cache[cacheOffset(LIST_PLANE, id)] = UNLISTED;
+            return;
+        }
+        poolOffset = offset;
+        walk(id, position, keep);
+        cache[cacheOffset(POOL_PLANE, id)] = offset;
+        cache[cacheOffset(LIST_PLANE, id)] = listed | POOLED;
+        return;
+    }
+    cache[cacheOffset(LIST_PLANE, id)] = listed;
+}

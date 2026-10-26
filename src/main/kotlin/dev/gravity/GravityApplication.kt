@@ -122,6 +122,12 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var vao = 0
     private var timer: GpuTimer? = null
     private var profiler: GpuProfiler? = null
+    // Benchmarks measure every substep; adaptive collisions choose their own.
+    private val substepGovernor = SubstepGovernor(
+        config.collisions.maximumSubsteps,
+        if (config.collisions.adaptive || config.diagnostics.benchmarkScenario != null) 0.0
+        else config.collisions.gpuBudgetMillis,
+    )
     private var viewportWidth = 0
     private var viewportHeight = 0
     private var resetRequested = false
@@ -272,6 +278,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 reportStart = resetTime
                 reportAt = resetTime + consoleReportNanos
                 smoothedGpuMillis = config.presentation.targetGpuMillis
+                substepGovernor.reset()
                 resetRequested = false
             }
             if (config.diagnostics.benchmarkScenario == BenchmarkScenario.PROJECTILE &&
@@ -422,6 +429,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 smoothedGpuMillis += config.presentation.gpuTimeSmoothing *
                     (gpuMillis - smoothedGpuMillis)
             }
+            simulation.collisionSubsteps = substepGovernor.update(gpuMillis)
 
             glfwSwapBuffers(window)
             glfwPollEvents()
@@ -432,10 +440,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 val fps = frames * 1e9 / (now - reportStart)
                 System.err.printf(
                     Locale.ROOT,
-                    "bodies=%,d  fps=%.1f  gpu=%.2f ms  grid=%dx%d%n",
+                    "bodies=%,d  fps=%.1f  gpu=%.2f ms  substeps=%d  grid=%dx%d%n",
                     active,
                     fps,
                     smoothedGpuMillis,
+                    substepGovernor.substeps,
                     config.gravity.gridWidth,
                     config.gravity.gridHeight,
                 )
@@ -697,7 +706,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         val seed = config.particles.seed ?: java.security.SecureRandom().nextLong()
         val state: FloatArray?
         when (current) {
-            is BlockScenario -> {
+            is BlockScene -> {
                 val setup = current.setup(space, seed)
                 state = setup.bodies
                 scenarioBlocks = setup.blocks
@@ -736,6 +745,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                     squareTestPixels = null,
                     discTestRadiusPixels = null,
                 ),
+                projectiles = if ((current as? BlockScene)?.unbreakable == true) {
+                    config.projectiles.copy(blockStrength = Float.POSITIVE_INFINITY)
+                } else {
+                    config.projectiles
+                },
             )
         }
         return GravityPipeline(
@@ -765,7 +779,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
      * brings back the environment they took over (createSimulation).
      */
     private fun selectScenario(next: MenuScenario) {
-        if (next !is BlockScenario) {
+        if (next !is BlockScene) {
             savedEnvironment?.let {
                 bounded = it.bounded
                 mutualGravity = it.mutualGravity
