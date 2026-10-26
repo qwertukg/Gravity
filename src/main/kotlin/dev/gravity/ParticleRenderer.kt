@@ -83,7 +83,8 @@ class ParticleRenderer(
         blurProgram.int("uSampleStep", sampleStep)
     }
 
-    fun render(pipeline: GravityPipeline, activeBodies: Int) {
+    /** Draws into [target], the default framebuffer unless a test records frames. */
+    fun render(pipeline: GravityPipeline, activeBodies: Int, target: Int = 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, accumulationFramebuffer)
         glClear(GL_COLOR_BUFFER_BIT)
         glEnable(GL_BLEND)
@@ -104,9 +105,9 @@ class ParticleRenderer(
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, accumulation)
         glDrawArrays(GL_TRIANGLES, 0, 3)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glBindFramebuffer(GL_FRAMEBUFFER, target)
 
-        // The resolve writes every pixel, so the default target needs no clear.
+        // The resolve writes every pixel, so the target needs no clear.
         resolveProgram.use()
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D, horizontal)

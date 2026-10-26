@@ -132,6 +132,9 @@ internal class RigidBlocks(
     private val reduce = GlProgram.compute("/shaders/rigid_reduce.comp")
     private val apply = GlProgram.compute("/shaders/rigid_apply.comp")
     private val fractureApply = GlProgram.compute("/shaders/rigid_apply.comp", "FRACTURE")
+    private val sleepGroups = GlProgram.compute("/shaders/sleep_groups.comp")
+    /** Sleeping tiles: a sleeping block is left alone by the projection. */
+    var sleep: SleepTiles? = null
     private val fracture = GlProgram.compute("/shaders/rigid_fracture.comp")
     private val carve = GlProgram.compute("/shaders/rigid_carve.comp")
     private val shift = GlProgram.compute("/shaders/rigid_shift.comp")
@@ -307,6 +310,7 @@ internal class RigidBlocks(
         if (isEmpty) return
         profiler?.begin(GpuStage.RIGID_PROJECTION)
         val boundedFlag = if (bounded) 1 else 0
+        sleep?.uniforms(reduce)
         reduce.use()
         reduce.float("uSubstepDt", substepSeconds)
         reduce.int("uBounded", boundedFlag)
@@ -325,6 +329,7 @@ internal class RigidBlocks(
 
         val fracturing = breakable && contacts
         val snap = if (fracturing) fractureApply else apply
+        sleep?.uniforms(snap)
         snap.use()
         snap.int("uBounded", boundedFlag)
         bind(0, bodies)
@@ -399,6 +404,18 @@ internal class RigidBlocks(
     }
 
     /** [destinations] maps every old body ID to its ID after spatial sorting. */
+    /** Wakes every block with a member in an awake tile of the next step (sleep_groups.comp). */
+    fun wake(sleep: SleepTiles, bodies: Int) {
+        if (isEmpty || !sleep.enabled) return
+        sleep.uniforms(sleepGroups)
+        bind(0, bodies)
+        bind(1, members)
+        bind(3, tileGroups)
+        bind(4, groups)
+        glDispatchCompute(tileCount, 1, 1)
+        barrier()
+    }
+
     fun remap(destinations: Int) {
         if (isEmpty) return
         remapProgram.use()
@@ -865,7 +882,7 @@ internal class RigidBlocks(
     override fun close() {
         splitter.shutdownNow()
         copies.forEach(Snapshot::close)
-        listOf(reduce, apply, fractureApply, fracture, carve, shift, adopt, adoptPiece, hullShift, remapProgram)
+        listOf(reduce, apply, fractureApply, sleepGroups, fracture, carve, shift, adopt, adoptPiece, hullShift, remapProgram)
             .forEach(GlProgram::close)
         intArrayOf(
             members, rest, tileGroups, groups, partials, tilesDone, fractureDispatch, fractures, fractureSlots, fractureGroups,

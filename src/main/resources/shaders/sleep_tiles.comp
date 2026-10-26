@@ -1,0 +1,28 @@
+#version 430 core
+layout(local_size_x = 256) in;
+// Wakes the tiles of the next step: those active in it or next to one that
+// is (sleep_layout.glsl). Runs after the final collision pass of a step has
+// marked the active tiles.
+#define SLEEP_MARK
+#define SLEEP_TILES
+#include "sleep_layout.glsl"
+uniform int uBounded;
+void main() {
+    int index = int(gl_GlobalInvocationID.x);
+    if (index >= uSleepTiles.x * uSleepTiles.y) return;
+    ivec2 tile = ivec2(index % uSleepTiles.x, index / uSleepTiles.x);
+    uint next = uSleepStamp + 1u;
+    bool awake = false;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 other = tile + ivec2(dx, dy);
+            if (uBounded != 0) {
+                if (any(lessThan(other, ivec2(0))) || any(greaterThanEqual(other, uSleepTiles))) continue;
+            } else {
+                other = (other + uSleepTiles) % uSleepTiles;
+            }
+            if (tileActive[other.x + other.y * uSleepTiles.x] == next) awake = true;
+        }
+    }
+    if (awake) tileAwake[index] = next;
+}

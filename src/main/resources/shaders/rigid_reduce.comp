@@ -31,6 +31,7 @@ uniform float uSubstepDt;
 uniform float uBlockFriction;
 // Group indices used so far: no contact key names a partner beyond them.
 uniform int uGroupCount;
+#include "sleep_layout.glsl"
 
 shared vec4 sharedA[256];
 shared vec4 sharedB[256];
@@ -183,6 +184,8 @@ void main() {
     ivec4 tiles = groups[group].tiles;
     // A tile freed by a block that broke up: no group's any more.
     if (int(tile) < tiles.x || int(tile) >= tiles.x + tiles.y) return;
+    // A sleeping block stays as it is (sleep_layout.glsl).
+    if (!groupIsAwake(int(group))) return;
     uint member = tile * 256u + lane;
     int body = members[member];
     vec4 a = vec4(0.0);

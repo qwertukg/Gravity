@@ -29,8 +29,8 @@ float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition
 // samples its side of them and scales it by the pairs it stands for
 // (memberSample). A body with fewer contacts solves all, as before: below
 // that a crowd is not relieved (RELIEF_CROWD) and nothing changes.
-const uint CROWDED_CONTACTS = 32u;
-const uint SAMPLED_CONTACTS = 16u;
+uniform uint CROWDED_CONTACTS;
+uniform uint SAMPLED_CONTACTS;
 // A body solving all its contacts (cache plane KEEP_PLANE).
 const uint KEEP_ALL = 0xffffffffu;
 

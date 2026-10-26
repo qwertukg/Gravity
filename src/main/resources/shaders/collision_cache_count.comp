@@ -4,12 +4,13 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Heads { uint heads[]; };
 layout(std430, binding = 2) readonly buffer Nodes { GridNode nodes[]; };
-layout(std430, binding = 3) writeonly buffer ContactCounts { uint contactCounts[]; };
+layout(std430, binding = 3) buffer ContactCounts { uint contactCounts[]; };
 layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 5) buffer Cache { uint cache[]; };
 layout(std430, binding = 6) readonly buffer SolidTiles { uint solidTiles[]; };
 #ifdef RIGID
 layout(std430, binding = 7) readonly buffer CellTags { uint cellTags[]; };
+layout(std430, binding = 12) readonly buffer GhostHeads { uint ghostHeads[]; };
 #endif
 uniform int uCount;
 uniform int uGridWidth;
@@ -31,12 +32,15 @@ uniform int uNoHardPairs;
 #endif
 
 #include "collision_crowd.glsl"
+#include "sleep_layout.glsl"
 
 // Set once this body touches a block (HELD_BIT).
 bool held = false;
 #ifdef RIGID
-// This body's block tag (blockTag).
+// This body's block tag (blockTag), and whether it is a ghost of a crowded
+// cell, which meets no loose body (collision_cache_layout.glsl).
 uint ownTag = 0u;
+bool ownGhost = false;
 // Contacts with loose bodies (collision_crowd.glsl).
 uint looseContacts = 0u;
 // The contacts listed in the slots for the solve, in the order met. A body
@@ -136,9 +140,27 @@ void main() {
         cache[stateOffset(STATE_REBUILDS)]++;
     }
     vec2 position = bodies[id].xy;
+    // Vary the sampled lane to avoid aliasing row-major lattice boundaries.
+    uint sampledLane = min((gl_WorkGroupID.x * 73u + 17u) & 255u,
+        uint(uCount) - gl_WorkGroupID.x * 256u - 1u);
+    // Nobody sleeps this step: no body is checked (STATE_ASLEEP).
+    bool anyAsleep = uSleep != 0 && cache[stateOffset(STATE_ASLEEP)] == uSleepStamp;
+    if (anyAsleep && !sleepBodyAwake(id)) {
+        // A sleeping body keeps its last count and its place in the density
+        // sample (sleep_layout.glsl). A rebuild still names its cell, and a
+        // list that walks the retained grid when it wakes.
+        if (rebuild) {
+            ivec2 home = clamp(ivec2(floor(position * vec2(uGridWidth, uGridHeight))), ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+            cache[cacheOffset(1u, id)] = uint(home.x + home.y * uGridWidth);
+            cache[cacheOffset(0u, id)] = direct ? DIRECT_GRID : NEIGHBOR_SLOTS + 1u;
+        }
+        if (gl_LocalInvocationID.x == sampledLane && contactsOf(contactCounts[id]) >= 4u) atomicAdd(cache[stateOffset(STATE_DENSE_SAMPLES)], 1u);
+        return;
+    }
 #ifdef RIGID
     ownMaterial = materials[id];
     ownTag = blockTag(ownMaterial);
+    ownGhost = ghostNode(nodes[id].tag);
     // A hint only: the list is checked below, and listed again if it falls short.
     uint lastKeep = cache[cacheOffset(KEEP_PLANE, id)];
     if (lastKeep != KEEP_ALL) listedKey = min(lastKeep, 0x7fffffffu) << 1;
@@ -151,7 +173,7 @@ void main() {
             // The lists are rebuilt whenever a body changes block, so the
             // grid's tags are current.
 #ifdef RIGID
-            uint otherTag = nodes[other].tag;
+            uint otherTag = nodeTag(nodes[other].tag);
 #else
             uint otherTag = 0u;
 #endif
@@ -176,17 +198,29 @@ void main() {
 #endif
         ivec2 size = skip ? ivec2(0) : stencilSize(radius);
 #ifdef RIGID
+        // A member also walks the ghosts of crowded cells; a ghost walks the
+        // grid for blocks alone (collision_cache_layout.glsl).
+        int lists = ownTag != 0u ? 2 : 1;
+#else
+        int lists = 1;
 #endif
+        for (int list = 0; list < lists; list++)
         for (int y = 0; y < size.y; y++) {
             for (int x = 0; x < size.x; x++) {
                 ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
-                uint encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
+#ifdef RIGID
+                uint head = list == 0 ? heads[cell.x + cell.y * uGridWidth] : ghostHeads[cell.x + cell.y * uGridWidth];
+#else
+                uint head = heads[cell.x + cell.y * uGridWidth];
+#endif
+                uint encoded = headBody(head, epoch);
                 while (encoded != 0u) {
                     uint other = encoded - 1u;
                     GridNode node = nodes[other];
 #ifdef RIGID
+                    node.tag = nodeTag(node.tag);
                     // Members of one block never touch: not even read.
-                    bool sameBlock = ownTag != 0u && node.tag == ownTag;
+                    bool sameBlock = ownTag != 0u && node.tag == ownTag || ownGhost && node.tag == 0u;
 #else
                     bool sameBlock = false;
 #endif
@@ -246,8 +280,5 @@ void main() {
 #endif
     // Cheap density sampling steers the NEXT pass to the ordinary grid when
     // an expanded candidate stencil is expensive. Both paths remain exhaustive.
-    // Vary the sampled lane to avoid aliasing row-major lattice boundaries.
-    uint sampledLane = min((gl_WorkGroupID.x * 73u + 17u) & 255u,
-        uint(uCount) - gl_WorkGroupID.x * 256u - 1u);
     if (gl_LocalInvocationID.x == sampledLane && contacts >= 4u) atomicAdd(cache[stateOffset(STATE_DENSE_SAMPLES)], 1u);
 }

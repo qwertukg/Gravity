@@ -61,6 +61,9 @@ internal class CollisionNeighborCache(
     private val solidTiles = buffer(solidTileWidth.toLong() * ((gridHeight + SOLID_TILE - 1) / SOLID_TILE) * Int.SIZE_BYTES)
     /** Epoch and shared block of each cell of the last RIGID build (collision_cache_layout.glsl). */
     private val cellTags = buffer(gridWidth.toLong() * gridHeight * Int.SIZE_BYTES)
+    /** Lists of the ghosts of crowded cells, and the loose bodies counted per cell, of a RIGID build (collision_cache_layout.glsl). */
+    private val ghostHeads = buffer(gridWidth.toLong() * gridHeight * Int.SIZE_BYTES)
+    private val cellCounts = buffer(gridWidth.toLong() * gridHeight * Int.SIZE_BYTES)
     private val drift = GlProgram.compute("/shaders/collision_cache_drift.comp")
     private val hardBuild = GlProgram.compute("/shaders/collision_cache_build.comp")
     private val liquidBuild = GlProgram.compute("/shaders/collision_cache_build.comp", "LIQUID")
@@ -83,16 +86,22 @@ internal class CollisionNeighborCache(
 
     // Heads store (epoch << idBits) | (id + 1); id + 1 never exceeds capacity.
     private val idBits = 32 - Integer.numberOfLeadingZeros(capacity)
-    // Cell tags keep CELL_TAG_BITS below the epoch.
-    private val maximumEpoch = ((1L shl (32 - idBits)) - 1).coerceAtMost((1L shl (32 - CELL_TAG_BITS)) - 1).toInt()
+    // Cell tags keep CELL_TAG_BITS below the epoch, cell counts CELL_COUNT_BITS.
+    private val maximumEpoch = ((1L shl (32 - idBits)) - 1)
+        .coerceAtMost((1L shl (32 - CELL_TAG_BITS)) - 1)
+        .coerceAtMost((1L shl (32 - CELL_COUNT_BITS)) - 1).toInt()
     private var epoch = 0
     /** Liquid mode and solid bodies of the cached lists, which hold only hard pairs. */
     private var listedPairs: Pair<Boolean, Boolean>? = null
+    /** Whether the retained grid was built with blocks: a RIGID build leaves ghosts out of the grid. */
+    private var builtRigid = false
+    /** Sleeping tiles: the passes leave sleeping bodies alone (sleep_layout.glsl). */
+    var sleep: SleepTiles? = null
 
     init {
         require(idBits < 32) { "capacity leaves no bits for the grid epoch" }
         clearStateWords(0, STATE_WORDS)
-        intArrayOf(solidTiles, cellTags).forEach {
+        intArrayOf(solidTiles, cellTags, ghostHeads, cellCounts).forEach {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)
             glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, null as ByteBuffer?)
         }
@@ -145,6 +154,16 @@ internal class CollisionNeighborCache(
         }
         rigidList.use()
         rigidList.int("uPoolEntries", poolEntries)
+        // Crowd parameters (collision_crowd.glsl, collision_cache_layout.glsl).
+        rigidCount.use()
+        rigidCount.uint("CROWDED_CONTACTS", CROWDED_CONTACTS)
+        rigidCount.uint("SAMPLED_CONTACTS", SAMPLED_CONTACTS)
+        rigidSolve.use()
+        rigidSolve.uint("SAMPLED_CONTACTS", SAMPLED_CONTACTS)
+        listOf(rigidBuild, liquidRigidBuild).forEach { program ->
+            program.use()
+            program.uint("CROWD_CELL_CAP", CROWD_CELL_CAP)
+        }
         rigidSolve.use()
         rigidSolve.float("uBlockRestitution", config.projectiles.blockRestitution)
         rigidSolve.float("uRestingSpeed", restingSpeed(collision))
@@ -178,10 +197,14 @@ internal class CollisionNeighborCache(
             listedPairs = liquid to solids
             invalidate()
         }
+        if (builtRigid != (rigidGroups > 0)) {
+            builtRigid = rigidGroups > 0
+            invalidate()
+        }
         if (++epoch > maximumEpoch) {
             // Older tags would become ambiguous: start again from empty lists.
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
-            intArrayOf(heads, cellTags).forEach {
+            intArrayOf(heads, cellTags, ghostHeads, cellCounts).forEach {
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)
                 glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, null as ByteBuffer?)
             }
@@ -196,6 +219,7 @@ internal class CollisionNeighborCache(
         drift.float("uSubstepDt", substepDt)
         drift.int("uBounded", if (bounded) 1 else 0)
         drift.int("uRigidGroups", rigidGroups)
+        drift.int("uLiquid", if (liquid) 1 else 0)
         bind(0, input)
         bind(1, references)
         bind(2, cache)
@@ -223,6 +247,8 @@ internal class CollisionNeighborCache(
         bind(5, adaptive)
         bind(6, solidTiles)
         bind(7, cellTags)
+        bind(12, ghostHeads)
+        bind(13, cellCounts)
         dispatch(active, substep)
         barrier()
         profiler?.end(GpuStage.COLLISION_BUILD)
@@ -242,17 +268,20 @@ internal class CollisionNeighborCache(
         bind(5, cache)
         bind(6, solidTiles)
         bind(7, cellTags)
+        bind(12, ghostHeads)
         dispatch(active, substep)
         barrier()
+        profiler?.end(GpuStage.COLLISION_COUNT)
         if (rigidGroups > 0) {
+            profiler?.begin(GpuStage.COLLISION_LIST)
             iteration(rigidList, substep)
             rigidList.int("uCount", active)
             rigidList.int("uBounded", if (bounded) 1 else 0)
             bind(11, pool)
             dispatch(active, substep)
             barrier()
+            profiler?.end(GpuStage.COLLISION_LIST)
         }
-        profiler?.end(GpuStage.COLLISION_COUNT)
 
         profiler?.begin(GpuStage.COLLISION_SOLVE)
         val solve = if (rigidGroups > 0) rigidSolve else hardSolve
@@ -274,6 +303,7 @@ internal class CollisionNeighborCache(
         bind(5, pressures)
         bind(6, adaptive)
         bind(7, cache)
+        bind(12, ghostHeads)
         dispatch(active, substep)
         barrier()
         profiler?.end(GpuStage.COLLISION_SOLVE)
@@ -300,13 +330,14 @@ internal class CollisionNeighborCache(
     private fun iteration(program: GlProgram, substep: Int?) {
         program.use()
         program.int("uSubstepIndex", substep ?: -1)
+        sleep?.uniforms(program)
     }
 
     private fun barrier() = glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     override fun close() {
         (listOf(drift, rigidList) + builds + counts + solves).forEach(GlProgram::close)
-        intArrayOf(references, cache, nodes, solidTiles, cellTags, pool).forEach(::glDeleteBuffers)
+        intArrayOf(references, cache, nodes, solidTiles, cellTags, ghostHeads, cellCounts, pool).forEach(::glDeleteBuffers)
     }
 
     companion object {
@@ -314,14 +345,20 @@ internal class CollisionNeighborCache(
         // candidates, 48 contacts and the four planes of crowds and longer
         // lists, then the control words. Overflow always has a complete fallback.
         const val CACHE_PLANES = 86
-        const val STATE_WORDS = 7
+        const val STATE_WORDS = 8
         const val STATE_POPULATION = 1
         const val STATE_REBUILDS = 2
         const val STATE_DIRECT = 3
         private const val NODE_BYTES = 16L
         private const val SOLID_TILE = 8
-        /** CELL_TAG_BITS of collision_cache_layout.glsl. */
+        /** CELL_TAG_BITS and CELL_COUNT_BITS of collision_cache_layout.glsl. */
         private const val CELL_TAG_BITS = 9
+        private const val CELL_COUNT_BITS = 12
+        /** A body with more loose contacts than this solves a sample of them, this many on average (collision_crowd.glsl). */
+        const val CROWDED_CONTACTS = 12
+        const val SAMPLED_CONTACTS = 8
+        /** Loose bodies listed per cell of a RIGID build; the rest are ghosts (collision_cache_layout.glsl). */
+        const val CROWD_CELL_CAP = 12
 
         /** Approach speed below which a block contact never bounces: 20 diameters a second. */
         fun restingSpeed(collisions: CollisionConfig) = 20f * collisions.contactDiameterPixels

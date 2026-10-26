@@ -319,12 +319,27 @@ class GravityPipeline(
     ).also { blocks ->
         neighborCache?.let { blocks.invalidates(it.cacheBuffer, it.populationWord) }
     }
+    /** Sleeping tiles: resting bodies and blocks cost nothing (sleep_layout.glsl). */
+    private val sleep = SleepTiles(
+        width = viewportWidth,
+        height = viewportHeight,
+        capacity = config.particles.capacity,
+        timeStep = config.collisions.timeStep,
+        enabled = config.collisions.sleep && neighborCache != null,
+        restingSpeedPixels = config.collisions.sleepSpeedPixels,
+        bind = ::bind,
+    ).also { sleep ->
+        neighborCache?.sleep = sleep
+        rigidBlocks.sleep = sleep
+    }
+    /** What the sleeping tiles were last computed for: any change wakes everything. */
+    private var sleepScene: List<Any> = emptyList()
 
     init {
         check(
-            glGetInteger(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS) >= USED_STORAGE_BINDINGS &&
+            glGetInteger(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS) >= USED_STORAGE_BLOCKS &&
                 glGetInteger(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS) >= USED_STORAGE_BINDINGS,
-        ) { "The GPU must allow $USED_STORAGE_BINDINGS storage buffers per compute shader" }
+        ) { "The GPU must allow $USED_STORAGE_BLOCKS storage buffers per compute shader at $USED_STORAGE_BINDINGS bindings" }
         if (config.collisions.neighborCache && neighborCache == null) {
             System.err.println("Neighbor cache exceeds GPU buffer limit; using complete linked-grid collisions")
         }
@@ -429,6 +444,14 @@ class GravityPipeline(
 
     fun step(activeBodies: Int) {
         normalizeTo(activeBodies)
+        // New bodies, blocks, walls, field, gravity or liquid: nothing has
+        // marked the tiles for them yet, so everything stays awake a while.
+        val scene = listOf(activeBodies, rigidBlocks.size, bounded, fieldAccelerationX, fieldAccelerationY, mutualGravity, liquid)
+        if (scene != sleepScene) {
+            sleepScene = scene
+            sleep.wake()
+        }
+        sleep.bindBuffers()
         profiler?.begin(GpuStage.PHYSICS_STEP)
         val sortInterval = config.particles.spatialSortInterval
         if (sortInterval > 0 && physicsSteps++ % sortInterval == 0L) sortBodies(activeBodies)
@@ -461,6 +484,10 @@ class GravityPipeline(
             writePressure = true,
             substepIndex = null,
         )
+        // The tiles and blocks awake in the next step.
+        sleep.advance(bounded)
+        rigidBlocks.wake(sleep, bodies)
+        sleep.endStep()
         // Blocks that lost members are split into the pieces that hold together.
         if (rigidBlocks.afterStep(bodies, materials, bounded)) invalidateContacts()
         profiler?.end(GpuStage.PHYSICS_STEP)
@@ -576,6 +603,12 @@ class GravityPipeline(
         bind(0, trajectory)
     }
 
+    /**
+     * Bodies were changed behind the simulation's back (a state written
+     * from outside): everything stays awake for a few steps (SleepTiles).
+     */
+    fun wake() = sleep.wake()
+
     fun stopBodies(activeBodies: Int) {
         stopBodiesProgram.use()
         bind(0, bodies)
@@ -605,7 +638,11 @@ class GravityPipeline(
 
     /**
      * Fills the rectangle between two corners with bodies glued into one rigid
-     * block, at rest unless given a motion.
+     * block, at rest unless given a motion. With a [mask], only its black
+     * pixels are filled, and each patch of them that holds together becomes a
+     * block of its own; patches of fewer than
+     * [RigidBlocks.MINIMUM_FRAGMENT_BODIES] bodies are left out. The blocks
+     * move together, as one body would. Returns the bodies glued.
      */
     fun spawnBlock(
         firstBody: Int,
@@ -619,31 +656,63 @@ class GravityPipeline(
         velocityX: Float = 0f,
         velocityY: Float = 0f,
         spin: Float = 0f,
+        mask: BlockMask? = null,
     ): Int {
+        val diameter = config.collisions.contactDiameterPixels
         val width = maxX - minX
         val height = maxY - minY
-        val count = RectangularBlock.bodyCount(
-            config.collisions.contactDiameterPixels,
-            width,
-            height,
-        )
+        val count = mask?.bodyCount(diameter, width, height) ?: RectangularBlock.bodyCount(diameter, width, height)
         if (count == 0 || !fits(firstBody, count)) return 0
 
-        val lattice = RectangularBlock.offsets(
-            config.collisions.contactDiameterPixels,
-            width,
-            height,
-        )
+        val centerX = 0.5f * (minX + maxX)
+        val centerY = 0.5f * (minY + maxY)
+        if (mask == null) {
+            val lattice = RectangularBlock.offsets(diameter, width, height)
+            return glueBlock(firstBody, lattice, centerX, centerY, density, velocityX, velocityY, spin)
+        }
+        val lattice = mask.offsets(diameter, width, height)
+        val patches = BlockPieces.of(lattice, diameter)
+            .filter { it.size >= RigidBlocks.MINIMUM_FRAGMENT_BODIES }
+            .map { patch -> patch.map { lattice[it] } }
+        // The patches spin about their common centre of mass.
+        val bodies = patches.sumOf { it.size }
+        val meanX = patches.sumOf { patch -> patch.sumOf { it.x.toDouble() } }.toFloat() / bodies
+        val meanY = patches.sumOf { patch -> patch.sumOf { it.y.toDouble() } }.toFloat() / bodies
+        var spawned = 0
+        for (patch in patches) {
+            val armX = patch.sumOf { it.x.toDouble() }.toFloat() / patch.size - meanX
+            val armY = patch.sumOf { it.y.toDouble() }.toFloat() / patch.size - meanY
+            spawned += glueBlock(
+                firstBody + spawned, patch, centerX, centerY, density,
+                velocityX - spin * armY, velocityY + spin * armX, spin,
+            )
+        }
+        return spawned
+    }
+
+    /**
+     * Glues bodies at centre + [lattice] into one rigid block, about their
+     * own centre of mass; returns them, or 0 if there is no room.
+     */
+    private fun glueBlock(
+        firstBody: Int,
+        lattice: List<PixelOffset>,
+        centerX: Float,
+        centerY: Float,
+        density: Float,
+        velocityX: Float,
+        velocityY: Float,
+        spin: Float,
+    ): Int {
+        if (lattice.isEmpty() || !fits(firstBody, lattice.size)) return 0
         // The rigid fit needs offsets about the centre of mass.
         val meanX = lattice.sumOf { it.x.toDouble() }.toFloat() / lattice.size
         val meanY = lattice.sumOf { it.y.toDouble() }.toFloat() / lattice.size
         val offsets = lattice.map { PixelOffset(it.x - meanX, it.y - meanY) }
         val shape = GlueShape.of(offsets, config.collisions.contactDiameterPixels)
-        if (!rigidBlocks.canAdd(count, shape)) return 0
-        val centerX = 0.5f * (minX + maxX) + meanX
-        val centerY = 0.5f * (minY + maxY) + meanY
-        val spawned = uploadBodies(firstBody, centerX, centerY, velocityX, velocityY, offsets, density, group = rigidBlocks.nextGroup, spin = spin)
-        rigidBlocks.add(firstBody, offsets, centerX, centerY, shape)
+        if (!rigidBlocks.canAdd(offsets.size, shape)) return 0
+        val spawned = uploadBodies(firstBody, centerX + meanX, centerY + meanY, velocityX, velocityY, offsets, density, group = rigidBlocks.nextGroup, spin = spin)
+        rigidBlocks.add(firstBody, offsets, centerX + meanX, centerY + meanY, shape)
         massExcess += spawned * (density - 1f)
         return spawned
     }
@@ -1143,6 +1212,7 @@ class GravityPipeline(
 
     private fun applyKick(activeBodies: Int, initial: Boolean) {
         profiler?.begin(GpuStage.GRAVITY_KICK)
+        sleep.uniforms(kick)
         kick.use()
         bind(0, bodies)
         bind(1, acceleration)
@@ -1484,6 +1554,7 @@ class GravityPipeline(
     }
 
     override fun close() {
+        sleep.close()
         neighborCache?.close()
         rigidBlocks.close()
         liquidSolver.close()
@@ -1559,9 +1630,11 @@ class GravityPipeline(
         /** Largest float below 1, as in the collision shaders. */
         private const val MAXIMUM_UNIT = 0.99999994f
         /** Cached binding slots, more than any shader uses. */
-        private const val STORAGE_BINDINGS = 16
+        private const val STORAGE_BINDINGS = 18
         /** Bindings 0..10: the rigid collision solvers use all eleven. */
-        private const val USED_STORAGE_BINDINGS = 11
+        /** Binding points used, and the most storage blocks one compute shader declares (collision_cache_solve.comp, RIGID). */
+        private const val USED_STORAGE_BINDINGS = 18
+        private const val USED_STORAGE_BLOCKS = 16
         /** Values scanned per workgroup by spatial_sort_scan.comp. */
         private const val SORT_SCAN_BLOCK = 1024
         /** Target reordering tile edge; a tile holds a few dozen dense bodies. */

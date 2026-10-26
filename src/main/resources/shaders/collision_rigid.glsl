@@ -227,10 +227,12 @@ float rigidResponse(int group, vec2 pointPixels, vec2 normal, float dt) {
 void pushGroup(int group, vec2 shift) {
     ivec2 positive = ivec2(max(shift, vec2(0.0)) * GUARD_SCALE + 0.5);
     ivec2 negative = ivec2(max(-shift, vec2(0.0)) * GUARD_SCALE + 0.5);
-    if (positive.x > 0) atomicMax(groups[group].guard.x, positive.x);
-    if (positive.y > 0) atomicMax(groups[group].guard.y, positive.y);
-    if (negative.x > 0) atomicMax(groups[group].guard.z, negative.x);
-    if (negative.y > 0) atomicMax(groups[group].guard.w, negative.y);
+    // Only a larger request touches the word (the result is the same maximum).
+    ivec4 guard = groups[group].guard;
+    if (positive.x > guard.x) atomicMax(groups[group].guard.x, positive.x);
+    if (positive.y > guard.y) atomicMax(groups[group].guard.y, positive.y);
+    if (negative.x > guard.z) atomicMax(groups[group].guard.z, negative.x);
+    if (negative.y > guard.w) atomicMax(groups[group].guard.w, negative.y);
 }
 
 // Like pushGroup, for a block resting on bodies a wall holds: the wall
@@ -238,10 +240,11 @@ void pushGroup(int group, vec2 shift) {
 void supportGroup(int group, vec2 shift) {
     ivec2 positive = ivec2(max(shift, vec2(0.0)) * GUARD_SCALE + 0.5);
     ivec2 negative = ivec2(max(-shift, vec2(0.0)) * GUARD_SCALE + 0.5);
-    if (positive.x > 0) atomicMax(groups[group].support.x, positive.x);
-    if (positive.y > 0) atomicMax(groups[group].support.y, positive.y);
-    if (negative.x > 0) atomicMax(groups[group].support.z, negative.x);
-    if (negative.y > 0) atomicMax(groups[group].support.w, negative.y);
+    ivec4 support = groups[group].support;
+    if (positive.x > support.x) atomicMax(groups[group].support.x, positive.x);
+    if (positive.y > support.y) atomicMax(groups[group].support.y, positive.y);
+    if (negative.x > support.z) atomicMax(groups[group].support.z, negative.x);
+    if (negative.y > support.w) atomicMax(groups[group].support.w, negative.y);
 }
 
 // Mass splitting: contacts solved side by side never push a block further

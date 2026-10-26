@@ -45,7 +45,12 @@ void storeFracture(uint id) {
 // (rigid_layout.glsl), not at what is left of it.
 float restitutionTarget(int key, float normalSpeed, float restitution) {
     float impact = max(float(impacts[key]) / IMPACT_SCALE, -normalSpeed);
-    if (-normalSpeed > uRestingSpeed) atomicMax(nextImpacts[key], int(-normalSpeed * IMPACT_SCALE));
+    // Thousands of contacts of a pair raise the same word: only one that
+    // raises it touches it (the result is the same maximum).
+    if (-normalSpeed > uRestingSpeed) {
+        int approach = int(-normalSpeed * IMPACT_SCALE);
+        if (nextImpacts[key] < approach) atomicMax(nextImpacts[key], approach);
+    }
     return impact > uRestingSpeed ? restitution * impact : 0.0;
 }
 
@@ -119,6 +124,10 @@ vec2 resolveGuards(vec2 positionPixels, float driftDt) {
     return shift;
 }
 
+// The other body of the pair being solved sleeps (sleep_layout.glsl): it
+// stays where it is, like a wall, so this side takes the whole correction.
+bool partnerSleeps = false;
+
 // A member of a crowd solves a sample of its loose contacts
 // (collision_crowd.glsl), each standing for this many; its loose partners
 // solve all theirs, so its block gets their impulses as many times as it
@@ -185,6 +194,11 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
     float probeShare = probeGroup >= 0 ? partnerShare(probeGroup, shapeGroup) / probeMaterial.x
         : float(max(probeContacts, 1u)) / probeMaterial.x;
     float shapeShare = partnerShare(shapeGroup, probeGroup) / memberMaterial.x;
+    // A sleeping partner is immovable: its term of the response is dropped.
+    if (partnerSleeps) {
+        if (otherShape) shapeShare = 0.0;
+        else probeShare = 0.0;
+    }
     float response = shapeShare * rigidResponse(shapeGroup, point, normal, driftDt) +
         (probeGroup >= 0 ? probeShare * rigidResponse(probeGroup, point, normal, driftDt) : probeShare);
 
@@ -222,7 +236,8 @@ void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec
         int key = contactKey(shapeGroup, probeGroup);
         float target = restitutionTarget(key, normalSpeed, uBlockRestitution);
         if (normalSpeed < target) velocityImpulse = (target - normalSpeed) / response;
-        atomicMax(contactStates[key], normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING);
+        int state = normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING;
+        if (contactStates[key] < state) atomicMax(contactStates[key], state);
     } else if (normalSpeed < 0.0) {
         float restitution = fluidProbe || normalSpeed > -uRestingSpeed ? 0.0
             : max(uRestitutionCoefficient, uBlockRestitution);
@@ -274,7 +289,8 @@ void rigidWallContact(uint id, int wall, vec2 positionPixels, float distance, ve
     // Speed changes of the member per unit of its mass.
     float normalChange = 0.0;
     if (normalSpeed < target) normalChange = (target - normalSpeed) / (contacts * rigidResponse(group, point, normal, driftDt));
-    atomicMax(contactStates[key], normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING);
+    int state = normalSpeed < target ? CONTACT_PUSHING : CONTACT_TOUCHING;
+    if (contactStates[key] < state) atomicMax(contactStates[key], state);
     velocityCorrection += normal * normalChange;
     // Against a wall the member's share of its block is the effective mass.
     if (-normalSpeed > uFractureSpeed) {

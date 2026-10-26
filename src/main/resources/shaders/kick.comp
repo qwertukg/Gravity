@@ -10,6 +10,7 @@ layout(std430, binding = 5) readonly buffer NextBody { int nextBody[]; };
 layout(std430, binding = 6) readonly buffer CellCounts { int cellCounts[]; };
 layout(std430, binding = 7) readonly buffer CellMasses { uint cellMasses[]; };
 layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+#include "sleep_layout.glsl"
 
 uniform int uCount;
 uniform int uMeshWidth;
@@ -105,6 +106,8 @@ void main() {
     uint id = gl_GlobalInvocationID.x;
     if (id >= uint(uCount)) return;
     vec4 body = bodies[id];
+    // A sleeping body is not kicked (sleep_layout.glsl).
+    if (uInitial == 0 && !sleepBodyAwake(id)) return;
     if (uMutualGravity == 0) {
         if (uInitial == 0) body.zw += uFieldAcceleration * (0.5 * uDt);
         acceleration[id] = uFieldAcceleration;

@@ -10,6 +10,7 @@ uniform vec2 uViewport;
 uniform int uBounded;
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
+#include "sleep_layout.glsl"
 #ifdef FRACTURE
 // After a collision pass: the impacts the pass recorded on members
 // (collision_rigid_contact.glsl) are read and cleared here, and what they
@@ -43,6 +44,8 @@ shared uint tileChipped;
 // v = V + w x (R r0).
 void main() {
     uint member = gl_GlobalInvocationID.x;
+    // A sleeping block stays as it is (sleep_layout.glsl).
+    if (!groupIsAwake(tileGroups[gl_WorkGroupID.x])) return;
     int body = members[member];
     RigidGroup rigid = groups[tileGroups[gl_WorkGroupID.x]];
     vec2 rotation = rigid.motion.zw;

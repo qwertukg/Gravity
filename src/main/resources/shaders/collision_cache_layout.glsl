@@ -30,6 +30,7 @@ const uint STATE_DIRECT = 3u;         // this pass uses the ordinary contact gri
 const uint STATE_DENSE_SAMPLES = 4u;  // sampled dense bodies of the current count
 const uint STATE_GRID_EPOCH = 5u;     // tag of the retained linked grid
 const uint STATE_POOL = 6u;           // entries of the contact pool taken this pass
+const uint STATE_ASLEEP = 7u;         // the sleep stamp of the last step in which a body slept (sleep_layout.glsl)
 
 uint stateOffset(uint word) {
     return CACHE_PLANES * uint(uCapacity) + word;
@@ -43,6 +44,27 @@ struct GridNode {
     uint next;
     uint tag;
 };
+
+// Crushed crowds (collision_crowd.glsl) cost the square of their size to walk:
+// every body of a cell holding hundreds reads every other. A RIGID build
+// lists at most CROWD_CELL_CAP loose bodies per cell in the grid; the rest of
+// the cell are ghosts, listed in a grid of their own (ghostHeads) that only
+// members of blocks walk. A ghost meets blocks and walls as every body does,
+// and no loose body, as no loose body meets it: pairs stay symmetric, and the
+// crowd drains through the cap as its listed bodies spread. A cell count is
+// (epoch << CELL_COUNT_BITS) | count: the first body of a build in a cell
+// resets it, so the counts never need clearing.
+uniform uint CROWD_CELL_CAP;
+const uint CELL_COUNT_BITS = 12u;
+const uint GHOST_BIT = 0x80000000u;
+
+uint nodeTag(uint tag) {
+    return tag & ~GHOST_BIT;
+}
+
+bool ghostNode(uint tag) {
+    return (tag & GHOST_BIT) != 0u;
+}
 
 // Heads hold (epoch << uIdBits) | (id + 1). A head written by an older build is
 // an empty list, so the grid never needs a clearing pass.

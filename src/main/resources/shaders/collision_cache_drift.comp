@@ -8,6 +8,10 @@ layout(std430, binding = 3) readonly buffer Accelerations { vec2 acceleration[];
 layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 #include "rigid_layout.glsl"
 layout(std430, binding = 9) buffer Rigid { RigidGroup groups[MAXIMUM_GROUPS]; };
+layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+#define SLEEP_TILES
+#include "sleep_layout.glsl"
+uniform int uLiquid;
 uniform int uRigidGroups;
 uniform int uCount;
 uniform int uAdaptive;
@@ -21,51 +25,91 @@ uniform float uReuseDistanceSquared;
 uniform int uBounded;
 // Largest float below 1: a body clamped to a wall stays in the last grid cell.
 const float MAXIMUM_UNIT = 0.99999994;
+// Flags of the whole workgroup, raised once per group: 100,000 fast bodies
+// raising the same word one by one serialize on it (REBUILD_FLAG, DIRECT_FLAG).
+shared uint groupFlags;
+const uint REBUILD_FLAG = 1u;
+const uint DIRECT_FLAG = 2u;
+const uint ASLEEP_FLAG = 4u;
 void main() {
     if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
     uint id = gl_GlobalInvocationID.x;
+    if (gl_LocalInvocationID.x == 0u) groupFlags = 0u;
+    barrier();
     // The count pass adds up the contacts of every block afresh.
     if (id < uint(uRigidGroups)) {
         groups[id].grid.w = 0;
+        // A sleeping block rests: its speed and spin are dropped with its
+        // members' (sleep_layout.glsl), so its pose stays where it is.
+        if (uSleep != 0 && uKickDt != 0.0 && !groupIsAwake(int(id))) {
+            groups[id].motion.xy = vec2(0.0);
+            groups[id].scalars.x = 0.0;
+        }
         // The pose the solve meets every block in (collision_rigid.glsl).
         float poseDt = uAdaptive != 0 && uDriftDt != 0.0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
         groups[id].pose = rigidPose(groups[id], poseDt);
     }
-    if (id >= uint(uCount)) return;
-    // The previous solve scheduled this pass. Only a changed population is
-    // unknown there: bodies are inserted and reordered between steps.
-    if (id == 0u && cache[stateOffset(STATE_POPULATION)] != uint(uCount)) {
-        atomicOr(cache[stateOffset(STATE_REBUILD)], 1u);
+    uint flags = 0u;
+    if (id < uint(uCount)) {
+        // The previous solve scheduled this pass. Only a changed population is
+        // unknown there: bodies are inserted and reordered between steps.
+        if (id == 0u && cache[stateOffset(STATE_POPULATION)] != uint(uCount)) flags |= REBUILD_FLAG;
+        // No list of this pass is in the contact pool yet (collision_cache_list.comp).
+        if (id == 0u) cache[stateOffset(STATE_POOL)] = 0u;
+        vec4 body = bodies[id];
+        // A sleeping body stays as it is (sleep_layout.glsl). The step's
+        // first pass, the one that kicks, tells every body's state for the step.
+        bool awake = true;
+        if (uSleep != 0) {
+            if (uKickDt != 0.0) {
+                awake = sleepAwake(body.xy, uRigidGroups > 0 || uLiquid != 0 ? materials[id] : vec4(0.0), uLiquid != 0);
+                bodyAwake[id] = awake ? uSleepStamp : 0u;
+                // A sleeping body rests: what little speed it had is dropped.
+                if (!awake) {
+                    flags |= ASLEEP_FLAG;
+                    if (body.zw != vec2(0.0)) {
+                        body.zw = vec2(0.0);
+                        bodies[id] = body;
+                    }
+                }
+            } else {
+                awake = bodyAwake[id] == uSleepStamp;
+            }
+        }
+        float driftDt = uAdaptive != 0 && uDriftDt != 0.0
+            ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
+        // Keep the reference integrator's operations and rounding, including its
+        // zero-drift final pass. No collision iteration is skipped.
+        if (awake && (uKickDt != 0.0 || driftDt != 0.0)) {
+            // Only the first substep kicks; the others add exactly zero.
+            if (uKickDt != 0.0) body.zw += acceleration[id] * (0.5 * uKickDt);
+            body.xy += body.zw * driftDt;
+            body.xy = uBounded != 0
+                ? clamp(body.xy, vec2(0.0), vec2(MAXIMUM_UNIT))
+                : fract(body.xy);
+            bodies[id] = body;
+        }
+        float probeDt = uAdaptive != 0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uSubstepDt;
+        vec2 stepDisplacement = awake ? body.zw * uViewport * probeDt : vec2(0.0);
+        if (dot(stepDisplacement, stepDisplacement) >= uReuseDistanceSquared) {
+            // Fast scenes cannot amortize an expanded neighbor list. Build the
+            // ordinary contact grid instead, still caching contacts for the solver.
+            // This changes only broad-phase cost, never substeps or contact reach.
+            flags |= REBUILD_FLAG | DIRECT_FLAG;
+        }
+        if (awake && id < cache[stateOffset(STATE_POPULATION)]) { // a changed population rebuilds anyway
+            vec2 delta = body.xy * uViewport - references[id] * uViewport;
+            delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
+            // Check actual positions AFTER drift, hence previous Jacobi corrections
+            // and the current kick are included. NaNs conservatively invalidate too.
+            if (!(dot(delta, delta) < uReuseDistanceSquared)) flags |= REBUILD_FLAG;
+        }
     }
-    // No list of this pass is in the contact pool yet (collision_cache_list.comp).
-    if (id == 0u) cache[stateOffset(STATE_POOL)] = 0u;
-    vec4 body = bodies[id];
-    float driftDt = uAdaptive != 0 && uDriftDt != 0.0
-        ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
-    // Keep the reference integrator's operations and rounding, including its
-    // zero-drift final pass. No collision iteration is skipped.
-    if (uKickDt != 0.0 || driftDt != 0.0) {
-        // Only the first substep kicks; the others add exactly zero.
-        if (uKickDt != 0.0) body.zw += acceleration[id] * (0.5 * uKickDt);
-        body.xy += body.zw * driftDt;
-        body.xy = uBounded != 0
-            ? clamp(body.xy, vec2(0.0), vec2(MAXIMUM_UNIT))
-            : fract(body.xy);
-        bodies[id] = body;
-    }
-    float probeDt = uAdaptive != 0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uSubstepDt;
-    vec2 stepDisplacement = body.zw * uViewport * probeDt;
-    if (dot(stepDisplacement, stepDisplacement) >= uReuseDistanceSquared) {
-        // Fast scenes cannot amortize an expanded neighbor list. Build the
-        // ordinary contact grid instead, still caching contacts for the solver.
-        // This changes only broad-phase cost, never substeps or contact reach.
-        atomicOr(cache[stateOffset(STATE_REBUILD)], 1u);
-        atomicOr(cache[stateOffset(STATE_DIRECT)], 1u);
-    }
-    if (id >= cache[stateOffset(STATE_POPULATION)]) return; // a changed population rebuilds anyway
-    vec2 delta = body.xy * uViewport - references[id] * uViewport;
-    delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
-    // Check actual positions AFTER drift, hence previous Jacobi corrections
-    // and the current kick are included. NaNs conservatively invalidate too.
-    if (!(dot(delta, delta) < uReuseDistanceSquared)) atomicOr(cache[stateOffset(STATE_REBUILD)], 1u);
+    if (flags != 0u) atomicOr(groupFlags, flags);
+    barrier();
+    if (gl_LocalInvocationID.x != 0u || groupFlags == 0u) return;
+    // A step in which nobody sleeps spares every pass its checks (STATE_ASLEEP).
+    if ((groupFlags & ASLEEP_FLAG) != 0u) cache[stateOffset(STATE_ASLEEP)] = uSleepStamp;
+    if ((groupFlags & REBUILD_FLAG) != 0u) atomicOr(cache[stateOffset(STATE_REBUILD)], 1u);
+    if ((groupFlags & DIRECT_FLAG) != 0u) atomicOr(cache[stateOffset(STATE_DIRECT)], 1u);
 }

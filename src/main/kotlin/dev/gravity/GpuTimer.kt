@@ -20,6 +20,7 @@ enum class GpuStage(val displayName: String) {
     COLLISION_CLEAR("collision clear"),
     COLLISION_BUILD("collision build"),
     COLLISION_COUNT("collision count"),
+    COLLISION_LIST("collision list"),
     COLLISION_SOLVE("collision solve"),
     COLLISION_SUBSTEPS("collision substeps total"),
     COLLISION_ADAPTIVE("collision adaptive selection"),

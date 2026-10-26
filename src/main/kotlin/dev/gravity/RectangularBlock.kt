@@ -13,18 +13,26 @@ object RectangularBlock {
         widthPixels: Float,
         heightPixels: Float,
     ): List<PixelOffset> {
+        val offsets = ArrayList<PixelOffset>(bodyCount(contactDiameterPixels, widthPixels, heightPixels))
+        forEachOffset(contactDiameterPixels, widthPixels, heightPixels) { x, y -> offsets += PixelOffset(x, y) }
+        return offsets
+    }
+
+    /** Visits the offsets row by row, each row from left to right, without allocating them. */
+    inline fun forEachOffset(
+        contactDiameterPixels: Float,
+        widthPixels: Float,
+        heightPixels: Float,
+        action: (x: Float, y: Float) -> Unit,
+    ) {
         val lattice = Lattice(contactDiameterPixels, widthPixels, heightPixels)
-        val offsets = ArrayList<PixelOffset>(lattice.bodyCount)
         for (row in 0 until lattice.rows) {
             val odd = row and 1 == 1
             val columns = if (odd) lattice.oddColumns else lattice.evenColumns
             val startX = -lattice.halfX + if (odd) 0.5f * contactDiameterPixels else 0f
             val y = -lattice.halfY + row * lattice.rowStep
-            for (column in 0 until columns) {
-                offsets += PixelOffset(startX + column * contactDiameterPixels, y)
-            }
+            for (column in 0 until columns) action(startX + column * contactDiameterPixels, y)
         }
-        return offsets
     }
 
     /** Same as `offsets(...).size`, without allocating; cheap enough per frame. */
@@ -34,7 +42,8 @@ object RectangularBlock {
         heightPixels: Float,
     ): Int = Lattice(contactDiameterPixels, widthPixels, heightPixels).bodyCount
 
-    private class Lattice(diameter: Float, width: Float, height: Float) {
+    @PublishedApi
+    internal class Lattice(diameter: Float, width: Float, height: Float) {
         /** Half extents available to body centres. */
         val halfX = 0.5f * (width - diameter)
         val halfY = 0.5f * (height - diameter)

@@ -17,6 +17,7 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_B
 import org.lwjgl.glfw.GLFW.GLFW_KEY_C
 import org.lwjgl.glfw.GLFW.GLFW_KEY_G
 import org.lwjgl.glfw.GLFW.GLFW_KEY_L
+import org.lwjgl.glfw.GLFW.GLFW_KEY_M
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_RIGHT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
@@ -75,8 +76,10 @@ import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.opengl.GL31.glDrawArraysInstanced
 import org.lwjgl.opengl.GL43
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sign
 
 private data class ProjectileGesture(
     val originX: Float,
@@ -86,12 +89,13 @@ private data class ProjectileGesture(
     val diameterPixels: Float,
 )
 
-/** A screen rectangle in physics pixels (origin bottom-left). */
+/** A screen rectangle in physics pixels (origin bottom-left), filled where [mask] is black if given. */
 private data class BlockGesture(
     val minX: Float,
     val minY: Float,
     val maxX: Float,
     val maxY: Float,
+    val mask: BlockMask? = null,
 )
 
 class GravityApplication(private val config: GravityConfig) : AutoCloseable {
@@ -157,6 +161,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var blockOriginY = 0f
     private var draggingBlock = false
     private var pendingBlock: BlockGesture? = null
+    /** M: the picture of BlockMask.DIRECTORY the RMB block takes its outline from; null for a rectangle. */
+    private var blockMask: BlockMask? = null
     private var projectileDiameterPixels = config.projectiles.defaultDiameterPixels
     private var projectileBodyCount = 0
     private val plusKeyProjectileDiameterPixels by lazy {
@@ -343,19 +349,21 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                     minY = block.minY,
                     maxX = block.maxX,
                     maxY = block.maxY,
+                    mask = block.mask,
                 )
                 if (spawned > 0) {
                     active += spawned
                     System.err.printf(
                         Locale.ROOT,
-                        "block=%,d bodies  size=%.0fx%.0f px  total=%,d%n",
+                        "block=%,d bodies  shape=%s  size=%.0fx%.0f px  total=%,d%n",
                         spawned,
+                        block.mask?.name ?: "rectangle",
                         block.maxX - block.minX,
                         block.maxY - block.minY,
                         active,
                     )
                 } else if (blockBodyCount(block) > 0) {
-                    System.err.println("Block skipped: particle capacity or the ${RigidBlocks.MAXIMUM_GROUPS}-block limit is reached")
+                    System.err.println("Block skipped: particle capacity, the ${RigidBlocks.MAXIMUM_GROUPS}-block limit or the room for block shapes is reached")
                 }
                 pendingBlock = null
             }
@@ -528,6 +536,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 liquid = !liquid
                 pipeline?.liquid = liquid
             }
+            if (key == GLFW_KEY_M && action == GLFW_PRESS) nextBlockMask()
             if (key == GLFW_KEY_C && action == GLFW_PRESS) {
                 clearRequested = true
                 resetRequested = true
@@ -672,24 +681,59 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
     }
 
-    /** The rectangle between the RMB press point and the cursor. */
+    /**
+     * The rectangle between the RMB press point and the cursor; with a mask,
+     * the largest of the picture's aspect within it, from the press point.
+     */
     private fun currentBlock(): BlockGesture {
-        val x = cursorX.toFloat().coerceIn(0f, viewportWidth.toFloat())
-        val y = (viewportHeight - cursorY.toFloat()).coerceIn(0f, viewportHeight.toFloat())
+        var x = cursorX.toFloat().coerceIn(0f, viewportWidth.toFloat())
+        var y = (viewportHeight - cursorY.toFloat()).coerceIn(0f, viewportHeight.toFloat())
+        val mask = blockMask
+        if (mask != null) {
+            val fitted = mask.fit(abs(x - blockOriginX), abs(y - blockOriginY))
+            x = blockOriginX + sign(x - blockOriginX) * fitted.x
+            y = blockOriginY + sign(y - blockOriginY) * fitted.y
+        }
         return BlockGesture(
             minX = minOf(blockOriginX, x),
             minY = minOf(blockOriginY, y),
             maxX = maxOf(blockOriginX, x),
             maxY = maxOf(blockOriginY, y),
+            mask = mask,
         )
     }
 
-    private fun blockBodyCount(block: BlockGesture) =
-        RectangularBlock.bodyCount(
-            config.collisions.contactDiameterPixels,
-            block.maxX - block.minX,
-            block.maxY - block.minY,
-        )
+    private fun blockBodyCount(block: BlockGesture): Int {
+        val diameter = config.collisions.contactDiameterPixels
+        val width = block.maxX - block.minX
+        val height = block.maxY - block.minY
+        return block.mask?.bodyCount(diameter, width, height) ?: RectangularBlock.bodyCount(diameter, width, height)
+    }
+
+    /**
+     * Takes the next picture of BlockMask.DIRECTORY, by name, for the RMB
+     * block; after the last, the rectangle again. The directory is read
+     * afresh, so pictures put there while running count.
+     */
+    private fun nextBlockMask() {
+        val files = BlockMask.files()
+        if (files.isEmpty()) {
+            System.err.println("No pictures in ${BlockMask.DIRECTORY.absolutePath}; blocks stay rectangles")
+            blockMask = null
+            return
+        }
+        val current = files.indexOfFirst { it.nameWithoutExtension == blockMask?.name }
+        blockMask = null
+        for (file in files.drop(current + 1)) {
+            try {
+                blockMask = BlockMask.load(file)
+                break
+            } catch (exception: Exception) {
+                System.err.println("Mask ${file.name} skipped: ${exception.message}")
+            }
+        }
+        System.err.println(blockMask?.let { "block shape=${it.name} (${it.width}x${it.height} px picture)" } ?: "block shape=rectangle")
+    }
 
     /**
      * Starts the selected scenario, or the configured uniform start when none
@@ -918,6 +962,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             timeScale = simulationSpeed.scale,
             futureProjectileSpeed = futureProjectileSpeed,
             blockBodies = block?.let(::blockBodyCount),
+            blockShape = blockMask?.name ?: "rectangle",
         )
         scenarioMenu!!.render(scenario, cursorX, cursorY)
     }

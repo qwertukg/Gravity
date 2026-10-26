@@ -53,7 +53,7 @@ object BlockBenchmark {
         val config = GravityConfig(
             particles = ParticleConfig(capacity = 420_000, initialBodies = loose.size / 4, seed = 1,
                 spatialSortInterval = if (System.getenv("BLOCK_DUMP") != null) 0 else 2),
-            collisions = CollisionConfig(adaptive = false, maximumSubsteps = SUBSTEPS),
+            collisions = CollisionConfig(adaptive = false, maximumSubsteps = SUBSTEPS, sleep = System.getenv("BLOCK_SLEEP") != "0"),
             projectiles = if (UNBREAKABLE) ProjectileConfig(blockStrength = Float.POSITIVE_INFINITY) else ProjectileConfig(),
         )
         val profiler = GpuProfiler(STEPS + 1, 512, STEPS + 16)
@@ -132,13 +132,18 @@ object BlockBenchmark {
                     // The physics step, count and solve per ten steps: where an impact costs.
                     profiler.frames().chunked(10).forEachIndexed { chunk, frames ->
                         fun average(stage: GpuStage) = frames.map { it.milliseconds[stage.ordinal] }.filter { !it.isNaN() }.average()
-                        println(String.format(Locale.ROOT, "series %3d step=%6.2f count=%6.2f solve=%6.2f", chunk * 10,
-                            average(GpuStage.PHYSICS_STEP), average(GpuStage.COLLISION_COUNT), average(GpuStage.COLLISION_SOLVE)))
+                        println(String.format(Locale.ROOT, "series %3d step=%6.2f count=%6.2f list=%6.2f solve=%6.2f rigid=%6.2f", chunk * 10,
+                            average(GpuStage.PHYSICS_STEP), average(GpuStage.COLLISION_COUNT), average(GpuStage.COLLISION_LIST),
+                            average(GpuStage.COLLISION_SOLVE), average(GpuStage.RIGID_PROJECTION)))
                     }
                 }
                 fun mean(stage: GpuStage) = summary[stage]?.averageMillis ?: 0.0
                 fun p95(stage: GpuStage) = summary[stage]?.p95Millis ?: 0.0
                 val blocks = CollisionGpuAccess.rigidBlocks(pipeline)
+                val sleep = CollisionGpuAccess.field(pipeline, "sleep")!!
+                val awakeStamp = CollisionGpuAccess.field(sleep, "stamp") as Int
+                val awake = CollisionGpuAccess.ints(CollisionGpuAccess.field(sleep, "bodyAwake") as Int, active).count { it == awakeStamp - 1 }
+                println("awake at the end: $awake of $active bodies (stamp $awakeStamp)")
                 val bodies = CollisionGpuAccess.floats(pipeline, "bodies", active * 4)
                 val materials = CollisionGpuAccess.floats(pipeline, "materials", active * 4)
                 check(bodies.all { it.isFinite() }) { "$scene: non-finite bodies" }
@@ -168,11 +173,11 @@ object BlockBenchmark {
                     hash = (hash xor value.toRawBits().toLong()) * 0x100000001b3L
                 }
                 String.format(Locale.ROOT,
-                    "%-5s run=%d bodies=%d wall=%.3f gpuStep=%.3f gpuStepP95=%.3f drift=%.3f build=%.3f count=%.3f " +
+                    "%-5s run=%d bodies=%d wall=%.3f gpuStep=%.3f gpuStepP95=%.3f drift=%.3f build=%.3f count=%.3f list=%.3f " +
                         "solve=%.3f rigid=%.3f fracture=%.3f split=%.3f splits=%d grains=%d pieces=%d " +
                         "px=%.1f py=%.1f energy=%.4e rebuilds=%d substeps=%.1f hash=%016x",
                     scene.name.lowercase(), repetition, active, wall, mean(GpuStage.PHYSICS_STEP), p95(GpuStage.PHYSICS_STEP),
-                    mean(GpuStage.COLLISION_DRIFT), mean(GpuStage.COLLISION_BUILD), mean(GpuStage.COLLISION_COUNT),
+                    mean(GpuStage.COLLISION_DRIFT), mean(GpuStage.COLLISION_BUILD), mean(GpuStage.COLLISION_COUNT), mean(GpuStage.COLLISION_LIST),
                     mean(GpuStage.COLLISION_SOLVE), mean(GpuStage.RIGID_PROJECTION), mean(GpuStage.RIGID_FRACTURE),
                     blocks.splitNanos / 1e6 / STEPS, blocks.splits, grains, pieces, momentumX, momentumY, energy, CollisionGpuAccess.rebuilds(pipeline),
                     substepSum.toDouble() / STEPS, hash,
@@ -215,8 +220,9 @@ object BlockBenchmark {
         }
         val kinds = crowded.values.flatten().groupingBy(::kind).eachCount()
         val speeds = (0 until active).map { kotlin.math.hypot(bodies[it * 4 + 2] * WIDTH.toDouble(), bodies[it * 4 + 3] * HEIGHT.toDouble()) }
-        println("speeds step=$step >480px/s: %.1f%%  >100px/s: %.1f%%  >20px/s: %.1f%%".format(
-            100.0 * speeds.count { it > 480 } / active, 100.0 * speeds.count { it > 100 } / active, 100.0 * speeds.count { it > 20 } / active))
+        println("speeds step=$step >480px/s: %.1f%%  >100px/s: %.1f%%  >20px/s: %.1f%%  >12: %.1f%%  >6: %.1f%%  >3: %.1f%%  >1: %.1f%%".format(
+            100.0 * speeds.count { it > 480 } / active, 100.0 * speeds.count { it > 100 } / active, 100.0 * speeds.count { it > 20 } / active,
+            100.0 * speeds.count { it > 12 } / active, 100.0 * speeds.count { it > 6 } / active, 100.0 * speeds.count { it > 3 } / active, 100.0 * speeds.count { it > 1 } / active))
         val w = worst.value
         println("probe step=$step maxCell=${sizes.max()} cells>4=${crowded.size} bodiesIn>4=${crowded.values.sumOf { it.size }} kinds=$kinds " +
             "worst@(${worst.key % gw},${worst.key / gw}) kinds=${w.groupingBy(::kind).eachCount()} " +
@@ -226,6 +232,15 @@ object BlockBenchmark {
         val bounds = intArrayOf(8, 16, 24, 32, 64, 128)
         println("contacts step=$step max=${counts.max()} " + bounds.joinToString(" ") { b -> ">$b: ${counts.count { it > b }}" } +
             " sum=${counts.sumOf { it.toLong() }} sumSq=${counts.sumOf { it.toLong() * it }}")
+        val neighborCache = CollisionGpuAccess.field(pipeline, "neighborCache")!!
+        val nodes = CollisionGpuAccess.ints(CollisionGpuAccess.field(neighborCache, "nodes") as Int, active * 4)
+        val ghosts = (0 until active).count { nodes[it * 4 + 3] < 0 }
+        for (k in listOf("loose", "grain", "member")) {
+            val ids = (0 until active).filter { kind(it) == k }
+            val c = ids.map { counts[it] }
+            println("kind=$k step=$step n=${ids.size} contactsMax=${c.maxOrNull()} sum=${c.sumOf { it.toLong() }} >64: ${c.count { it > 64 }} >256: ${c.count { it > 256 }}")
+        }
+        println("ghosts step=$step ghosts=$ghosts")
         if (System.getenv("BLOCK_FIELD")?.toInt() == step) {
             val px = ((worst.key % gw) + 0.5f) * WIDTH / gw
             val py = ((worst.key / gw) + 0.5f) * HEIGHT / gh

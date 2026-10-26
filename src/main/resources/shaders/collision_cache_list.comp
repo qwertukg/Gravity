@@ -15,6 +15,7 @@ layout(std430, binding = 2) readonly buffer Nodes { GridNode nodes[]; };
 layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 5) buffer Cache { uint cache[]; };
 layout(std430, binding = 11) writeonly buffer Pool { uint pool[]; };
+layout(std430, binding = 12) readonly buffer GhostHeads { uint ghostHeads[]; };
 uniform int uPoolEntries;
 uniform int uCount;
 uniform int uGridWidth;
@@ -28,9 +29,12 @@ uniform int uSubstepIndex;
 uniform int uBounded;
 #include "collision_cache_grid.glsl"
 #include "collision_crowd.glsl"
+#include "sleep_layout.glsl"
 
-// This body's block tag (GridNode.tag).
+// This body's block tag (GridNode.tag), and whether it is a ghost of a
+// crowded cell, which meets no loose body (collision_cache_layout.glsl).
 uint ownTag = 0u;
+bool ownGhost = false;
 
 // The pool offset of a second walk, or UNLISTED for the first, into the slots.
 uint poolOffset = UNLISTED;
@@ -39,7 +43,7 @@ uint poolOffset = UNLISTED;
 // body touches within a diameter, liquid closer; a member meets another
 // block's within SPECULATIVE_DIAMETERS more (collision_rigid.glsl).
 void listContact(uint id, uint other, uint otherTag, float distanceSquared, uint keep, inout uint listed) {
-    if (other == id || ownTag != 0u && otherTag == ownTag) return;
+    if (other == id || ownTag != 0u && otherTag == ownTag || ownGhost && otherTag == 0u) return;
     float reach = ownTag != 0u && otherTag != 0u ? 1.5 * uDiameterPixels : uDiameterPixels;
     if (!(distanceSquared < reach * reach)) return;
     if (otherTag == 0u && pairKey(id, other) > keep) return;
@@ -55,7 +59,7 @@ uint walk(uint id, vec2 position, uint keep) {
     if (neighbors <= NEIGHBOR_SLOTS) {
         for (uint i = 0u; i < neighbors; i++) {
             uint other = cache[cacheOffset(2u + i, id)];
-            listContact(id, other, nodes[other].tag, pairDistanceSquared(id, position, other, bodies[other].xy), keep, listed);
+            listContact(id, other, nodeTag(nodes[other].tag), pairDistanceSquared(id, position, other, bodies[other].xy), keep, listed);
         }
     } else {
         uint referenceCell = cache[cacheOffset(1u, id)];
@@ -65,15 +69,19 @@ uint walk(uint id, vec2 position, uint keep) {
         // A grid built in this pass holds the positions of this pass.
         bool fresh = neighbors == DIRECT_GRID;
         ivec2 size = stencilSize(radius);
+        // A member also walks the ghosts of crowded cells.
+        int lists = ownTag != 0u ? 2 : 1;
+        for (int list = 0; list < lists; list++)
         for (int y = 0; y < size.y; y++) {
             for (int x = 0; x < size.x; x++) {
                 ivec2 cell = wrapCell(stencilOrigin(home, radius) + ivec2(x, y));
-                uint encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
+                uint head = list == 0 ? heads[cell.x + cell.y * uGridWidth] : ghostHeads[cell.x + cell.y * uGridWidth];
+                uint encoded = headBody(head, epoch);
                 while (encoded != 0u) {
                     uint other = encoded - 1u;
                     GridNode node = nodes[other];
                     vec2 otherPosition = fresh ? node.position : bodies[other].xy;
-                    listContact(id, other, node.tag, pairDistanceSquared(id, position, other, otherPosition), keep, listed);
+                    listContact(id, other, nodeTag(node.tag), pairDistanceSquared(id, position, other, otherPosition), keep, listed);
                     encoded = node.next;
                 }
             }
@@ -89,7 +97,11 @@ void main() {
     if (cache[cacheOffset(LIST_PLANE, id)] != UNLISTED) return;
     uint keep = cache[cacheOffset(KEEP_PLANE, id)];
     vec2 position = bodies[id].xy;
-    ownTag = nodes[id].tag;
+    uint ownNodeTag = nodes[id].tag;
+    ownTag = nodeTag(ownNodeTag);
+    ownGhost = ghostNode(ownNodeTag);
+    // A sleeping body's stale list is not read (sleep_layout.glsl).
+    if (uSleep != 0 && cache[stateOffset(STATE_ASLEEP)] == uSleepStamp && !sleepBodyAwake(id)) return;
     uint listed = walk(id, position, keep);
     if (listed > CONTACT_SLOTS) {
         uint offset = atomicAdd(cache[stateOffset(STATE_POOL)], listed);

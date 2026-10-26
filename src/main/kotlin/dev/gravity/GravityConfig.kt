@@ -72,6 +72,8 @@ data class GravityConfig(
             "adaptive-collisions",
             "collision-cache",
             "collision-skin",
+            "sleep",
+            "sleep-speed",
             "gpu-budget-ms",
             "sort-interval",
             "adaptive-displacement-fraction",
@@ -343,6 +345,8 @@ data class GravityConfig(
                         "collision-skin",
                         defaults.collisions.neighborSkinPixels * sizeScale,
                     ),
+                    sleep = booleanValue("sleep", defaults.collisions.sleep),
+                    sleepSpeedPixels = floatValue("sleep-speed", defaults.collisions.sleepSpeedPixels * sizeScale),
                     gpuBudgetMillis = doubleValue(
                         "gpu-budget-ms",
                         defaults.collisions.gpuBudgetMillis,
@@ -683,10 +687,17 @@ data class CollisionConfig(
     val neighborCache: Boolean = true,
     val neighborSkinPixels: Float = 0.5f,
     /**
+     * Sleeping tiles (SleepTiles): bodies held in place that move slower
+     * than [sleepSpeedPixels] (px/s) and have nothing moving within a tile
+     * of them are left alone by every pass.
+     */
+    val sleep: Boolean = true,
+    val sleepSpeedPixels: Float = 6f,
+    /**
      * GPU time of a frame (ms) above which the application runs fewer
      * collision substeps, down to half (SubstepGovernor); 0 never does.
      */
-    val gpuBudgetMillis: Double = 9.5,
+    val gpuBudgetMillis: Double = 8.5,
     val allowedDisplacementFraction: Float = 0.25f,
     val allowedPenetrationFraction: Float = 0.125f,
     val denseContactThreshold: Int = 4,
@@ -696,6 +707,7 @@ data class CollisionConfig(
     init {
         require(timeStep > 0f && timeStep.isFinite())
         require(neighborSkinPixels > 0f && neighborSkinPixels.isFinite())
+        require(sleepSpeedPixels >= 0f && sleepSpeedPixels.isFinite())
         require(gpuBudgetMillis >= 0.0 && gpuBudgetMillis.isFinite())
         require(maximumSubsteps in 1..16) {
             "collision substeps must be in 1..16"

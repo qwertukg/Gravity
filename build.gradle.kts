@@ -61,6 +61,7 @@ tasks.test {
     exclude("**/BlockDynamicsTest.class")
     exclude("**/BlockScenarioRunTest.class")
     exclude("**/BlockFractureTest.class")
+    exclude("**/MaskBlockIntegrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -76,10 +77,12 @@ tasks.register<Test>("gpuTest") {
     include("**/BuoyancyIntegrationTest.class")
     include("**/FrictionIntegrationTest.class")
     include("**/LiquidIntegrationTest.class")
+    include("**/SleepIntegrationTest.class")
     include("**/BlockPenetrationTest.class")
     include("**/BlockDynamicsTest.class")
     include("**/BlockScenarioRunTest.class")
     include("**/BlockFractureTest.class")
+    include("**/MaskBlockIntegrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

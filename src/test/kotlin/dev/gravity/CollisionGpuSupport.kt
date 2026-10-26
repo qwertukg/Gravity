@@ -41,7 +41,7 @@ internal class CollisionGpuContext : AutoCloseable {
 }
 
 internal object CollisionGpuAccess {
-    private fun field(target: Any, name: String): Any? = target.javaClass.getDeclaredField(name).let {
+    fun field(target: Any, name: String): Any? = target.javaClass.getDeclaredField(name).let {
         it.isAccessible = true
         it.get(target)
     }
@@ -50,6 +50,7 @@ internal object CollisionGpuAccess {
 
     fun upload(pipeline: GravityPipeline, bodies: FloatArray, clearHeads: Boolean = false) {
         (field(pipeline, "boundStorageBuffers") as IntArray).fill(-1)
+        pipeline.wake()
         // Tests replay the same input into reference/optimized pipelines without
         // adding diagnostic hooks or readbacks to the production frame loop.
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
@@ -83,6 +84,7 @@ internal object CollisionGpuAccess {
     }
 
     fun uploadFloats(pipeline: GravityPipeline, name: String, values: FloatArray) {
+        pipeline.wake()
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer(pipeline, name))
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, values)

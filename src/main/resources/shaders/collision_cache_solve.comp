@@ -11,6 +11,7 @@ layout(std430, binding = 6) buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 7) buffer Cache { uint cache[]; };
 #ifdef RIGID
 layout(std430, binding = 11) readonly buffer Pool { uint pool[]; };
+layout(std430, binding = 12) readonly buffer GhostHeads { uint ghostHeads[]; };
 #endif
 uniform int uCount;
 uniform int uGridWidth;
@@ -42,6 +43,12 @@ const float MAXIMUM_UNIT = 0.99999994;
 #include "collision_relief.glsl"
 #endif
 #include "collision_crowd.glsl"
+#define SLEEP_MARK
+#include "sleep_layout.glsl"
+// Displacement per step (px²) below which a held body rests, and from
+// which a body also wakes the tile it is heading to (SleepTiles.kt).
+uniform float uSleepDisplacementSquared;
+uniform float uSleepTileMarkSquared;
 // A wall is an immovable body: the moving body takes the whole correction
 // that a pair would split, with the same restitution and position-to-velocity
 // conversion as body-body contacts.
@@ -106,6 +113,8 @@ vec2 fallbackNormal(uint first, uint second) {
 
 // The raw count of this body, with its HELD_BIT.
 uint ownCount = 0u;
+// Whether any body sleeps this step (STATE_ASLEEP).
+bool anyAsleep = false;
 #ifdef RIGID
 // Pushes apart from bodies of held pairs (HELD_BIT): position only.
 vec2 heldCorrection = vec2(0.0);
@@ -114,9 +123,16 @@ vec2 heldCorrection = vec2(0.0);
 uint ownKeep = KEEP_ALL;
 uint ownKept = 0u;
 
-// A loose pair a crowded body leaves out of its sample, told before anything
-// of the other body is read.
+// This body's block tag and whether it is a ghost of a crowded cell, which
+// meets no loose body (collision_cache_layout.glsl).
+uint ownTag = 0u;
+bool ownGhost = false;
+
+// A loose pair a crowded body leaves out of its sample, or a ghost's, told
+// before anything of the other body is read.
 bool sampledOut(uint id, uint other, uint otherTag) {
+    otherTag = nodeTag(otherTag);
+    if (ownGhost && otherTag == 0u) return true;
     return ownKeep != KEEP_ALL && pairKey(id, other) > ownKeep && otherTag == 0u;
 }
 #endif
@@ -124,7 +140,10 @@ bool sampledOut(uint id, uint other, uint otherTag) {
 void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocityPixels,
     uint ownContacts, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
+    // A sleeping body stays where it is: this side takes the whole correction.
+    bool otherSleeps = anyAsleep && !sleepBodyAwake(otherId);
 #ifdef RIGID
+    partnerSleeps = otherSleeps;
     vec4 otherMaterial = materials[otherId];
     if (!hardPair(ownMaterial, otherMaterial)) return;
     // A crowded body solves the sample of its loose partners alone; its list
@@ -181,7 +200,7 @@ void accumulateContact(uint id, uint otherId, vec2 positionPixels, vec2 velocity
         vec4 pairOwn = materials[id];
         vec4 pairOther = materials[otherId];
 #endif
-        float share = massShare(pairOwn, pairOther);
+        float share = otherSleeps ? 1.0 : massShare(pairOwn, pairOther);
 
         // Symmetric weights keep every impulse equal and
         // opposite, including crowded multi-body contacts.
@@ -261,6 +280,18 @@ void main() {
     if (id >= uint(uCount)) return;
     if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
     vec4 body = inputBodies[id];
+    // A sleeping body stays as it is (sleep_layout.glsl): the pass carries it
+    // over to its output as it is, as the buffers alternate.
+    // Nobody sleeps this step: no body is checked (STATE_ASLEEP).
+    anyAsleep = uSleep != 0 && cache[stateOffset(STATE_ASLEEP)] == uSleepStamp;
+    if (anyAsleep && !sleepBodyAwake(id)) {
+        outputBodies[id] = body;
+        if (id == 0u) scheduleNextPass();
+        return;
+    }
+#ifdef RIGID
+    ownMaterial = materials[id];
+#endif
     vec2 positionPixels = body.xy * uViewport;
     vec2 velocityPixels = body.zw * uViewport;
     vec2 positionCorrection = vec2(0.0);
@@ -272,9 +303,11 @@ void main() {
         ? uTimeStep / float(max(adaptiveState[2], 1u)) : uSubstepDt;
 #ifdef RIGID
     driftDt = uAdaptive != 0 && uDriftDt != 0.0 ? effectiveSubstepDt : uDriftDt;
-    ownMaterial = materials[id];
     ownKeep = cache[cacheOffset(KEEP_PLANE, id)];
     ownKept = ownKeep != KEEP_ALL ? cache[cacheOffset(KEPT_PLANE, id)] : ownContacts;
+    uint ownNodeTag = nodes[id].tag;
+    ownTag = nodeTag(ownNodeTag);
+    ownGhost = ghostNode(ownNodeTag);
     if (ownKeep != KEEP_ALL && isMember(ownMaterial)) memberSample = float(ownKept) / float(SAMPLED_CONTACTS);
 #endif
     if (uWritePressure != 0 && uAdaptive != 0) {
@@ -315,6 +348,11 @@ void main() {
     }
     // A grid built in this pass holds the positions of this pass.
     bool fresh = neighbors == DIRECT_GRID;
+    // The cells of the walk: a member also walks the ghosts of crowded cells.
+    int cells = size.x * size.y;
+#ifdef RIGID
+    if (ownTag != 0u) cells *= 2;
+#endif
     // The next candidate or cell of the walk, and the body next in that cell.
     int next = 0;
     uint encoded = 0u;
@@ -337,13 +375,19 @@ void main() {
                 otherPosition = inputBodies[other].xy;
             } else {
                 if (encoded == 0u) {
-                    if (next >= size.x * size.y) {
+                    if (next >= cells) {
                         finished = true;
                         break;
                     }
-                    ivec2 cell = wrapCell(origin + ivec2(next % size.x, next / size.x));
+                    int index = next % (size.x * size.y);
+                    ivec2 cell = wrapCell(origin + ivec2(index % size.x, index / size.x));
+#ifdef RIGID
+                    uint head = next < size.x * size.y ? heads[cell.x + cell.y * uGridWidth] : ghostHeads[cell.x + cell.y * uGridWidth];
+#else
+                    uint head = heads[cell.x + cell.y * uGridWidth];
+#endif
                     next++;
-                    encoded = headBody(heads[cell.x + cell.y * uGridWidth], epoch);
+                    encoded = headBody(head, epoch);
                     continue;
                 }
                 other = encoded - 1u;
@@ -376,14 +420,20 @@ void main() {
 #endif
     wallContacts(id, positionPixels, velocityPixels, ownContacts, ownFriction, effectiveSubstepDt,
         positionCorrection, velocityCorrection, pressure);
+    // All this pass moved the body by, besides its drift: a body still
+    // being pushed apart from what it overlaps is not at rest (sleep below).
+    vec2 moved = positionCorrection;
 #ifdef RIGID
-    positionPixels += rigidShift + resolveGuards(positionPixels, driftDt);
+    vec2 settled = rigidShift + resolveGuards(positionPixels, driftDt);
+    positionPixels += settled;
+    moved += settled;
 #endif
     positionPixels += positionCorrection;
     velocityPixels += velocityCorrection + positionCorrection / effectiveSubstepDt;
 #ifdef RIGID
-    positionPixels += heldCorrection;
-    positionPixels += reliefMove(blockNormals);
+    vec2 relief = heldCorrection + reliefMove(blockNormals);
+    positionPixels += relief;
+    moved += relief;
 #endif
     vec2 position;
 #ifdef RIGID
@@ -400,6 +450,29 @@ void main() {
         position = positionPixels / uViewport;
     }
     outputBodies[id] = vec4(position, velocityPixels / uViewport);
+    if (uWritePressure != 0) {
+        // The step's last pass: a body that moved this step, or that nothing
+        // holds, keeps its tile awake for the next step (sleep_layout.glsl).
+        float radius = 0.5 * uDiameterPixels;
+        float slack = 0.05 * uDiameterPixels;
+        bool held = ownContacts > 0u || uBounded != 0 && (
+            any(lessThan(positionPixels, vec2(radius + slack))) ||
+            any(greaterThan(positionPixels, uViewport - radius - slack)));
+#ifdef RIGID
+        if (isMember(ownMaterial)) held = groups[groupOf(ownMaterial)].grid.w > 0;
+        if (fluidMaterial(ownMaterial)) held = true;
+#else
+        if (fluidBody(id)) held = true;
+#endif
+        vec2 displacement = velocityPixels * uTimeStep;
+        float settling = 0.005 * uDiameterPixels;
+        if (!held || dot(displacement, displacement) >= uSleepDisplacementSquared || dot(moved, moved) > settling * settling) {
+            sleepMarkActive(position);
+            // A body crossing a tile a step also wakes where it is heading,
+            // so what it meets there is awake before it arrives.
+            if (dot(displacement, displacement) >= uSleepTileMarkSquared) sleepMarkActive(position + displacement / uViewport);
+        }
+    }
 #ifdef RIGID
     storeFracture(id);
 #endif

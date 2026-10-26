@@ -10,7 +10,8 @@ class FpsOverlay(
 ) : AutoCloseable {
     private val controlText =
         "LMB drag: aim / fire\n" +
-            "RMB drag: glued rectangular block\n" +
+            "RMB drag: glued block\n" +
+            "M: block shape (pictures in masks)\n" +
             "1-9: bullet size step ${projectileConfig.digitDiameterStepPixels.toInt()} px\n" +
             "0: bullet size ${projectileConfig.maximumDiameterPixels.toInt()} px\n" +
             "+: bullet of ${projectileConfig.plusKeyBodyCount} bodies\n" +
@@ -35,6 +36,7 @@ class FpsOverlay(
     private var renderedTimeScaleBits = Long.MIN_VALUE
     private var renderedFutureSpeedBits = Long.MIN_VALUE
     private var renderedBlockBodies: Int? = -1
+    private var renderedBlockShape = ""
     private var renderedBounded = false
     private var renderedField = ""
     private var renderedMutualGravity = true
@@ -47,6 +49,7 @@ class FpsOverlay(
         timeScale: Double,
         futureProjectileSpeed: Double?,
         blockBodies: Int?,
+        blockShape: String,
         bounded: Boolean,
         field: String,
         mutualGravity: Boolean,
@@ -61,6 +64,7 @@ class FpsOverlay(
             timeScaleBits != renderedTimeScaleBits ||
             futureSpeedBits != renderedFutureSpeedBits ||
             blockBodies != renderedBlockBodies ||
+            blockShape != renderedBlockShape ||
             bounded != renderedBounded ||
             field != renderedField ||
             mutualGravity != renderedMutualGravity ||
@@ -72,13 +76,14 @@ class FpsOverlay(
             val block = blockBodies?.toString() ?: "-"
             val text = String.format(
                 Locale.ROOT,
-                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nBlock bodies: %s\nSpace: %s\nField: %s\nGravity: %s\nLiquid: %s",
+                "FPS: %.1f\nBodies: %d\nBullet bodies: %d\ndt: %.0f%%\nBullet speed: %s\nBlock bodies: %s\nBlock shape: %s\nSpace: %s\nField: %s\nGravity: %s\nLiquid: %s",
                 fps,
                 activeBodies,
                 projectileBodies,
                 timeScale * 100.0,
                 projectileSpeed,
                 block,
+                blockShape,
                 if (bounded) "walls" else "torus",
                 field,
                 if (mutualGravity) "on" else "off",
@@ -111,6 +116,7 @@ class FpsOverlay(
             renderedTimeScaleBits = timeScaleBits
             renderedFutureSpeedBits = futureSpeedBits
             renderedBlockBodies = blockBodies
+            renderedBlockShape = blockShape
             renderedBounded = bounded
             renderedField = field
             renderedMutualGravity = mutualGravity

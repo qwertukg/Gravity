@@ -1,0 +1,23 @@
+#version 430 core
+layout(local_size_x = 256) in;
+// Wakes every block with a member in an awake tile of the next step
+// (sleep_layout.glsl): a block moves as a whole, so it sleeps as a whole.
+// One workgroup per member tile of RigidBlocks.kt, after sleep_tiles.comp.
+#define SLEEP_TILES
+#include "sleep_layout.glsl"
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) readonly buffer Members { int members[]; };
+layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
+layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
+void main() {
+    uint tile = gl_WorkGroupID.x;
+    int group = tileGroups[tile];
+    ivec4 tiles = groups[group].tiles;
+    // A tile freed by a block that broke up: no group's any more.
+    if (int(tile) < tiles.x || int(tile) >= tiles.x + tiles.y) return;
+    int body = members[gl_GlobalInvocationID.x];
+    if (body < 0) return;
+    uint next = uSleepStamp + 1u;
+    if (tileAwake[sleepTile(bodies[body].xy)] == next) groupAwake[group] = next;
+}

@@ -17,7 +17,9 @@ import org.lwjgl.opengl.GL20.glLinkProgram
 import org.lwjgl.opengl.GL20.glShaderSource
 import org.lwjgl.opengl.GL20.glUniform1f
 import org.lwjgl.opengl.GL20.glUniform1i
+import org.lwjgl.opengl.GL30.glUniform1ui
 import org.lwjgl.opengl.GL20.glUniform2f
+import org.lwjgl.opengl.GL20.glUniform2i
 import org.lwjgl.opengl.GL20.glUseProgram
 
 class GlProgram private constructor(private val id: Int) : AutoCloseable {
@@ -28,6 +30,30 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
     }
 
     private val uniforms = HashMap<String, UniformState>()
+    private val inactive = HashSet<String>()
+
+    /** Whether the linked program uses uniform [name]. */
+    fun has(name: String): Boolean {
+        if (name in uniforms) return true
+        if (name in inactive) return false
+        val location = glGetUniformLocation(id, name)
+        if (location < 0) {
+            inactive += name
+            return false
+        }
+        uniforms[name] = UniformState(location)
+        return true
+    }
+
+    fun ivec2(name: String, x: Int, y: Int) {
+        val uniform = uniform(name)
+        if (!uniform.initialized || uniform.first != x || uniform.second != y) {
+            glUniform2i(uniform.location, x, y)
+            uniform.first = x
+            uniform.second = y
+            uniform.initialized = true
+        }
+    }
 
     fun use() {
         if (activeProgram != id) {
@@ -40,6 +66,15 @@ class GlProgram private constructor(private val id: Int) : AutoCloseable {
         val uniform = uniform(name)
         if (!uniform.initialized || uniform.first != value) {
             glUniform1i(uniform.location, value)
+            uniform.first = value
+            uniform.initialized = true
+        }
+    }
+
+    fun uint(name: String, value: Int) {
+        val uniform = uniform(name)
+        if (!uniform.initialized || uniform.first != value) {
+            glUniform1ui(uniform.location, value)
             uniform.first = value
             uniform.initialized = true
         }

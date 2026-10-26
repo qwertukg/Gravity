@@ -17,6 +17,8 @@ layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
 #endif
 #ifdef RIGID
 layout(std430, binding = 7) buffer CellTags { uint cellTags[]; };
+layout(std430, binding = 12) buffer GhostHeads { uint ghostHeads[]; };
+layout(std430, binding = 13) buffer CellCounts { uint cellCounts[]; };
 
 uint blockTag(vec4 material) {
     return material.z != 0.0 && material.w >= 0.0 ? uint(material.w) + 1u : 0u;
@@ -49,7 +51,23 @@ void main() {
 #ifdef RIGID
     tag = blockTag(material);
 #endif
-    uint previous = atomicExchange(heads[cell.x + cell.y * uGridWidth], (epoch << uint(uIdBits)) | (id + 1u));
+    uint index = uint(cell.x + cell.y * uGridWidth);
+#ifdef RIGID
+    // A loose body beyond the cap of its cell is a ghost (collision_cache_layout.glsl).
+    if (tag == 0u) {
+        // The first body of this build in the cell starts its count. Of the
+        // lanes that read the old count, one swap succeeds; the others fail
+        // against the new word and just count.
+        uint old = cellCounts[index];
+        if (old >> CELL_COUNT_BITS != epoch) atomicCompSwap(cellCounts[index], old, epoch << CELL_COUNT_BITS);
+        if ((atomicAdd(cellCounts[index], 1u) & ((1u << CELL_COUNT_BITS) - 1u)) >= CROWD_CELL_CAP) {
+            uint previousGhost = atomicExchange(ghostHeads[index], (epoch << uint(uIdBits)) | (id + 1u));
+            nodes[id] = GridNode(position, headBody(previousGhost, epoch), GHOST_BIT);
+            return;
+        }
+    }
+#endif
+    uint previous = atomicExchange(heads[index], (epoch << uint(uIdBits)) | (id + 1u));
     // The node also keeps the position, so traversing this grid in the same
     // pass needs one load per visited body instead of two.
     nodes[id] = GridNode(position, headBody(previous, epoch), tag);
