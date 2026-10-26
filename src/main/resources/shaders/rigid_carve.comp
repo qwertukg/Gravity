@@ -1,0 +1,121 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) readonly buffer Members { int members[]; };
+layout(std430, binding = 1) readonly buffer Rest { vec2 rest[]; };
+layout(std430, binding = 2) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    // Float bits: carving raises values with compare-and-swap.
+    uint shapes[];
+};
+// Per group, from rigid_fracture.comp: the shape's origin before the pass
+// moved it with the centre of mass, in .yz of the second vector.
+layout(std430, binding = 3) readonly buffer Shifts { vec4 shifts[]; };
+layout(std430, binding = 4) readonly buffer Carves { uint carveDispatch[3]; uint carveCount; Carve carves[]; };
+uniform float uDiameterPixels;
+
+// The shape is carved within this many nodes (two diameters) of a broken
+// member; the members left are looked for this many diameters out, beyond
+// which the field already says "free".
+const int CARVE_NODES = 4;
+const int CARVE_SEARCH_CELLS = 3;
+const float CARVE_REACH_DIAMETERS = 1.5;
+// GlueShape.FILL_DIAMETERS: the disc around each member that closes the solid.
+const float FILL_DIAMETERS = 0.6;
+
+RigidGroup rigid;
+vec2 origin;
+
+// The member slot whose rest centre lies in slot-grid cell [cell], or -1.
+int slotAt(ivec2 cell) {
+    ivec4 grid = rigid.grid;
+    if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, grid.yz))) return -1;
+    return int(uintBitsToFloat(shapes[grid.x + grid.y * grid.z + cell.x + cell.y * grid.y]));
+}
+
+// Raises the shape's value at [index] to at least [value]: carving only
+// ever takes solid away, and invocations carving overlapping windows keep the
+// highest value any of them finds. Whatever order they run in, a node ends
+// at the largest of the values carving finds for it, so the result does not
+// depend on scheduling.
+void raise(int index, float value) {
+    uint seen = shapes[index];
+    while (uintBitsToFloat(seen) < value) {
+        uint before = atomicCompSwap(shapes[index], seen, floatBitsToUint(value));
+        if (before == seen) break;
+        seen = before;
+    }
+}
+
+// The shape's field at node [offset] from the member at rest centre [point]
+// that broke off, as GlueShape makes it from the members left. Outside the
+// closed solid a node lies as far from it as the nearest member left. Inside,
+// its depth is no more than its distance to the hole: within d - fill of the
+// broken centre no member's fill reaches, as members lie a diameter apart. The
+// new face is thus a face: a body resting in the crater meets the members
+// left as it meets them anywhere on the outline, instead of a field still as
+// deep as the block was.
+//
+// That holds for a member that stood free. A member broken with members
+// still next to it ([enclosed]: in a crack, or a dent in a face) leaves a gap
+// narrower than a body everywhere but at the broken centres. Its walls stay
+// as deep as they were, and only the nodes nearer the broken member than any
+// left are raised: were they shallow, the pressure of an impact would squeeze
+// bodies into the gap, where bodies a block holds push each other apart by
+// position alone, more weakly than the walls push them in, until hundreds
+// share one point.
+void carve(vec2 point, bool enclosed, ivec2 offset) {
+    float diameter = uDiameterPixels;
+    float radius = 0.5 * diameter;
+    float fill = FILL_DIAMETERS * diameter;
+    float reach = CARVE_REACH_DIAMETERS * diameter;
+    ivec2 home = ivec2(floor((point - origin) / rigid.shape.z + 0.5));
+    ivec2 node = home + offset;
+    if (any(lessThan(node, ivec2(0))) || any(greaterThanEqual(node, rigid.grid.yz))) return;
+    vec2 at = origin + vec2(node) * rigid.shape.z;
+    float nearest = reach;
+    float nearestLeft = reach;
+    for (int cy = -CARVE_SEARCH_CELLS; cy <= CARVE_SEARCH_CELLS; cy++) {
+        for (int cx = -CARVE_SEARCH_CELLS; cx <= CARVE_SEARCH_CELLS; cx++) {
+            int slot = slotAt(node + ivec2(cx, cy));
+            if (slot < 0) continue;
+            float distance = length(rest[slot] - at);
+            nearest = min(nearest, distance);
+            if (members[slot] >= 0) nearestLeft = min(nearestLeft, distance);
+        }
+    }
+    int index = rigid.grid.x + node.x + node.y * rigid.grid.y;
+    if (enclosed) {
+        if (nearest < nearestLeft) raise(index, nearestLeft - radius);
+        return;
+    }
+    float value = nearestLeft - radius;
+    if (nearestLeft < fill) {
+        float depth = fill - radius - uintBitsToFloat(shapes[index]);
+        float hole = length(at - point) - (diameter - fill);
+        value = fill - radius - max(fill - nearestLeft, min(depth, hole));
+    }
+    raise(index, value);
+}
+
+// After rigid_fracture.comp, before rigid_shift.comp moves the rest frames:
+// one invocation per node of the window of every member that broke off this
+// pass, so the carving of a big impact spreads over the whole GPU instead of
+// one workgroup per block.
+void main() {
+    uint nodes = uint((2 * CARVE_NODES + 1) * (2 * CARVE_NODES + 1));
+    uint index = gl_GlobalInvocationID.x;
+    uint entry = index / nodes;
+    if (entry >= carveCount) return;
+    Carve carved = carves[entry];
+    rigid = groups[carved.group];
+    origin = shifts[2 * carved.group + 1].yz;
+    int node = int(index % nodes);
+    int side = 2 * CARVE_NODES + 1;
+    carve(carved.point, carved.enclosed != 0, ivec2(node % side, node / side) - CARVE_NODES);
+}

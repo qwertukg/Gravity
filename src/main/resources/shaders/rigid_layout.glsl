@@ -11,6 +11,7 @@ struct RigidGroup {
     vec4 bounds;   // rest-frame extent of the member centres: min x, max x, min y, max y (px)
     ivec4 guard;   // shift out of other blocks the pass asks for: +x, +y, -x, -y (1/GUARD_SCALE px)
     ivec4 support; // shift off bodies wedged against a wall, likewise
+    vec4 pose;     // centre (px) and rotation after the drift of the current collision pass (rigidPose)
 };
 // The groups buffer holds this many groups, then the contact memory, then the
 // shape values (GlueShape).
@@ -34,15 +35,46 @@ const int IMPACT_IDLE_PASSES = 4;
 // member of a packing), then its hull. Per member slot: vec4(strength factor,
 // breaking: 0, or 1 + ejection speed (px/s); impact direction in the rest
 // frame). Per group: uvec4(crack budget in 1/FRACTURE_BUDGET_SCALE members,
-// nucleus (rank << 24 | slot), members chipped off, CHANGED_* bits since the
-// CPU last looked).
+// nucleus (rank << 24 | slot), members chipped off, the passes it lost
+// members in (low 16 bits) and of them those that may have split it (high
+// 16 bits), counted on and never cleared, so the CPU sees what came after its
+// last look whenever it looks).
 const float FRACTURE_BUDGET_SCALE = 16.0;
-const uint CHANGED_LOST = 1u;
-const uint CHANGED_MAY_SPLIT = 3u;
+const uint LOST_PASS = 1u;
+const uint SPLIT_PASS = 1u << 16;
+// A slot of a piece whose member broke off the parent after the CPU's look
+// (rigid_adopt.comp PIECE): counted in the piece until rigid_fracture.comp
+// lets it go, unlike an empty slot (-1).
+const int MEMBER_GONE = -2;
+// A list entry rigid_fracture.comp found let go already.
+const uint ENTRY_SPENT = 0xffffffffu;
 // Most members one contact record may pay for: keeps the sums in range.
 const float MAXIMUM_RECORD_BUDGET = 4096.0;
 const uint NUCLEUS_SLOT_MASK = 0xffffffu;
+// Members to break off a pass are listed per block, in its own member slots
+// (from tiles.x * 256): a block lists each of its slots at most once, so its
+// list fits there, and a pass visits its own list alone. Members the CPU glued
+// into a piece of their own follow, from MOVED_BASE on, the same way.
+// (RigidBlocks.brokenList: the counts of both per block, then the lists.)
+// A member broken off this pass, to be carved out of its block's shape
+// (rigid_carve.comp): its rest centre, its block, and whether members are
+// left next to it.
+struct Carve {
+    vec2 point;
+    int group;
+    int enclosed;
+};
 
 float cross2(vec2 a, vec2 b) {
     return a.x * b.y - a.y * b.x;
+}
+
+// Pose of a block [dt] after its last projection: its members have drifted
+// with its rigid motion since. The collision passes take it at their drift
+// from RigidGroup.pose, set once a pass for every block.
+vec4 rigidPose(RigidGroup rigid, float dt) {
+    float angle = rigid.scalars.x * dt;
+    vec2 rotation = rigid.motion.zw;
+    return vec4(rigid.frame.zw + rigid.motion.xy * dt,
+        rotation.x * cos(angle) - rotation.y * sin(angle), rotation.y * cos(angle) + rotation.x * sin(angle));
 }

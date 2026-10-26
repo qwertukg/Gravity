@@ -11,7 +11,16 @@ layout(std430, binding = 5) readonly buffer AdaptiveState { uint adaptiveState[]
 // Liquid mode tags the tiles of solid bodies. A separate variant: drivers may
 // load the material even behind a uniform branch, which slows the hard mode.
 layout(std430, binding = 6) writeonly buffer SolidTiles { uint solidTiles[]; };
+#endif
+#if defined(LIQUID) || defined(RIGID)
 layout(std430, binding = 8) readonly buffer Materials { vec4 materials[]; };
+#endif
+#ifdef RIGID
+layout(std430, binding = 7) buffer CellTags { uint cellTags[]; };
+
+uint blockTag(vec4 material) {
+    return material.z != 0.0 && material.w >= 0.0 ? uint(material.w) + 1u : 0u;
+}
 #endif
 uniform int uCount;
 uniform int uGridWidth;
@@ -30,11 +39,25 @@ void main() {
     references[id] = position;
     ivec2 cell = ivec2(floor(position * vec2(uGridWidth, uGridHeight)));
     cell = clamp(cell, ivec2(0), ivec2(uGridWidth - 1, uGridHeight - 1));
+#if defined(LIQUID) || defined(RIGID)
+    vec4 material = materials[id];
+#endif
 #ifdef LIQUID
-    if (materials[id].z != 0.0) solidTiles[solidTile(cell)] = epoch;
+    if (material.z != 0.0) solidTiles[solidTile(cell)] = epoch;
+#endif
+    uint tag = 0u;
+#ifdef RIGID
+    tag = blockTag(material);
 #endif
     uint previous = atomicExchange(heads[cell.x + cell.y * uGridWidth], (epoch << uint(uIdBits)) | (id + 1u));
     // The node also keeps the position, so traversing this grid in the same
     // pass needs one load per visited body instead of two.
-    nodes[id] = GridNode(position, headBody(previous, epoch), 0u);
+    nodes[id] = GridNode(position, headBody(previous, epoch), tag);
+#ifdef RIGID
+    // Each body meets the one before it in its cell's list: if every one
+    // shares the tag of the one before, the whole cell does.
+    uint before = headBody(previous, epoch);
+    uint code = before != 0u && blockTag(materials[before - 1u]) != tag ? CELL_MIXED : tag;
+    atomicMax(cellTags[cell.x + cell.y * uGridWidth], epoch << CELL_TAG_BITS | code);
+#endif
 }

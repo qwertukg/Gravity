@@ -93,6 +93,24 @@ tasks.register<JavaExec>("collisionBenchmark") {
     jvmArgs("-Xms512m", "-Xmx2g")
 }
 
+tasks.register<JavaExec>("blockBenchmark") {
+    description = "Measure breaking blocks struck fast on the GPU without opening a visible window."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.BlockBenchmark"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx4g")
+}
+
+tasks.register<JavaExec>("fractureEquivalence") {
+    description = "Record or compare one block fracture pass on fixed impacts."
+    group = "verification"
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "dev.gravity.FractureEquivalence"
+    dependsOn(tasks.testClasses)
+    jvmArgs("-Xms512m", "-Xmx2g")
+}
+
 tasks.register<JavaExec>("liquidBenchmark") {
     description = "Measure liquid mode physics on the GPU without opening a visible window."
     group = "verification"

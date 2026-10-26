@@ -306,6 +306,7 @@ class GravityPipeline(
         width = viewportWidth,
         height = viewportHeight,
         bind = ::bind,
+        profiler = profiler,
     ).also { blocks ->
         neighborCache?.let { blocks.invalidates(it.cacheBuffer, it.populationWord) }
     }
@@ -930,6 +931,8 @@ class GravityPipeline(
         )
         collisionClear.int("uSubstepIndex", substepIndex ?: -1)
         collisionClear.int("uRigidGroups", rigidBlocks.size)
+        collisionClear.float("uDriftDt", driftDt)
+        collisionClear.float("uTimeStep", config.collisions.timeStep)
         dispatchCollisionBodies(activeBodies, substepIndex)
         barrier()
         profiler?.end(GpuStage.COLLISION_CLEAR)

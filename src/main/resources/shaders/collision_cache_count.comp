@@ -8,6 +8,9 @@ layout(std430, binding = 3) writeonly buffer ContactCounts { uint contactCounts[
 layout(std430, binding = 4) readonly buffer AdaptiveState { uint adaptiveState[]; };
 layout(std430, binding = 5) buffer Cache { uint cache[]; };
 layout(std430, binding = 6) readonly buffer SolidTiles { uint solidTiles[]; };
+#ifdef RIGID
+layout(std430, binding = 7) readonly buffer CellTags { uint cellTags[]; };
+#endif
 uniform int uCount;
 uniform int uGridWidth;
 uniform int uGridHeight;
@@ -46,21 +49,44 @@ float pairDistanceSquared(uint id, vec2 position, uint other, vec2 otherPosition
 bool held = false;
 
 void countContact(uint id, uint other, float distanceSquared, inout uint contacts) {
+#ifdef RIGID
+    vec4 otherMaterial = materials[other];
+    if (!hardPair(ownMaterial, otherMaterial)) return;
+    if (distanceSquared < contactReachSquared(ownMaterial, otherMaterial)) {
+#else
     if (!hardPair(id, other)) return;
     if (distanceSquared < contactReachSquared(id, other)) {
+#endif
         if (contacts < CONTACT_SLOTS) cache[cacheOffset(2u + NEIGHBOR_SLOTS + contacts, id)] = other;
         contacts++;
 #ifdef RIGID
         // Each body sees the pair: the member of the lower block counts it,
         // or the member when the other is loose.
-        int group = groupOf(id);
-        int otherGroup = groupOf(other);
+        int group = groupOf(ownMaterial);
+        int otherGroup = groupOf(otherMaterial);
         if (group >= 0 && otherGroup < 0) countLooseContact(group);
         else if (group >= 0 && group < otherGroup) countPartnerContact(group, otherGroup);
         if (group < 0 && otherGroup >= 0) held = true;
 #endif
     }
 }
+
+#ifdef RIGID
+// Whether every body in the stencil of the retained grid is a member of the
+// block tagged [tag] (collision_cache_layout.glsl): nothing to count there.
+bool ownBlockOnly(ivec2 home, int radius, uint epoch, uint tag) {
+    ivec2 origin = stencilOrigin(home, radius);
+    ivec2 size = stencilSize(radius);
+    for (int y = 0; y < size.y; y++) {
+        for (int x = 0; x < size.x; x++) {
+            ivec2 cell = wrapCell(origin + ivec2(x, y));
+            uint cellTag = cellTags[cell.x + cell.y * uGridWidth];
+            if (cellTag >> CELL_TAG_BITS == epoch && (cellTag & CELL_MIXED) != tag) return false;
+        }
+    }
+    return true;
+}
+#endif
 
 // Whether a solid body may sit in the stencil of the retained grid.
 bool solidNear(ivec2 home, int radius, uint epoch) {
@@ -92,6 +118,10 @@ void main() {
         cache[stateOffset(STATE_REBUILDS)]++;
     }
     vec2 position = bodies[id].xy;
+#ifdef RIGID
+    ownMaterial = materials[id];
+    uint ownTag = blockTag(ownMaterial);
+#endif
     uint neighbors = rebuild ? 0u : cache[cacheOffset(0u, id)];
     uint contacts = 0u;
     if (!rebuild && neighbors <= NEIGHBOR_SLOTS) {
@@ -113,6 +143,9 @@ void main() {
         int radius = direct ? uNeighborCellRadius : uSearchRadius;
         // Nothing to find: the stencil is left out and the list stays empty.
         bool skip = uNoHardPairs != 0 || fluidBody(id) && !solidNear(home, radius, epoch);
+#ifdef RIGID
+        skip = skip || ownTag != 0u && ownBlockOnly(home, radius, epoch, ownTag);
+#endif
         ivec2 size = skip ? ivec2(0) : stencilSize(radius);
         for (int y = 0; y < size.y; y++) {
             for (int x = 0; x < size.x; x++) {
@@ -121,7 +154,13 @@ void main() {
                 while (encoded != 0u) {
                     uint other = encoded - 1u;
                     GridNode node = nodes[other];
-                    if (other != id) {
+#ifdef RIGID
+                    // Members of one block never touch: not even read.
+                    bool sameBlock = ownTag != 0u && node.tag == ownTag;
+#else
+                    bool sameBlock = false;
+#endif
+                    if (other != id && !sameBlock) {
                         // A grid built in this pass holds exactly the positions
                         // read here; a retained grid holds older ones.
                         vec2 otherPosition = rebuild ? node.position : bodies[other].xy;
@@ -129,7 +168,11 @@ void main() {
                         // In liquid mode only hard pairs are candidates, so
                         // toggling it must rebuild the lists.
                         if (rebuild && !direct) {
+#ifdef RIGID
+                            if (distanceSquared <= uCandidateRadiusSquared && hardPair(ownMaterial, materials[other])) {
+#else
                             if (distanceSquared <= uCandidateRadiusSquared && hardPair(id, other)) {
+#endif
                                 if (neighbors < NEIGHBOR_SLOTS) cache[cacheOffset(2u + neighbors, id)] = other;
                                 neighbors++;
                             }
@@ -146,7 +189,7 @@ void main() {
     // scan, global sort or truncated list is needed.
     contactCounts[id] = held ? contacts | HELD_BIT : contacts;
 #ifdef RIGID
-    int group = groupOf(id);
+    int group = groupOf(ownMaterial);
     if (group >= 0) countWallContacts(group, position * uViewport);
 #endif
     // Cheap density sampling steers the NEXT pass to the ordinary grid when

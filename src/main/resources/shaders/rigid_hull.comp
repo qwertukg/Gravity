@@ -1,0 +1,29 @@
+#version 430 core
+layout(local_size_x = 256) in;
+#include "rigid_layout.glsl"
+layout(std430, binding = 0) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    float shapes[];
+};
+uniform int uGroup;
+uniform int uPoints;
+// The shape's origin in the look the CPU wrote the hull from
+// (RigidBlocks.writeHull): the rest frame has moved with it since.
+uniform vec2 uOrigin;
+
+// Moves a hull the CPU wrote in the rest frame of a look a step or two old
+// into the frame of now, as rigid_fracture.comp moved the frame meanwhile.
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uint(uPoints)) return;
+    RigidGroup rigid = groups[uGroup];
+    vec2 shift = rigid.shape.xy - uOrigin;
+    int at = rigid.tiles.z + 2 * int(index);
+    shapes[at] += shift.x;
+    shapes[at + 1] += shift.y;
+}

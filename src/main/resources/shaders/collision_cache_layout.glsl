@@ -23,11 +23,13 @@ uint stateOffset(uint word) {
     return CACHE_PLANES * uint(uCapacity) + word;
 }
 
-// Grid node of the last build: its position and the next body in its cell.
+// Grid node of the last build: its position, the next body in its cell, and
+// in RIGID builds its block + 1 (blockTag), so a pass skips the members of
+// its own block without reading their materials.
 struct GridNode {
     vec2 position;
     uint next;
-    uint unused;
+    uint tag;
 };
 
 // Heads hold (epoch << uIdBits) | (id + 1). A head written by an older build is
@@ -37,6 +39,12 @@ uniform int uIdBits;
 uint headBody(uint head, uint epoch) {
     return (head >> uint(uIdBits)) == epoch ? head & ((1u << uint(uIdBits)) - 1u) : 0u;
 }
+
+// RIGID builds also tag each grid cell with its epoch << CELL_TAG_BITS and
+// the block tag its bodies share, or CELL_MIXED: a member whose stencil holds
+// only cells of its own block (or empty ones) has no hard pair to look for.
+const uint CELL_TAG_BITS = 9u;
+const uint CELL_MIXED = 511u;
 
 // Liquid mode: a fluid body only makes hard pairs with solid bodies. Every
 // build tags the tiles of SOLID_TILE x SOLID_TILE cells that hold a solid body

@@ -25,7 +25,12 @@ void main() {
     if (uAdaptive != 0 && uSubstepIndex >= 0 && uint(uSubstepIndex) >= adaptiveState[2]) return;
     uint id = gl_GlobalInvocationID.x;
     // The count pass adds up the contacts of every block afresh.
-    if (id < uint(uRigidGroups)) groups[id].grid.w = 0;
+    if (id < uint(uRigidGroups)) {
+        groups[id].grid.w = 0;
+        // The pose the solve meets every block in (collision_rigid.glsl).
+        float poseDt = uAdaptive != 0 && uDriftDt != 0.0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
+        groups[id].pose = rigidPose(groups[id], poseDt);
+    }
     if (id >= uint(uCount)) return;
     // The previous solve scheduled this pass. Only a changed population is
     // unknown there: bodies are inserted and reordered between steps.

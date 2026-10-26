@@ -1,5 +1,6 @@
 package dev.gravity
 
+import java.util.stream.IntStream
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
@@ -93,7 +94,9 @@ class GlueShape private constructor(
             val reach = margin + fill
             val span = ceil(reach / diameter).toInt()
             val nearest = DoubleArray(width * height) { reach }
-            for (y in 0 until height) {
+            // Rows are independent: a large shape takes them on all cores.
+            val rows = IntStream.range(0, height)
+            (if (width.toLong() * height >= PARALLEL_NODES) rows.parallel() else rows).forEach { y ->
                 val nodeY = minY + y * cell
                 val by = bucketY(nodeY)
                 for (x in 0 until width) {
@@ -185,6 +188,9 @@ class GlueShape private constructor(
             }
             return chain.toIntArray()
         }
+
+        /** Nodes from which a shape's distances are found on all cores. */
+        private const val PARALLEL_NODES = 1 shl 15
 
         /** Height of the rows hull() looks for the ends of, px. */
         private const val ROW_PIXELS = 0.01f

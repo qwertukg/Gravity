@@ -374,6 +374,6 @@ class BlockDynamicsTest {
 
     private companion object {
         /** RigidGroup of rigid_layout.glsl in floats. */
-        const val GROUP_FLOATS = 36
+        const val GROUP_FLOATS = 40
     }
 }

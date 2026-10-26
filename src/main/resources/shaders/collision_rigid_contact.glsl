@@ -120,12 +120,12 @@ vec2 resolveGuards(vec2 positionPixels, float driftDt) {
 // A pair with at least one member. The shape is the member's block; between
 // two blocks, the lower-numbered one's. Both bodies of the pair evaluate the
 // same expressions in the same order, so their impulses are equal and opposite.
-void rigidContact(uint id, uint otherId, vec2 ownPixels, vec2 ownVelocity, vec2 otherPixels,
+void rigidContact(uint id, uint otherId, vec4 otherMaterial, vec2 ownPixels, vec2 ownVelocity, vec2 otherPixels,
     vec2 otherVelocity, uint ownContacts, uint otherContacts, float driftDt,
     float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
-    int ownGroup = groupOf(id);
-    int otherGroup = groupOf(otherId);
+    int ownGroup = groupOf(ownMaterial);
+    int otherGroup = groupOf(otherMaterial);
     bool otherShape = ownGroup < 0 || (otherGroup >= 0 && otherGroup < ownGroup);
     int shapeGroup = otherShape ? otherGroup : ownGroup;
     int probeGroup = otherShape ? ownGroup : otherGroup;
@@ -142,7 +142,9 @@ void rigidContact(uint id, uint otherId, vec2 ownPixels, vec2 ownVelocity, vec2 
     // much lower (GlueShape.RIPPLE_DIAMETERS), or it would jostle the liquid
     // resting there pass after pass.
     float outline = outlineValue();
-    bool fluidProbe = fluidBody(probe);
+    vec4 probeMaterial = otherShape ? ownMaterial : otherMaterial;
+    vec4 memberMaterial = otherShape ? otherMaterial : ownMaterial;
+    bool fluidProbe = fluidMaterial(probeMaterial);
     float guardLevel = fluidProbe ? outline - RIPPLE_DIAMETERS * uDiameterPixels : outline;
     float probeRadius = fluidProbe ? guardLevel : 0.5 * uDiameterPixels;
     // Blocks within an impact meet a little beyond touching (meetsWall).
@@ -152,8 +154,6 @@ void rigidContact(uint id, uint otherId, vec2 ownPixels, vec2 ownVelocity, vec2 
     float penetration = shapeContact(shapeGroup, probePixels, probeVelocity, probeRadius, slop, driftDt, normal);
     if (normal == vec2(0.0) || penetration <= -slop) return;
     vec2 point = probePixels - normal * probeRadius;
-    vec4 probeMaterial = materials[probe];
-    vec4 memberMaterial = materials[member];
     // Inverse masses along a direction with mass splitting: a loose body
     // splits by its own contact count, a block by its block's.
     float probeShare = probeGroup >= 0 ? partnerShare(probeGroup, shapeGroup) / probeMaterial.x

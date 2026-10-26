@@ -7,17 +7,26 @@ layout(std430, binding = 2) buffer Rest { vec2 rest[]; };
 layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
 layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
 layout(std430, binding = 5) readonly buffer Shifts { vec4 shifts[]; };
-layout(std430, binding = 6) buffer Broken { uint brokenCount; uint movedCount; uint broken[]; };
+layout(std430, binding = 6) buffer Broken { uint brokenCounts[MAXIMUM_GROUPS]; uint movedCounts[MAXIMUM_GROUPS]; };
+layout(std430, binding = 7) buffer Carves { uint carveDispatch[3]; uint carveCount; };
+// Spent with this pass; rigid_reduce.comp resets this dispatch's own.
+layout(std430, binding = 8) buffer FractureDispatch { uint fractureDispatch[3]; };
 uniform vec2 uViewport;
 
 // After rigid_fracture.comp: the members of a block that lost some follow
 // its new centre of mass, x = c + R r0 with r0 about it, and take their
-// share of its recoil, v += dV + dw x R r0. The broken lists are spent.
+// share of its recoil, v += dV + dw x R r0. The broken lists, and the
+// list rigid_carve.comp carved, are spent.
 void main() {
     uint member = gl_GlobalInvocationID.x;
+    if (member < uint(MAXIMUM_GROUPS)) {
+        brokenCounts[member] = 0u;
+        movedCounts[member] = 0u;
+    }
     if (member == 0u) {
-        brokenCount = 0u;
-        movedCount = 0u;
+        fractureDispatch[0] = 0u;
+        carveDispatch[0] = 0u;
+        carveCount = 0u;
     }
     int group = tileGroups[gl_WorkGroupID.x];
     vec4 shift = shifts[2 * group];

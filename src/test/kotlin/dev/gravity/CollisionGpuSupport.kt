@@ -130,6 +130,8 @@ internal object CollisionGpuAccess {
         return result
     }
 
+    fun rigidBlocks(pipeline: GravityPipeline): RigidBlocks = field(pipeline, "rigidBlocks") as RigidBlocks
+
     fun rebuilds(pipeline: GravityPipeline): Int = cacheState(pipeline)[CollisionNeighborCache.STATE_REBUILDS]
 
     /** Broad phase scheduled for the NEXT pass by the last solve. */

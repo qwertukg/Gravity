@@ -20,11 +20,14 @@ import org.lwjgl.opengl.GL32.glClientWaitSync
 import org.lwjgl.opengl.GL32.glDeleteSync
 import org.lwjgl.opengl.GL32.glFenceSync
 import org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT
+import org.lwjgl.opengl.GL42.GL_COMMAND_BARRIER_BIT
 import org.lwjgl.opengl.GL42.glMemoryBarrier
+import org.lwjgl.opengl.GL43.GL_DISPATCH_INDIRECT_BUFFER
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BARRIER_BIT
 import org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER
 import org.lwjgl.opengl.GL43.glClearBufferData
 import org.lwjgl.opengl.GL43.glDispatchCompute
+import org.lwjgl.opengl.GL43.glDispatchComputeIndirect
 import org.lwjgl.system.MemoryUtil.memAlloc
 import org.lwjgl.system.MemoryUtil.memFree
 import java.nio.ByteBuffer
@@ -70,6 +73,7 @@ internal class RigidBlocks(
     private val width: Int,
     private val height: Int,
     private val bind: (Int, Int) -> Unit,
+    private val profiler: GpuProfiler? = null,
 ) : AutoCloseable {
     private val memberCapacity = (capacity + MAXIMUM_GROUPS * (TILE - 1) + TILE - 1) / TILE * TILE
     private val tileCapacity = memberCapacity / TILE
@@ -84,27 +88,44 @@ internal class RigidBlocks(
      */
     val groups = buffer(SHAPES_OFFSET + shapeCapacity * Float.SIZE_BYTES)
     private val partials = buffer(tileCapacity.toLong() * 8 * Float.SIZE_BYTES)
+    /** Tiles of each group reduced this pass: the last one fits the group (rigid_reduce.comp). */
+    private val tilesDone = buffer(MAXIMUM_GROUPS * Int.SIZE_BYTES.toLong())
+    /** Indirect dispatches of rigid_fracture.comp and rigid_shift.comp, set by a pass that struck a block. */
+    private val fractureDispatch = buffer(6L * Int.SIZE_BYTES)
     /** The hardest impact of a pass on each member body (collision_rigid_contact.glsl). */
     val fractures = buffer(capacity.toLong() * 4 * Float.SIZE_BYTES)
     private val fractureSlots = buffer(memberCapacity.toLong() * 4 * Float.SIZE_BYTES)
     private val fractureGroups = buffer(FRACTURE_GROUP_BYTES)
-    /** Where [fractureGroups] is copied after a step, for the CPU to read without waiting. */
+    /**
+     * Where [fractureGroups], the groups and their member lists are copied
+     * after a step, for the CPU to look at without waiting ([afterStep]).
+     */
     private val fractureCopy = buffer(FRACTURE_GROUP_BYTES)
+    private val stateCopy = buffer(MAXIMUM_GROUPS.toLong() * GROUP_BYTES)
+    private val membersCopy = buffer(memberCapacity.toLong() * Int.SIZE_BYTES)
     /**
      * Members to break off this pass and members glued into a piece of their
-     * own: two counts, then (group << 24 | slot) each, the second list from
-     * [memberCapacity] on (rigid_fracture.comp).
+     * own, per group: both counts of every group, then the slots each group
+     * lists from its first member slot on, the second list [memberCapacity]
+     * further (rigid_layout.glsl).
      */
-    private val brokenList = buffer((2L + 2L * memberCapacity) * Int.SIZE_BYTES)
+    private val brokenList = buffer((2L * MAXIMUM_GROUPS + 2L * memberCapacity) * Int.SIZE_BYTES)
     /** Each group's move of its rest frame and recoil, for rigid_shift.comp. */
     private val fractureShifts = buffer(MAXIMUM_GROUPS * 2L * 4 * Float.SIZE_BYTES)
+    /**
+     * The members broken off a pass, for rigid_carve.comp: its indirect
+     * dispatch (three ints), their count, then four values each.
+     */
+    private val carves = buffer(CARVES_HEADER_BYTES + memberCapacity.toLong() * 4 * Float.SIZE_BYTES)
     private val reduce = GlProgram.compute("/shaders/rigid_reduce.comp")
-    private val finalize = GlProgram.compute("/shaders/rigid_finalize.comp")
     private val apply = GlProgram.compute("/shaders/rigid_apply.comp")
     private val fractureApply = GlProgram.compute("/shaders/rigid_apply.comp", "FRACTURE")
     private val fracture = GlProgram.compute("/shaders/rigid_fracture.comp")
+    private val carve = GlProgram.compute("/shaders/rigid_carve.comp")
     private val shift = GlProgram.compute("/shaders/rigid_shift.comp")
     private val adopt = GlProgram.compute("/shaders/rigid_adopt.comp")
+    private val adoptPiece = GlProgram.compute("/shaders/rigid_adopt.comp", "PIECE")
+    private val hullShift = GlProgram.compute("/shaders/rigid_hull.comp")
     private val remapProgram = GlProgram.compute("/shaders/rigid_remap.comp")
     /** Blocks can break. */
     val breakable = strength.isFinite()
@@ -118,9 +139,20 @@ internal class RigidBlocks(
     private val shapeSpace = RangeAllocator(shapeCapacity)
     private var passes = 0
     private var copyFence = 0L
+    /** Copies taken so far; the groups, tiles and copy of the latest (snapshot). */
+    private var snapshots = 0
+    private var snapshotGroups = 0
+    private var snapshotTiles = 0
+    /** Each group's change counts (rigid_layout.glsl) as of the last look at it. */
+    private val seenChanges = IntArray(MAXIMUM_GROUPS)
     private var stepsSinceRefresh = 0
     private var cacheBuffer = fractureCopy
     private var cacheInvalidation = -1
+    /** CPU time spent splitting blocks ([refresh]), ns, and the looks taken: diagnostics. */
+    var splitNanos = 0L
+        private set
+    var splits = 0
+        private set
 
     val isEmpty get() = groupCount == 0
     /** Group indices used so far: the collision passes cover all of them. */
@@ -149,9 +181,14 @@ internal class RigidBlocks(
         val rowSlots: IntArray,
         /** Slots on the hull; empty if unknown. */
         var hull: IntArray,
+        /** The first copy (snapshot) the group is in. */
+        val since: Int,
     )
 
-    /** A member to list: its body, rest offset (px) and strength factor. */
+    /**
+     * A member to list: its body (for a piece, the slot of the block it came
+     * from: rigid_adopt.comp PIECE), rest offset (px) and strength factor.
+     */
     private class Member(val body: Int, val x: Float, val y: Float, val strength: Float)
 
     /** A group's rigid motion: centre (px), velocity (px/s), rotation and spin (rad/s). */
@@ -167,24 +204,30 @@ internal class RigidBlocks(
 
     init {
         require(memberCapacity <= NUCLEUS_SLOTS) { "capacity exceeds the member slots of a crack nucleus" }
-        listOf(reduce, finalize, apply, fractureApply, fracture, shift).forEach { program ->
+        listOf(reduce, apply, fractureApply, fracture, shift, adoptPiece).forEach { program ->
             program.use()
             program.vec2("uViewport", width.toFloat(), height.toFloat())
         }
-        finalize.use()
-        finalize.float("uBodyRadius", 0.5f * contactDiameterPixels)
-        finalize.float("uSubstepDt", substepSeconds)
-        finalize.float("uBlockFriction", friction)
+        adoptPiece.int("uMovedBase", memberCapacity)
+        reduce.use()
+        reduce.float("uBodyRadius", 0.5f * contactDiameterPixels)
+        reduce.float("uSubstepDt", substepSeconds)
+        reduce.float("uBlockFriction", friction)
         fractureApply.use()
         fractureApply.float("uFractureSpeed", strength)
         fracture.use()
         fracture.float("uDiameterPixels", contactDiameterPixels)
         fracture.int("uMovedBase", memberCapacity)
+        carve.use()
+        carve.float("uDiameterPixels", contactDiameterPixels)
         // The contact memory starts empty, and so do the impact records.
-        intArrayOf(groups, fractures, fractureGroups, fractureCopy, brokenList, fractureShifts).forEach {
+        intArrayOf(groups, tilesDone, fractures, fractureGroups, fractureCopy, brokenList, fractureShifts).forEach {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, it)
             glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, null as ByteBuffer?)
         }
+        // No carving yet: an empty dispatch of one row and layer.
+        writeInts(carves, 0L, intArrayOf(0, 1, 1, 0))
+        writeInts(fractureDispatch, 0L, intArrayOf(0, 1, 1, 0, 1, 1))
     }
 
     /**
@@ -213,6 +256,7 @@ internal class RigidBlocks(
         val listed = offsets.mapIndexed { index, offset ->
             Member(firstBody + index, offset.x, offset.y, weibullStrength(random))
         }
+        val prepared = prepare(listed, shape)
         val place = Placement(
             firstTile = tileSpace.allocate(tilesFor(offsets.size).toLong())!!.toInt(),
             tiles = tilesFor(offsets.size),
@@ -220,8 +264,8 @@ internal class RigidBlocks(
             values = regionValues(shape),
         )
         // The bodies are uploaded with velocity; the first projection fits it.
-        upload(group, place, listed, shape, Motion(centerX, centerY, 0f, 0f, 1f, 0f, 0f))
-        adoptGroup(group, place, materials = null)
+        upload(group, place, prepared, Motion(centerX, centerY, 0f, 0f, 1f, 0f, 0f))
+        adoptGroup(adopt, group, place, materials = null)
     }
 
     /**
@@ -231,24 +275,21 @@ internal class RigidBlocks(
      */
     fun project(bodies: Int, materials: Int, bounded: Boolean, contacts: Boolean) {
         if (isEmpty) return
+        profiler?.begin(GpuStage.RIGID_PROJECTION)
         val boundedFlag = if (bounded) 1 else 0
         reduce.use()
         reduce.int("uBounded", boundedFlag)
+        reduce.int("uContactPass", if (contacts) 1 else 0)
+        reduce.int("uGroupCount", groupCount)
         bind(0, bodies)
         bind(1, members)
         bind(2, rest)
         bind(3, tileGroups)
         bind(4, groups)
         bind(5, partials)
+        bind(6, tilesDone)
+        bind(7, fractureDispatch)
         glDispatchCompute(tileCount, 1, 1)
-        barrier()
-
-        finalize.use()
-        finalize.int("uBounded", boundedFlag)
-        finalize.int("uContactPass", if (contacts) 1 else 0)
-        bind(0, partials)
-        bind(1, groups)
-        glDispatchCompute(groupCount, 1, 1)
         barrier()
 
         val fracturing = breakable && contacts
@@ -261,18 +302,27 @@ internal class RigidBlocks(
         bind(3, tileGroups)
         bind(4, groups)
         if (fracturing) {
+            snap.int("uGroupCount", groupCount)
+            snap.int("uTileCount", tileCount)
             bind(5, fractures)
             bind(6, fractureSlots)
             bind(7, fractureGroups)
             bind(8, brokenList)
+            bind(9, fractureDispatch)
         }
         glDispatchCompute(tileCount, 1, 1)
-        barrier()
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT or GL_COMMAND_BARRIER_BIT)
         if (fracturing) fracturePass(bodies, materials)
+        profiler?.end(GpuStage.RIGID_PROJECTION)
     }
 
-    /** Lets go of what broke off each block, carves its shape and moves its centre (rigid_fracture.comp). */
+    /**
+     * Lets go of what broke off each block, carves its shape and moves its
+     * centre (rigid_fracture.comp): dispatched indirectly, so a pass that
+     * struck nothing costs no workgroup.
+     */
     private fun fracturePass(bodies: Int, materials: Int) {
+        profiler?.begin(GpuStage.RIGID_FRACTURE)
         fracture.use()
         fracture.int("uSeed", passes++)
         fracture.int("uCacheInvalidation", cacheInvalidation)
@@ -286,7 +336,19 @@ internal class RigidBlocks(
         bind(7, cacheBuffer)
         bind(8, brokenList)
         bind(9, fractureShifts)
-        glDispatchCompute(groupCount, 1, 1)
+        bind(10, carves)
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, fractureDispatch)
+        glDispatchComputeIndirect(0L)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT or GL_COMMAND_BARRIER_BIT)
+
+        carve.use()
+        bind(0, members)
+        bind(1, rest)
+        bind(2, groups)
+        bind(3, fractureShifts)
+        bind(4, carves)
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, carves)
+        glDispatchComputeIndirect(0L)
         barrier()
 
         shift.use()
@@ -297,8 +359,12 @@ internal class RigidBlocks(
         bind(4, groups)
         bind(5, fractureShifts)
         bind(6, brokenList)
-        glDispatchCompute(tileCount, 1, 1)
+        bind(7, carves)
+        bind(8, fractureDispatch)
+        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, fractureDispatch)
+        glDispatchComputeIndirect(3L * Int.SIZE_BYTES)
         barrier()
+        profiler?.end(GpuStage.RIGID_FRACTURE)
     }
 
     /** [destinations] maps every old body ID to its ID after spatial sorting. */
@@ -313,12 +379,13 @@ internal class RigidBlocks(
     }
 
     /**
-     * After a physics step: reads which blocks lost members from a copy the
-     * GPU made a step or two ago (a fence on it, so nothing waits), and
-     * splits what came apart ([refresh]): soon where a broken member's
+     * After a physics step: looks at the copy of the blocks the GPU made a
+     * step or two ago ([snapshot]; a fence on it, so nothing waits) and
+     * splits what came apart ([split]): soon where a broken member's
      * neighbours may have come apart, at the latest after [SETTLE_STEPS] for
-     * any other loss. Returns whether bodies changed block, so cached
-     * contact lists are stale.
+     * any other loss. Pieces come away a step or two after they broke off, as
+     * the copy is; what changed since is reconciled on the GPU. Returns
+     * whether bodies changed block, so cached contact lists are stale.
      */
     fun afterStep(bodies: Int, materials: Int, bounded: Boolean): Boolean {
         if (!breakable || isEmpty) return false
@@ -328,48 +395,90 @@ internal class RigidBlocks(
             if (glClientWaitSync(copyFence, GL_SYNC_FLUSH_COMMANDS_BIT, 0L) == GL_TIMEOUT_EXPIRED) return false
             glDeleteSync(copyFence)
             copyFence = 0L
-            val flags = readInts(fractureCopy, 0L, groupCount * 4)
-            val lost = (0 until groupCount).map { flags[4 * it + 3] }
-            val due = lost.any { it and CHANGED_MAY_SPLIT == CHANGED_MAY_SPLIT } ||
-                lost.any { it != 0 } && stepsSinceRefresh >= SETTLE_STEPS
-            if (due) {
-                changed = refresh(bodies, materials, bounded)
-                stepsSinceRefresh = 0
-            }
+            changed = look(bodies, materials, bounded, force = false)
         }
-        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
-        glBindBuffer(GL_COPY_READ_BUFFER, fractureGroups)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, fractureCopy)
-        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0L, 0L, groupCount * 4L * Int.SIZE_BYTES)
-        copyFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+        snapshot()
         return changed
     }
 
     /**
-     * Splits every block that lost members since the last look into the
-     * pieces that still hold together. Blocking: it reads back which members
-     * are left, which waits for the GPU. The largest piece stays the block;
-     * every other piece of at least [MINIMUM_FRAGMENT_BODIES] becomes a block
-     * of its own, with the same rigid motion, and smaller ones crumble into
-     * grains. The fracture pass then carves what left out of the block's
-     * shape at once, before the next collision pass sees it. Returns whether
-     * bodies changed block.
+     * Splits every block that lost members into the pieces that still hold
+     * together, now. Blocking: it waits for the GPU to copy the blocks. The
+     * largest piece stays the block; every other piece of at least
+     * [MINIMUM_FRAGMENT_BODIES] becomes a block of its own, with the same
+     * rigid motion, and smaller ones crumble into grains. The fracture pass
+     * then carves what left out of the block's shape at once, before the next
+     * collision pass sees it. Returns whether bodies changed block.
      */
     fun refresh(bodies: Int, materials: Int, bounded: Boolean): Boolean {
         if (isEmpty) return false
+        if (copyFence != 0L) glDeleteSync(copyFence)
+        snapshot()
+        glClientWaitSync(copyFence, GL_SYNC_FLUSH_COMMANDS_BIT, Long.MAX_VALUE)
+        glDeleteSync(copyFence)
+        copyFence = 0L
+        return look(bodies, materials, bounded, force = true)
+    }
+
+    /** Copies what a look needs of the blocks as they are after this step, behind a fence. */
+    private fun snapshot() {
+        snapshots++
+        snapshotGroups = groupCount
+        snapshotTiles = tileCount
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
-        val flags = readInts(fractureGroups, 0L, groupCount * 4)
-        val touched = (0 until groupCount).filter { layouts[it] != null && flags[4 * it + 3] != 0 }
-        if (touched.isEmpty()) return false
-        touched.forEach { writeInts(fractureGroups, (4L * it + 3) * Int.SIZE_BYTES, intArrayOf(0)) }
-        val state = readFloats(groups, 0L, groupCount * GROUP_FLOATS)
-        val broken = ArrayList<Int>()
-        val moved = ArrayList<Int>()
+        copy(fractureGroups, fractureCopy, groupCount * 4L * Int.SIZE_BYTES)
+        copy(groups, stateCopy, groupCount.toLong() * GROUP_BYTES)
+        copy(members, membersCopy, tileCount.toLong() * TILE * Int.SIZE_BYTES)
+        copyFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+    }
+
+    private fun copy(from: Int, to: Int, bytes: Long) {
+        if (bytes == 0L) return
+        glBindBuffer(GL_COPY_READ_BUFFER, from)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, to)
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0L, 0L, bytes)
+    }
+
+    /**
+     * Looks at the latest copy, done: splits the blocks that lost members
+     * since the last look at them, if any may have split or one has waited
+     * [SETTLE_STEPS], or at once if [force].
+     */
+    private fun look(bodies: Int, materials: Int, bounded: Boolean, force: Boolean): Boolean {
+        val flags = readInts(fractureCopy, 0L, snapshotGroups * 4)
+        // Groups in the copy: none glued after it, none freed.
+        val looked = (0 until snapshotGroups).filter { layouts[it].let { layout -> layout != null && layout.since <= snapshots } }
+        val touched = looked.filter { flags[4 * it + 3] != seenChanges[it] }
+        val mayHaveSplit = touched.any { flags[4 * it + 3] ushr 16 != seenChanges[it] ushr 16 }
+        if (touched.isEmpty() || !force && !mayHaveSplit && stepsSinceRefresh < SETTLE_STEPS) return false
+        stepsSinceRefresh = 0
+        val start = System.nanoTime()
+        try {
+            touched.forEach { seenChanges[it] = flags[4 * it + 3] }
+            return splitTouched(touched, bodies, materials, bounded)
+        } finally {
+            splitNanos += System.nanoTime() - start
+            splits++
+        }
+    }
+
+    private fun splitTouched(touched: List<Int>, bodies: Int, materials: Int, bounded: Boolean): Boolean {
+        val state = readFloats(stateCopy, 0L, snapshotGroups * GROUP_FLOATS)
         var changed = false
-        for (group in touched) changed = split(group, state, materials, bounded, broken, moved) || changed
+        for (group in touched) {
+            val broken = ArrayList<Int>()
+            val moved = ArrayList<Int>()
+            if (!split(group, state, materials, bounded, broken, moved)) continue
+            changed = true
+            val first = BROKEN_LISTS + layouts[group]!!.place.firstTile.toLong() * TILE
+            writeInts(brokenList, first * Int.SIZE_BYTES, broken.toIntArray())
+            writeInts(brokenList, (first + memberCapacity) * Int.SIZE_BYTES, moved.toIntArray())
+            // This group's counts alone: pieces glued just now list theirs on the GPU.
+            writeInts(brokenList, group.toLong() * Int.SIZE_BYTES, intArrayOf(broken.size))
+            writeInts(brokenList, (MAXIMUM_GROUPS + group).toLong() * Int.SIZE_BYTES, intArrayOf(moved.size))
+        }
         if (changed) {
-            writeInts(brokenList, 0L, intArrayOf(broken.size, moved.size) + broken.toIntArray())
-            writeInts(brokenList, (2L + memberCapacity) * Int.SIZE_BYTES, moved.toIntArray())
+            writeInts(fractureDispatch, 0L, intArrayOf(groupCount, 1, 1, tileCount, 1, 1))
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
             fracturePass(bodies, materials)
         }
@@ -390,7 +499,7 @@ internal class RigidBlocks(
     ): Boolean {
         val layout = layouts[group]!!
         val firstEntry = layout.place.firstTile * TILE
-        val listed = readInts(members, firstEntry.toLong() * Int.SIZE_BYTES, layout.place.tiles * TILE)
+        val listed = readInts(membersCopy, firstEntry.toLong() * Int.SIZE_BYTES, layout.place.tiles * TILE)
         // The members gone since the last look, and their neighbours left.
         val seeds = LinkedHashSet<Int>()
         var left = 0
@@ -418,40 +527,57 @@ internal class RigidBlocks(
             writeHull(group, layout, state, shiftX, shiftY)
             return false
         }
-        val motion = Motion(
-            state[base + 2], state[base + 3], state[base + 4], state[base + 5],
-            state[base + 6], state[base + 7], state[base + 8],
-        )
-        var flagged = 0
-        for (piece in pieces) {
-            for (slot in piece) layout.alive[slot] = false
-            val glued = piece.size >= MINIMUM_FRAGMENT_BODIES && glue(
-                piece.map { Member(listed[it], layout.restX[it] + shiftX, layout.restY[it] + shiftY, layout.strengths[it]) },
-                motion, materials, bounded,
+        // The look's rest frame of the block: the GPU moves pieces from it into the frame of now.
+        val origin = PixelOffset(state[base + 16], state[base + 17])
+        // What a block of each piece needs, its shape above all, is worked
+        // out for all pieces at once on the CPU's cores; they are glued in
+        // turn after.
+        val prepared = pieces.parallelStream().map { piece ->
+            if (piece.size < MINIMUM_FRAGMENT_BODIES) null else prepare(
+                piece.map { Member(firstEntry + it, layout.restX[it] + shiftX, layout.restY[it] + shiftY, layout.strengths[it]) },
+                shape = null,
             )
-            for (slot in piece) (if (glued) moved else broken) += group shl 24 or (firstEntry + slot)
+        }.toList()
+        var flagged = 0
+        for ((index, piece) in pieces.withIndex()) {
+            for (slot in piece) layout.alive[slot] = false
+            val glued = prepared[index]?.let { glue(it, group, origin, materials, bounded) } ?: false
+            for (slot in piece) (if (glued) moved else broken) += firstEntry + slot
             flagged += piece.size
         }
         writeHull(group, layout, state, shiftX, shiftY)
-        writeInts(fractureGroups, group.toLong() * 4 * Int.SIZE_BYTES, intArrayOf(0, 0, flagged, 0))
+        // The change counts (.w) go on.
+        writeInts(fractureGroups, group.toLong() * 4 * Int.SIZE_BYTES, intArrayOf(0, 0, flagged))
         return true
     }
 
-    /** Glues [piece] of a block moving with [motion] into a new group, if there is room. */
-    private fun glue(piece: List<Member>, motion: Motion, materials: Int, bounded: Boolean): Boolean {
+    /**
+     * Glues a [piece] of block [parent] into a new group, if there is room.
+     * Its members name the parent's slots; rigid_adopt.comp PIECE gives it
+     * the bodies they hold and the parent's motion now, the piece's centre
+     * moved from the look's rest frame, with shape origin [origin], into the
+     * frame of now.
+     */
+    private fun glue(piece: Prepared, parent: Int, origin: PixelOffset, materials: Int, bounded: Boolean): Boolean {
         val group = nextGroup
         if (group >= MAXIMUM_GROUPS) return false
-        val center = centroid(piece)
-        val tiles = tilesFor(piece.size)
+        val tiles = tilesFor(piece.listed.size)
         if (!tileSpace.fits(tiles.toLong())) return false
-        val shape = GlueShape.of(piece.map { PixelOffset(it.x - center.x, it.y - center.y) }, contactDiameterPixels)
+        val shape = piece.shape
         if (!shapeSpace.fits(regionValues(shape))) return false
         val place = Placement(
             tileSpace.allocate(tiles.toLong())!!.toInt(), tiles,
             shapeSpace.allocate(regionValues(shape))!!, regionValues(shape),
         )
-        upload(group, place, piece, shape, moved(motion, center, bounded))
-        adoptGroup(group, place, materials)
+        upload(group, place, piece, Motion(0f, 0f, 0f, 0f, 1f, 0f, 0f))
+        adoptPiece.use()
+        adoptPiece.int("uParent", parent)
+        adoptPiece.vec2("uCenter", piece.center.x, piece.center.y)
+        adoptPiece.vec2("uOrigin", origin.x, origin.y)
+        adoptPiece.int("uBounded", if (bounded) 1 else 0)
+        bind(3, brokenList)
+        bind(4, fractureGroups)
+        adoptGroup(adoptPiece, group, place, materials)
         return true
     }
 
@@ -488,22 +614,15 @@ internal class RigidBlocks(
         layout.hull = corners
         writeFloats(groups, SHAPES_OFFSET + firstHull * Float.SIZE_BYTES, hull)
         writeInts(groups, group.toLong() * GROUP_BYTES + 15 * Int.SIZE_BYTES, intArrayOf(corners.size))
-    }
-
-    /** The motion of the rigid body at rest offset [center] of a body moving with [motion]. */
-    private fun moved(motion: Motion, center: PixelOffset, bounded: Boolean): Motion {
-        val armX = motion.cos * center.x - motion.sin * center.y
-        val armY = motion.sin * center.x + motion.cos * center.y
-        var x = motion.centerX + armX
-        var y = motion.centerY + armY
-        if (!bounded) {
-            x = ToroidalSpace.wrapPixels(x, width)
-            y = ToroidalSpace.wrapPixels(y, height)
-        }
-        return Motion(
-            x, y, motion.velocityX - motion.spin * armY, motion.velocityY + motion.spin * armX,
-            motion.cos, motion.sin, motion.spin,
-        )
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT or GL_SHADER_STORAGE_BARRIER_BIT)
+        // Written in the look's frame: into the frame of now.
+        hullShift.use()
+        hullShift.int("uGroup", group)
+        hullShift.int("uPoints", corners.size)
+        hullShift.vec2("uOrigin", state[group * GROUP_FLOATS + 16], state[group * GROUP_FLOATS + 17])
+        bind(0, groups)
+        glDispatchCompute((corners.size + TILE - 1) / TILE, 1, 1)
+        barrier()
     }
 
     private fun centroid(listed: List<Member>) = PixelOffset(
@@ -521,31 +640,71 @@ internal class RigidBlocks(
     }
 
     /**
-     * Writes group [group] at [place]: [listed] in its slots, about their
-     * centroid (which [motion] is the motion of), with [shape] made from them.
+     * What a group of [listed] needs wherever it goes, about their centroid:
+     * [shape] if given, else one made from them. Touches no GL state, so the
+     * pieces of a split are prepared side by side.
      */
-    private fun upload(group: Int, place: Placement, listed: List<Member>, shape: GlueShape, motion: Motion) {
+    private class Prepared(
+        val listed: List<Member>,
+        val center: PixelOffset,
+        val shape: GlueShape,
+        val restX: FloatArray,
+        val restY: FloatArray,
+        val inertia: Double,
+        /** The hull of the members, as slots. */
+        val corners: IntArray,
+        val bonds: IntArray,
+        val rowSlots: IntArray,
+        val rowStarts: IntArray,
+    )
+
+    private fun prepare(listed: List<Member>, shape: GlueShape?): Prepared {
         val center = centroid(listed)
-        val firstEntry = place.firstTile * TILE
-        val entries = place.tiles * TILE
-        val memberData = IntArray(entries) { -1 }
-        val restX = FloatArray(entries)
-        val restY = FloatArray(entries)
-        val strengths = FloatArray(entries)
-        val restData = FloatArray(entries * 2)
-        val slotData = FloatArray(entries * 4)
+        val restX = FloatArray(listed.size)
+        val restY = FloatArray(listed.size)
         var inertia = 0.0
         listed.forEachIndexed { index, member ->
             val x = member.x - center.x
             val y = member.y - center.y
-            memberData[index] = member.body
             restX[index] = x
             restY[index] = y
-            strengths[index] = member.strength
-            restData[2 * index] = x
-            restData[2 * index + 1] = y
-            slotData[4 * index] = member.strength
             inertia += x * x + y * y
+        }
+        val made = shape ?: GlueShape.of(listed.indices.map { PixelOffset(restX[it], restY[it]) }, contactDiameterPixels)
+        // Rows of one height, each from left to right.
+        val rowSlots = listed.indices.sortedWith(compareBy({ restY[it] }, { restX[it] })).toIntArray()
+        val rowStarts = ArrayList<Int>()
+        rowSlots.forEachIndexed { index, slot -> if (index == 0 || restY[slot] != restY[rowSlots[index - 1]]) rowStarts += index }
+        rowStarts += rowSlots.size
+        return Prepared(
+            listed, center, made, restX, restY, inertia, GlueShape.hullIndices(restX, restY),
+            BlockPieces.bonds(restX, restY, contactDiameterPixels), rowSlots, rowStarts.toIntArray(),
+        )
+    }
+
+    /**
+     * Writes group [group] at [place]: the [prepared] members in its slots,
+     * about their centroid (which [motion] is the motion of), with their shape.
+     */
+    private fun upload(group: Int, place: Placement, prepared: Prepared, motion: Motion) {
+        val listed = prepared.listed
+        val shape = prepared.shape
+        val center = prepared.center
+        val inertia = prepared.inertia
+        val firstEntry = place.firstTile * TILE
+        val entries = place.tiles * TILE
+        val memberData = IntArray(entries) { -1 }
+        val restX = prepared.restX.copyOf(entries)
+        val restY = prepared.restY.copyOf(entries)
+        val strengths = FloatArray(entries)
+        val restData = FloatArray(entries * 2)
+        val slotData = FloatArray(entries * 4)
+        listed.forEachIndexed { index, member ->
+            memberData[index] = member.body
+            strengths[index] = member.strength
+            restData[2 * index] = restX[index]
+            restData[2 * index + 1] = restY[index]
+            slotData[4 * index] = member.strength
         }
         // The slot grid on the shape's nodes (rigid_layout.glsl).
         val cells = shape.width * shape.height
@@ -558,20 +717,14 @@ internal class RigidBlocks(
             region[cells + cellX + cellY * shape.width] = (firstEntry + index).toFloat()
         }
         // The hull of the members as listed; the shape's own if that does not fit.
-        var corners = GlueShape.hullIndices(restX.copyOf(listed.size), restY.copyOf(listed.size))
+        var corners = prepared.corners
         if (2L * corners.size > place.values - 2 * cells) corners = IntArray(0)
         val hull = if (corners.isEmpty()) shape.hull else FloatArray(2 * corners.size) {
             if (it % 2 == 0) restX[corners[it / 2]] else restY[corners[it / 2]]
         }
         hull.copyInto(region, 2 * cells)
-        val bonds = BlockPieces.bonds(restX.copyOf(listed.size), restY.copyOf(listed.size), contactDiameterPixels)
-            .copyOf(entries * BlockPieces.BONDS)
+        val bonds = prepared.bonds.copyOf(entries * BlockPieces.BONDS)
         bonds.fill(-1, listed.size * BlockPieces.BONDS)
-        // Rows of one height, each from left to right.
-        val rowSlots = listed.indices.sortedWith(compareBy({ restY[it] }, { restX[it] })).toIntArray()
-        val rowStarts = ArrayList<Int>()
-        rowSlots.forEachIndexed { index, slot -> if (index == 0 || restY[slot] != restY[rowSlots[index - 1]]) rowStarts += index }
-        rowStarts += rowSlots.size
         val groupData = memAlloc(GROUP_BYTES).order(ByteOrder.nativeOrder())
         try {
             groupData
@@ -586,6 +739,7 @@ internal class RigidBlocks(
                 .putFloat(listed.minOf { it.y } - center.y).putFloat(listed.maxOf { it.y } - center.y)
                 .putInt(0).putInt(0).putInt(0).putInt(0)
                 .putInt(0).putInt(0).putInt(0).putInt(0)
+                .putFloat(motion.centerX).putFloat(motion.centerY).putFloat(motion.cos).putFloat(motion.sin)
             groupData.flip()
             glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT)
             writeInts(members, firstEntry.toLong() * Int.SIZE_BYTES, memberData)
@@ -602,20 +756,22 @@ internal class RigidBlocks(
         }
         layouts[group] = Layout(
             place, restX, restY, shape.originX, shape.originY, strengths, bonds,
-            BooleanArray(entries) { it < listed.size }, rowStarts.toIntArray(), rowSlots, corners,
+            BooleanArray(entries) { it < listed.size }, prepared.rowStarts, prepared.rowSlots, corners,
+            since = snapshots + 1,
         )
+        seenChanges[group] = 0
         freeGroups -= group
         groupCount = max(groupCount, group + 1)
         tileCount = max(tileCount, place.firstTile + place.tiles)
     }
 
     /** Starts group [group] afresh: its members name it ([materials], if given), its contact memory is empty. */
-    private fun adoptGroup(group: Int, place: Placement, materials: Int?) {
+    private fun adoptGroup(program: GlProgram, group: Int, place: Placement, materials: Int?) {
         val slots = if (materials == null) 0 else place.tiles * TILE
-        adopt.use()
-        adopt.int("uGroup", group)
-        adopt.int("uFirstSlot", place.firstTile * TILE)
-        adopt.int("uSlots", slots)
+        program.use()
+        program.int("uGroup", group)
+        program.int("uFirstSlot", place.firstTile * TILE)
+        program.int("uSlots", slots)
         bind(0, members)
         bind(1, materials ?: fractureCopy)
         bind(2, groups)
@@ -635,10 +791,11 @@ internal class RigidBlocks(
 
     override fun close() {
         if (copyFence != 0L) glDeleteSync(copyFence)
-        listOf(reduce, finalize, apply, fractureApply, fracture, shift, adopt, remapProgram).forEach(GlProgram::close)
+        listOf(reduce, apply, fractureApply, fracture, carve, shift, adopt, adoptPiece, hullShift, remapProgram)
+            .forEach(GlProgram::close)
         intArrayOf(
-            members, rest, tileGroups, groups, partials, fractures, fractureSlots, fractureGroups, fractureCopy,
-            brokenList, fractureShifts,
+            members, rest, tileGroups, groups, partials, tilesDone, fractureDispatch, fractures, fractureSlots, fractureGroups, fractureCopy,
+            brokenList, fractureShifts, carves, stateCopy, membersCopy,
         ).forEach(::glDeleteBuffers)
     }
 
@@ -671,7 +828,7 @@ internal class RigidBlocks(
         const val TILE = 256
         const val MAXIMUM_GROUPS = 256
         /** Matches RigidGroup in rigid_layout.glsl. */
-        private const val GROUP_BYTES = 144
+        private const val GROUP_BYTES = 160
         private const val GROUP_FLOATS = GROUP_BYTES / Float.SIZE_BYTES
         /** Shape values reserved per body of capacity: blocks take about eight with their slot grids. */
         private const val SHAPE_VALUES_PER_BODY = 16L
@@ -680,10 +837,12 @@ internal class RigidBlocks(
         private const val CONTACT_PARTNERS = MAXIMUM_GROUPS + 4
         private const val CONTACT_KEYS = MAXIMUM_GROUPS.toLong() * CONTACT_PARTNERS
         private const val SHAPES_OFFSET = MAXIMUM_GROUPS.toLong() * GROUP_BYTES + 5 * CONTACT_KEYS * Int.SIZE_BYTES
+        /** Ints before the broken lists: two counts per group. */
+        private const val BROKEN_LISTS = 2L * MAXIMUM_GROUPS
+        /** Indirect dispatch and count before the list of rigid_carve.comp. */
+        private const val CARVES_HEADER_BYTES = 16L
         /** Fracture state of every group (rigid_layout.glsl). */
         private const val FRACTURE_GROUP_BYTES = MAXIMUM_GROUPS * 4L * Int.SIZE_BYTES
-        /** CHANGED_MAY_SPLIT of rigid_layout.glsl: a broken member's neighbours may have come apart. */
-        private const val CHANGED_MAY_SPLIT = 3
         /** Most steps a block that lost members waits for a look, should a split have gone unnoticed. */
         private const val SETTLE_STEPS = 8
         /** Member slots a crack nucleus can name (NUCLEUS_SLOT_MASK). */

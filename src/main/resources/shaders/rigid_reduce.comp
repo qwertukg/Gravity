@@ -5,13 +5,162 @@ layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
 layout(std430, binding = 1) readonly buffer Members { int members[]; };
 layout(std430, binding = 2) readonly buffer Rest { vec2 rest[]; };
 layout(std430, binding = 3) readonly buffer TileGroups { int tileGroups[]; };
-layout(std430, binding = 4) readonly buffer Groups { RigidGroup groups[]; };
-layout(std430, binding = 5) writeonly buffer Partials { vec4 partials[]; };
+layout(std430, binding = 4) buffer Groups {
+    RigidGroup groups[MAXIMUM_GROUPS];
+    int impacts[CONTACT_KEYS];
+    int nextImpacts[CONTACT_KEYS];
+    int contactStates[CONTACT_KEYS];
+    int idlePasses[CONTACT_KEYS];
+    int pairContacts[CONTACT_KEYS];
+    float shapes[];
+};
+// Read by the last tile of a group, written by the others: never cached.
+layout(std430, binding = 5) coherent buffer Partials { vec4 partials[]; };
+// Tiles of each group done this pass; its last tile fits the group.
+layout(std430, binding = 6) coherent buffer TilesDone { uint tilesDone[MAXIMUM_GROUPS]; };
+// The indirect dispatch of rigid_shift.comp: the pass before this one has
+// spent it (RigidBlocks.project).
+layout(std430, binding = 7) buffer FractureDispatch { uint fractureDispatch[3]; uint shiftDispatch[3]; };
 uniform vec2 uViewport;
 uniform int uBounded;
+uniform float uBodyRadius;
+// After a collision pass, the contact memory of the pass is settled and the
+// speed agrees with what held the block.
+uniform int uContactPass;
+uniform float uSubstepDt;
+uniform float uBlockFriction;
+// Group indices used so far: no contact key names a partner beyond them.
+uniform int uGroupCount;
 
 shared vec4 sharedA[256];
 shared vec4 sharedB[256];
+shared bool sharedLast;
+
+// A push out of what cannot give way says the block moves into it: the
+// block loses what speed it has against the push, at most the push over a
+// substep, and that stop brings Coulomb friction along it with [friction].
+// The speed is never turned round, so a push adds no bounce; impulses do.
+// Left alone the speed into the support builds up while the position is
+// held: the block hovers, creeps, and bursts free.
+vec2 stopAgainst(vec2 velocity, vec2 push, float friction) {
+    float distance = length(push);
+    if (distance == 0.0) return velocity;
+    vec2 direction = push / distance;
+    float against = dot(velocity, direction);
+    if (against >= 0.0) return velocity;
+    float stop = min(-against, distance / uSubstepDt);
+    velocity += direction * stop;
+    vec2 sliding = velocity - dot(velocity, direction) * direction;
+    float slidingSpeed = length(sliding);
+    if (slidingSpeed > 0.0) velocity -= sliding * (min(slidingSpeed, friction * stop) / slidingSpeed);
+    return velocity;
+}
+
+void sumOverLanes(uint lane) {
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (lane < stride) {
+            sharedA[lane] += sharedA[lane + stride];
+            sharedB[lane] += sharedB[lane + stride];
+        }
+        barrier();
+    }
+}
+
+// Adds up the tile partials of [group] and fits the rigid motion that keeps
+// the group's momentum and angular momentum.
+void fit(uint group, uint lane) {
+    ivec4 tiles = groups[group].tiles;
+    vec4 a = vec4(0.0);
+    vec4 b = vec4(0.0);
+    for (int tile = tiles.x + int(lane); tile < tiles.x + tiles.y; tile += 256) {
+        a += partials[2 * tile];
+        b += partials[2 * tile + 1];
+    }
+    sharedA[lane] = a;
+    sharedB[lane] = b;
+    sumOverLanes(lane);
+    if (uContactPass != 0) {
+        // An impact lasts while its contacts push the pair towards the speed
+        // it aims for. It is over once they touch without pushing, or once
+        // the pair has been apart a few passes; brief gaps while the impulses
+        // of a block converge do not end it. A pair belongs to its lower
+        // block, so only partners from this one on, and the walls, are kept.
+        int partners = uGroupCount - int(group);
+        for (int index = int(lane); index < partners + 4; index += 256) {
+            int partner = index < partners ? int(group) + index : MAXIMUM_GROUPS + index - partners;
+            int key = int(group) * CONTACT_PARTNERS + partner;
+            int state = contactStates[key];
+            if (state == CONTACT_PUSHING) {
+                impacts[key] = max(impacts[key], nextImpacts[key]);
+                idlePasses[key] = 0;
+            } else if (state == CONTACT_TOUCHING) {
+                impacts[key] = 0;
+                idlePasses[key] = 0;
+            } else if (impacts[key] != 0 && ++idlePasses[key] >= IMPACT_IDLE_PASSES) {
+                impacts[key] = 0;
+                idlePasses[key] = 0;
+            }
+            nextImpacts[key] = 0;
+            contactStates[key] = 0;
+            pairContacts[key] = 0;
+        }
+    }
+    if (lane != 0u) return;
+
+    RigidGroup rigid = groups[group];
+    float mass = rigid.scalars.z;
+    // Broken up entirely: the CPU frees the group (RigidBlocks.refresh).
+    if (mass <= 0.0) return;
+    vec2 center = sharedA[0].xy / mass;
+    vec2 velocity = sharedA[0].zw / mass;
+    // Best-fit rotation of the rest shape onto the current positions.
+    vec2 fit = vec2(sharedB[0].y, sharedB[0].x);
+    float fitLength = length(fit);
+    vec2 rotation = fitLength > 0.0 ? fit / fitLength : rigid.motion.zw;
+    // L about the centre (main).
+    float angularMomentum = sharedB[0].z;
+    float inertia = rigid.scalars.y;
+    float angularVelocity = inertia > 0.0 ? angularMomentum / inertia : 0.0;
+
+    center += rigid.frame.xy;
+    // Out of the blocks it was pressed into, position only: their contacts
+    // change the speeds, keeping the momentum (collision_rigid_contact.glsl).
+    center += vec2(rigid.guard.xy - rigid.guard.zw) / GUARD_SCALE;
+    rigid.guard = ivec4(0);
+    // Off bodies a wall holds: the wall carries the block through them.
+    vec2 support = vec2(rigid.support.xy - rigid.support.zw) / GUARD_SCALE;
+    rigid.support = ivec4(0);
+    center += support;
+    if (uContactPass != 0) velocity = stopAgainst(velocity, support, 0.0);
+    if (uBounded == 0) {
+        center -= floor(center / uViewport) * uViewport;
+    } else {
+        // A block never reaches into a wall, however hard it is pressed: its
+        // member contacts with the wall share the block with all its other
+        // contacts and may not have pushed it out yet. Its hull is what
+        // reaches a wall first: move it back inside, and stop it as the wall
+        // would, with the block's friction against it.
+        vec2 low = vec2(1e30);
+        vec2 high = vec2(-1e30);
+        for (int point = 0; point < rigid.tiles.w; point++) {
+            vec2 rest = vec2(shapes[rigid.tiles.z + 2 * point], shapes[rigid.tiles.z + 2 * point + 1]);
+            vec2 arm = vec2(rotation.x * rest.x - rotation.y * rest.y, rotation.y * rest.x + rotation.x * rest.y);
+            low = min(low, arm);
+            high = max(high, arm);
+        }
+        vec2 shift = max(vec2(uBodyRadius) - (center + low), vec2(0.0)) -
+            max(center + high + uBodyRadius - uViewport, vec2(0.0));
+        // A block wider than the screen stays where it is.
+        shift *= vec2(lessThan(high - low + 2.0 * uBodyRadius, uViewport));
+        center += shift;
+        if (uContactPass != 0) velocity = stopAgainst(velocity, shift, uBlockFriction);
+    }
+    rigid.frame = vec4(center, center);
+    rigid.motion = vec4(velocity, rotation);
+    rigid.scalars.x = angularVelocity;
+    groups[group] = rigid;
+}
 
 // One tile of one group: sums of position and velocity, the rotation fit
 // terms r0 x p and r0 . p, and the angular momentum term r x v. Positions are
@@ -22,37 +171,46 @@ shared vec4 sharedB[256];
 // moves far for its whole block (collision_rigid_contact.glsl), and that
 // distance must not turn its speed into spin. Since sum(r0) = 0 it is the
 // angular momentum about the centre.
+//
+// The last tile of a group to finish fits the group (fit): the partials of
+// its tiles are added in tile order whichever finished last, so the result
+// does not depend on scheduling, and no second dispatch waits for them all.
 void main() {
     uint tile = gl_WorkGroupID.x;
     uint lane = gl_LocalInvocationID.x;
+    if (tile == 0u && lane < 3u) shiftDispatch[lane] = lane == 0u ? 0u : 1u;
+    uint group = uint(tileGroups[tile]);
+    ivec4 tiles = groups[group].tiles;
+    // A tile freed by a block that broke up: no group's any more.
+    if (int(tile) < tiles.x || int(tile) >= tiles.x + tiles.y) return;
     uint member = tile * 256u + lane;
     int body = members[member];
     vec4 a = vec4(0.0);
     vec4 b = vec4(0.0);
     if (body >= 0) {
-        vec2 reference = groups[tileGroups[tile]].frame.xy;
+        vec2 reference = groups[group].frame.xy;
         vec4 state = bodies[body];
         vec2 position = state.xy * uViewport - reference;
         if (uBounded == 0) position -= floor(position / uViewport + vec2(0.5)) * uViewport;
         vec2 velocity = state.zw * uViewport;
         vec2 offset = rest[member];
-        vec2 rotation = groups[tileGroups[tile]].motion.zw;
+        vec2 rotation = groups[group].motion.zw;
         vec2 arm = vec2(rotation.x * offset.x - rotation.y * offset.y, rotation.y * offset.x + rotation.x * offset.y);
         a = vec4(position, velocity);
         b = vec4(cross2(offset, position), dot(offset, position), cross2(arm, velocity), 0.0);
     }
     sharedA[lane] = a;
     sharedB[lane] = b;
-    barrier();
-    for (uint stride = 128u; stride > 0u; stride >>= 1) {
-        if (lane < stride) {
-            sharedA[lane] += sharedA[lane + stride];
-            sharedB[lane] += sharedB[lane + stride];
-        }
-        barrier();
-    }
+    sumOverLanes(lane);
     if (lane == 0u) {
         partials[2u * tile] = sharedA[0];
         partials[2u * tile + 1u] = sharedB[0];
+        memoryBarrierBuffer();
+        sharedLast = atomicAdd(tilesDone[group], 1u) == uint(tiles.y) - 1u;
     }
+    barrier();
+    if (!sharedLast) return;
+    memoryBarrierBuffer();
+    if (lane == 0u) tilesDone[group] = 0u;
+    fit(group, lane);
 }

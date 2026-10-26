@@ -23,6 +23,8 @@ enum class GpuStage(val displayName: String) {
     COLLISION_SOLVE("collision solve"),
     COLLISION_SUBSTEPS("collision substeps total"),
     COLLISION_ADAPTIVE("collision adaptive selection"),
+    RIGID_PROJECTION("rigid projection"),
+    RIGID_FRACTURE("block fracture"),
     LIQUID("liquid"),
     GRAVITY_GRID("gravity grid"),
     FORWARD_FFT("forward FFT"),

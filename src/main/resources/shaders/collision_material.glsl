@@ -24,14 +24,35 @@ bool isMember(vec4 material) {
 }
 
 // The glued block of a body, or -1 for a loose body.
-int groupOf(uint id) {
-    vec4 material = materials[id];
+int groupOf(vec4 material) {
     return isMember(material) ? int(material.w) : -1;
 }
 
+int groupOf(uint id) {
+    return groupOf(materials[id]);
+}
+
 // A pair with a member of a block: a contact with the block's rigid shape.
+bool rigidPair(vec4 first, vec4 second) {
+    return isMember(first) || isMember(second);
+}
+
 bool rigidPair(uint first, uint second) {
-    return isMember(materials[first]) || isMember(materials[second]);
+    return rigidPair(materials[first], materials[second]);
+}
+
+// A fluid body, from its material (fluidBody).
+bool fluidMaterial(vec4 material) {
+    return uLiquid != 0 && material.z == 0.0;
+}
+
+// The body's own material: RIGID passes read it once, and each other body's
+// once per pair, and hand both to what follows.
+vec4 ownMaterial = vec4(0.0);
+
+// The tag a grid build gives a body (GridNode): its block + 1, 0 for none.
+uint blockTag(vec4 material) {
+    return isMember(material) ? uint(material.w) + 1u : 0u;
 }
 
 // Liquid mode: the liquid passes keep fluid off a block by its pressure, and
@@ -42,6 +63,7 @@ const float FLUID_REACH_DIAMETERS = 0.6;
 
 // Squared centre distance below which a hard pair is in contact
 // (collision_rigid.glsl).
+float contactReachSquared(vec4 firstMaterial, vec4 secondMaterial);
 float contactReachSquared(uint first, uint second);
 #else
 float contactReachSquared(uint first, uint second) {
@@ -78,6 +100,14 @@ bool hardPair(uint first, uint second) {
     if (uLiquid == 0) return true;
     return materials[first].z != 0.0 || materials[second].z != 0.0;
 }
+
+#ifdef RIGID
+bool hardPair(vec4 first, vec4 second) {
+    if (isMember(first) && isMember(second) && first.w == second.w) return false;
+    if (uLiquid == 0) return true;
+    return first.z != 0.0 || second.z != 0.0;
+}
+#endif
 
 // Each body of a pair takes the other's share of the pair mass, so equal and
 // opposite impulses keep momentum; equal masses split a correction in half.

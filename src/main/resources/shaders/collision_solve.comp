@@ -34,8 +34,6 @@ const float MAXIMUM_UNIT = 0.99999994;
 #ifdef RIGID
 #include "collision_rigid.glsl"
 #include "collision_rigid_contact.glsl"
-// Drift of this pass, by which block poses are extrapolated.
-float driftDt = 0.0;
 // Pushes apart from bodies of held pairs (HELD_BIT): position only.
 vec2 heldCorrection = vec2(0.0);
 #endif
@@ -55,7 +53,7 @@ void wallContact(uint id, int wall, vec2 positionPixels, float distance, vec2 no
     float pressureWeight, float friction, float effectiveSubstepDt, inout vec2 positionCorrection,
     inout vec2 velocityCorrection, inout float pressure) {
 #ifdef RIGID
-    if (rigidPair(id, id)) {
+    if (isMember(ownMaterial)) {
         rigidWallContact(id, wall, positionPixels, distance, normal, velocityPixels, pressureWeight, friction,
             driftDt, effectiveSubstepDt, velocityCorrection, pressure);
         return;
@@ -137,6 +135,7 @@ void main() {
         : uSubstepDt;
 #ifdef RIGID
     driftDt = uAdaptive != 0 && uDriftDt != 0.0 ? effectiveSubstepDt : uDriftDt;
+    ownMaterial = materials[id];
 #endif
     if (uWritePressure != 0 && uAdaptive != 0) {
         atomicMax(adaptiveState[3], ownContacts);
@@ -151,20 +150,27 @@ void main() {
             uint encoded = heads[cell.x + cell.y * uGridWidth];
             while (encoded != 0u) {
                 uint otherId = encoded - 1u;
+#ifdef RIGID
+                vec4 otherMaterial = materials[otherId];
+                if (otherId != id && hardPair(ownMaterial, otherMaterial)) {
+#else
                 if (otherId != id && hardPair(id, otherId)) {
+#endif
                     vec4 other = inputBodies[otherId];
                     // Match the counter's rounded contact predicate exactly.
                     precise vec2 delta = positionPixels - other.xy * uViewport;
                     // Walls: no minimum image, bodies across an edge never touch.
                     if (uBounded == 0) delta -= floor(delta / uViewport + vec2(0.5)) * uViewport;
                     precise float distanceSquared = dot(delta, delta);
-                    float reachSquared = contactReachSquared(id, otherId);
 #ifdef RIGID
-                    if (distanceSquared < reachSquared && rigidPair(id, otherId)) {
-                        rigidContact(id, otherId, positionPixels, velocityPixels, other.xy * uViewport,
+                    float reachSquared = contactReachSquared(ownMaterial, otherMaterial);
+                    if (distanceSquared < reachSquared && rigidPair(ownMaterial, otherMaterial)) {
+                        rigidContact(id, otherId, otherMaterial, positionPixels, velocityPixels, other.xy * uViewport,
                             other.zw * uViewport, ownContacts, contactsOf(contactCounts[otherId]), driftDt,
                             effectiveSubstepDt, positionCorrection, velocityCorrection, pressure);
                     } else
+#else
+                    float reachSquared = contactReachSquared(id, otherId);
 #endif
                     if (distanceSquared < reachSquared) {
                         float distance = sqrt(max(
@@ -181,24 +187,29 @@ void main() {
                             1u
                         ));
 
-                        vec4 ownMaterial = materials[id];
-                        vec4 otherMaterial = materials[otherId];
-                        float share = massShare(ownMaterial, otherMaterial);
+#ifdef RIGID
+                        vec4 pairOwn = ownMaterial;
+                        vec4 pairOther = otherMaterial;
+#else
+                        vec4 pairOwn = materials[id];
+                        vec4 pairOther = materials[otherId];
+#endif
+                        float share = massShare(pairOwn, pairOther);
 
                         // Symmetric weights keep every impulse equal and
                         // opposite, including crowded multi-body contacts.
+                        vec2 otherVelocityPixels = other.zw * uViewport;
+                        vec2 relativeVelocity =
+                            velocityPixels - otherVelocityPixels;
+                        float relativeNormalSpeed =
+                            dot(relativeVelocity, normal);
+
                         vec2 push = normal * (share * penetration * pairWeight);
 #ifdef RIGID
                         if (heldPair(ownCount, contactCounts[otherId])) heldCorrection += push;
                         else
 #endif
                         positionCorrection += push;
-
-                        vec2 otherVelocityPixels = other.zw * uViewport;
-                        vec2 relativeVelocity =
-                            velocityPixels - otherVelocityPixels;
-                        float relativeNormalSpeed =
-                            dot(relativeVelocity, normal);
                         if (relativeNormalSpeed < 0.0) {
                             // e=0: the approaching normal components meet
                             // at the pair's centre-of-mass velocity.
@@ -210,7 +221,7 @@ void main() {
                                     pairWeight
                                 );
                         }
-                        float friction = pairFriction(ownMaterial, otherMaterial);
+                        float friction = pairFriction(pairOwn, pairOther);
                         if (friction > 0.0) {
                             velocityCorrection += frictionCorrection(
                                 relativeVelocity, normal, relativeNormalSpeed,
@@ -253,7 +264,7 @@ void main() {
 #endif
     vec2 position;
 #ifdef RIGID
-    if (rigidPair(id, id)) {
+    if (isMember(ownMaterial)) {
         // A member's correction stands for its block's and may be large; the
         // rigid projection reads it as is and places the member itself.
         position = positionPixels / uViewport;

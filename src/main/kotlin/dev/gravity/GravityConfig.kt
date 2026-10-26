@@ -916,7 +916,7 @@ data class DiagnosticsConfig(
     val benchmarkFrames: Int = 240,
     val validateFft: Boolean = false,
     val profilerRingSlots: Int = 16,
-    val profilerMaximumSegmentsPerFrame: Int = 128,
+    val profilerMaximumSegmentsPerFrame: Int = 256,
     val profilerCompletedFrameCapacity: Int = 8_192,
     val timerRingSlots: Int = 16,
 ) {

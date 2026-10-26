@@ -278,7 +278,10 @@ its member. Any glued body gets its shape this way, whatever its outline.
 - A block's spin comes from its members' speeds about the arms of its pose,
   not from where its members were pushed to: a member pushed out of a wall
   stands for its whole block and moves far.
-- Members of one block never collide with each other.
+- Members of one block never collide with each other. The neighbour grid
+  tags each body with its block and each cell with the block all its bodies
+  belong to, so a member deep inside a block, whose neighbourhood holds its
+  own block alone, does not look at a single neighbour.
 - Collision passes with this code are compiled separately (`RIGID`) and run
   only while blocks exist; without blocks the passes are the plain ones.
 - GPU tests shoot bullets up to `6000 px/s`, a `100 px` cannonball and a
@@ -326,7 +329,10 @@ unbreakable.
   of their contact. Each pass a block's crack starts from the member struck
   hardest and runs from it into the block, one member a step, wandering
   between neighbours and now and then branching, until its energy is spent
-  or it leaves the block. The members along it break off as grains.
+  or it leaves the block. The members along it break off as grains. Each
+  step of a crack looks at the `7 × 7` cells around its tip at once, one
+  GPU lane a cell, and takes the same member a single lane looking in turn
+  would.
 - **Grains** stay solid bodies with their block's mass and friction: they
   sink in liquid as their block would and pile up as grains. A chip keeps
   the motion of its block at its place and flies off back the way the
@@ -334,31 +340,42 @@ unbreakable.
   the speed the strain energy released gives it; the block recoils from it,
   so momentum and angular momentum stay.
 - **Shape.** Where members broke off the block's shape is carved at once,
-  in the same pass, within two diameters: outside the solid a node lies as
-  far from it as the nearest member left, and inside no deeper than its
-  distance to the hole. The crater's floor and walls are thus faces like any
-  other, and sand resting in it lies still; a GPU test shoots sand down into
-  a block on the floor and checks that it settles in the crater. A
-  projectile enters the crater it makes instead of hitting the block's old
-  face. The block's
-  centre of mass, mass and inertia follow what is left, updated from what
-  broke off alone, so a large block costs no more than a small one.
+  in the same pass, within two diameters, one GPU invocation per node and
+  broken member, so a big impact spreads over the whole GPU. Where a member
+  stood free when it broke, outside the solid a node lies as far from it as
+  the nearest member left, and inside no deeper than its distance to the
+  hole: the crater's floor and walls are faces like any other, and sand
+  resting in it lies still; a GPU test shoots sand down into a block on the
+  floor and checks that it settles in the crater. A member broken with
+  members still next to it, in a crack or a dent of a face, leaves a gap
+  narrower than a body: its walls stay as deep as they were and only the
+  nodes nearer it than any member left are raised. Shallow, the gap would
+  take in bodies an impact presses into it, and hundreds would end up in a
+  single point. A projectile enters the crater it makes instead of hitting
+  the block's old face. The block's centre of mass, mass and inertia follow
+  what is left, updated from what broke off alone, so a large block costs
+  no more than a small one.
 - **Pieces.** A crack through a block, one member wide, cuts it: members
   more than `1.2` diameters apart hold no longer together. The GPU flags a
-  block whose broken member leaves its neighbours in more than one arc;
-  the CPU sees the flags in a copy behind a fence, so nothing waits, and
-  looks at such a block at once and at any other that lost members within
-  `8` steps, usually one or two steps after the hit. A look is a blocking
-  readback of which members are left. The CPU keeps every block's lattice,
+  block whose broken member leaves its neighbours in more than one arc.
+  After every step the GPU copies the blocks, their flags and which members
+  are left behind a fence, so nothing waits; the CPU looks at such a block
+  as soon as a copy is done and at any other that lost members within `8`
+  steps, usually one or two steps after the hit. As the copy is a step or
+  two old, a piece names the slots of its block, and the GPU gives it the
+  bodies they hold and the block's motion as they are when it is glued; a
+  member broken off in between leaves the piece at once. The CPU keeps
+  every block's lattice,
   and searches spread from the neighbours of the members gone: one that
   runs out of members before meeting the others has gone round a piece of
   its own, so only the pieces that came away are walked. The largest piece
   stays the block; every other one of at least `16` bodies becomes a block
   of its own with the same rigid motion, its own shape and its own hull,
   and smaller ones crumble into grains, as do pieces that find no free
-  block.
-- Breaking costs about `0.15 ms` a step with a block of `145,000` bodies at
-  rest; a look at it while it is shot to pieces, a few ms. A GPU test
+  block. The shapes of the pieces of a look are made on all CPU cores.
+- Breaking costs about `0.3 ms` of GPU time a step while a block of
+  `330,000` bodies is shot to pieces at `6000 px/s` (`3440×1440`, RTX 2060
+  SUPER), and a look at it waits for nothing (`blockBenchmark`). A GPU test
   checks that a ram cracks both blocks into pieces and keeps momentum to
   `1e-3`, that a fast ball cuts a thin plate in two, that a block dropped
   from high cracks and one dropped low does not, and that rest, slow

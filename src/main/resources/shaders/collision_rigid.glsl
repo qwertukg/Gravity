@@ -38,13 +38,16 @@ int contactKey(int group, int partner) {
 bool meetsWall(int group, int wall, float distance) {
     float radius = 0.5 * uDiameterPixels;
     if (distance < radius) return true;
-    return impacts[contactKey(group, MAXIMUM_GROUPS + wall)] != 0 &&
-        distance < radius + SPECULATIVE_DIAMETERS * uDiameterPixels;
+    // Far from the wall, the contact memory is not read at all.
+    return distance < radius + SPECULATIVE_DIAMETERS * uDiameterPixels &&
+        impacts[contactKey(group, MAXIMUM_GROUPS + wall)] != 0;
 }
 
 float contactReachSquared(uint first, uint second) {
-    vec4 firstMaterial = materials[first];
-    vec4 secondMaterial = materials[second];
+    return contactReachSquared(materials[first], materials[second]);
+}
+
+float contactReachSquared(vec4 firstMaterial, vec4 secondMaterial) {
     bool firstMember = isMember(firstMaterial);
     bool secondMember = isMember(secondMaterial);
     // A grain broken off a block meets the liquid as a loose body does.
@@ -107,13 +110,16 @@ vec2 unrotate(vec2 rotation, vec2 v) {
     return vec2(rotation.x * v.x + rotation.y * v.y, -rotation.y * v.x + rotation.x * v.y);
 }
 
+// Drift of this pass, by which block poses are extrapolated.
+float driftDt = 0.0;
+
 // Pose of a block [dt] after its last projection: its members have drifted
-// with its rigid motion since.
+// with its rigid motion since. At the drift of this pass it was found once
+// for the pass (RigidGroup.pose), and at none it is the projection's own.
 void groupPose(int group, float dt, out vec2 center, out vec2 rotation) {
-    RigidGroup rigid = groups[group];
-    float angle = rigid.scalars.x * dt;
-    center = rigid.frame.zw + rigid.motion.xy * dt;
-    rotation = rotate(rigid.motion.zw, vec2(cos(angle), sin(angle)));
+    vec4 pose = dt == driftDt ? groups[group].pose : rigidPose(groups[group], dt);
+    center = pose.xy;
+    rotation = pose.zw;
 }
 
 // Bilinear distance field of a block in its own frame and its gradient.
@@ -208,7 +214,7 @@ float rigidResponse(int group, vec2 pointPixels, vec2 normal, float dt) {
     return 1.0 / scalars.z + (scalars.y > 0.0 ? arm * arm / scalars.y : 0.0);
 }
 
-// Asks a block to move by [shift] after this pass (rigid_finalize.comp). The
+// Asks a block to move by [shift] after this pass (rigid_reduce.comp). The
 // largest request per direction wins, so a contact seen from many member
 // pairs moves it once.
 void pushGroup(int group, vec2 shift) {

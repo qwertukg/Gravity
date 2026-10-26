@@ -8,6 +8,8 @@ layout(std430, binding = 3) readonly buffer AdaptiveState { uint adaptiveState[]
 #include "rigid_layout.glsl"
 layout(std430, binding = 9) buffer Rigid { RigidGroup groups[MAXIMUM_GROUPS]; };
 uniform int uRigidGroups;
+uniform float uDriftDt;
+uniform float uTimeStep;
 
 uniform int uCount;
 uniform int uGridWidth;
@@ -31,7 +33,12 @@ void main() {
     ) return;
     uint id = gl_GlobalInvocationID.x;
     // The count pass adds up the contacts of every block afresh.
-    if (id < uint(uRigidGroups)) groups[id].grid.w = 0;
+    if (id < uint(uRigidGroups)) {
+        groups[id].grid.w = 0;
+        // The pose the solve meets every block in (collision_rigid.glsl).
+        float poseDt = uAdaptive != 0 && uDriftDt != 0.0 ? uTimeStep / float(max(adaptiveState[2], 1u)) : uDriftDt;
+        groups[id].pose = rigidPose(groups[id], poseDt);
+    }
     if (id >= uint(uCount)) return;
     contactCounts[id] = 0u;
 

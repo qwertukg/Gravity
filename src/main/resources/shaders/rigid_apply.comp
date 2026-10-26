@@ -17,12 +17,26 @@ const float MAXIMUM_UNIT = 0.99999994;
 layout(std430, binding = 5) buffer Fractures { vec4 fractures[]; };
 layout(std430, binding = 6) buffer FractureSlots { vec4 fractureSlots[]; };
 layout(std430, binding = 7) buffer FractureGroups { uvec4 fractureGroups[]; };
-// Members to break off this pass, (group << 24 | slot) (rigid_fracture.comp).
-layout(std430, binding = 8) buffer Broken { uint brokenCount; uint movedCount; uint broken[]; };
+// Members to break off this pass, per block (rigid_layout.glsl).
+layout(std430, binding = 8) buffer Broken {
+    uint brokenCounts[MAXIMUM_GROUPS];
+    uint movedCounts[MAXIMUM_GROUPS];
+    uint broken[];
+};
 uniform float uFractureSpeed;
+// The indirect dispatches of rigid_fracture.comp and rigid_shift.comp: a pass
+// that struck no block runs neither.
+layout(std430, binding = 9) buffer FractureDispatch { uint fractureDispatch[3]; uint shiftDispatch[3]; };
+uniform int uGroupCount;
+uniform int uTileCount;
 // Share of the speed beyond its strength a chipped member flies off with,
 // at most the critical speed: what the stored strain energy gives it.
 const float EJECTION_SHARE = 0.5;
+// What the members of a tile break, added up for their block: crack budget,
+// nucleus (rank << 24 | slot) and members chipped off.
+shared uint tileBudget;
+shared uint tileNucleus;
+shared uint tileChipped;
 #endif
 
 // Moves every member onto the group's rigid motion: x = c + R r0 and
@@ -30,45 +44,64 @@ const float EJECTION_SHARE = 0.5;
 void main() {
     uint member = gl_GlobalInvocationID.x;
     int body = members[member];
-    if (body < 0) return;
     RigidGroup rigid = groups[tileGroups[gl_WorkGroupID.x]];
     vec2 rotation = rigid.motion.zw;
-    vec2 offset = rest[member];
-    vec2 arm = vec2(
-        rotation.x * offset.x - rotation.y * offset.y,
-        rotation.y * offset.x + rotation.x * offset.y
-    );
-    vec2 position = (rigid.frame.zw + arm) / uViewport;
-    vec2 velocity = rigid.motion.xy + rigid.scalars.x * vec2(-arm.y, arm.x);
-    position = uBounded != 0
-        ? clamp(position, vec2(0.0), vec2(MAXIMUM_UNIT))
-        : fract(position);
-    bodies[body] = vec4(position, velocity / uViewport);
+    if (body >= 0) {
+        vec2 offset = rest[member];
+        vec2 arm = vec2(
+            rotation.x * offset.x - rotation.y * offset.y,
+            rotation.y * offset.x + rotation.x * offset.y
+        );
+        vec2 position = (rigid.frame.zw + arm) / uViewport;
+        vec2 velocity = rigid.motion.xy + rigid.scalars.x * vec2(-arm.y, arm.x);
+        position = uBounded != 0
+            ? clamp(position, vec2(0.0), vec2(MAXIMUM_UNIT))
+            : fract(position);
+        bodies[body] = vec4(position, velocity / uViewport);
+    }
 #ifdef FRACTURE
+    // A tile is one block's: the whole workgroup goes on or none of it.
     if (rigid.scalars.w == 0.0) return;
-    vec4 record = fractures[body];
-    if (record.w <= 0.0) return;
-    fractures[body] = vec4(0.0);
+    uint lane = gl_LocalInvocationID.x;
+    if (lane == 0u) {
+        fractureDispatch[0] = uint(uGroupCount);
+        shiftDispatch[0] = uint(uTileCount);
+        tileBudget = 0u;
+        tileNucleus = 0u;
+        tileChipped = 0u;
+    }
+    barrier();
     uint group = uint(tileGroups[gl_WorkGroupID.x]);
-    vec4 fracture = fractureSlots[member];
-    // Into the block, in its own frame.
-    fracture.zw = vec2(rotation.x * record.x + rotation.y * record.y, -rotation.y * record.x + rotation.x * record.y);
-    // Struck faster than its own strength, the member chips off, if what
-    // struck it brought the energy to break it free.
-    float strength = fracture.x * uFractureSpeed;
-    if (record.w > strength && record.z >= 1.0) {
-        if (fracture.y == 0.0) broken[atomicAdd(brokenCount, 1u)] = group << 24 | member;
-        fracture.y = max(fracture.y, 1.0 + EJECTION_SHARE * min(record.w - strength, uFractureSpeed));
-        atomicAdd(fractureGroups[group].z, 1u);
+    vec4 record = body >= 0 ? fractures[body] : vec4(0.0);
+    if (record.w > 0.0) {
+        fractures[body] = vec4(0.0);
+        vec4 fracture = fractureSlots[member];
+        // Into the block, in its own frame.
+        fracture.zw = vec2(rotation.x * record.x + rotation.y * record.y, -rotation.y * record.x + rotation.x * record.y);
+        // Struck faster than its own strength, the member chips off, if what
+        // struck it brought the energy to break it free.
+        float strength = fracture.x * uFractureSpeed;
+        if (record.w > strength && record.z >= 1.0) {
+            if (fracture.y == 0.0) broken[uint(rigid.tiles.x) * 256u + atomicAdd(brokenCounts[group], 1u)] = member;
+            fracture.y = max(fracture.y, 1.0 + EJECTION_SHARE * min(record.w - strength, uFractureSpeed));
+            atomicAdd(tileChipped, 1u);
+        }
+        fractureSlots[member] = fracture;
+        // What the impact pays beyond that runs on as a crack from the member
+        // struck hardest.
+        uint budget = uint(min(record.z, MAXIMUM_RECORD_BUDGET) * FRACTURE_BUDGET_SCALE + 0.5);
+        if (budget > 0u) {
+            atomicAdd(tileBudget, budget);
+            uint rank = uint(clamp(log2(1.0 + record.z) * 16.0, 0.0, 254.0)) + 1u;
+            atomicMax(tileNucleus, (rank << 24) | member);
+        }
     }
-    fractureSlots[member] = fracture;
-    // What the impact pays beyond that runs on as a crack from the member
-    // struck hardest.
-    uint budget = uint(min(record.z, MAXIMUM_RECORD_BUDGET) * FRACTURE_BUDGET_SCALE + 0.5);
-    if (budget > 0u) {
-        atomicAdd(fractureGroups[group].x, budget);
-        uint rank = uint(clamp(log2(1.0 + record.z) * 16.0, 0.0, 254.0)) + 1u;
-        atomicMax(fractureGroups[group].y, (rank << 24) | member);
+    barrier();
+    if (lane != 0u) return;
+    if (tileBudget > 0u) {
+        atomicAdd(fractureGroups[group].x, tileBudget);
+        atomicMax(fractureGroups[group].y, tileNucleus);
     }
+    if (tileChipped > 0u) atomicAdd(fractureGroups[group].z, tileChipped);
 #endif
 }
