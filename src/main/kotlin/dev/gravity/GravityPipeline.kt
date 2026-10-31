@@ -334,6 +334,8 @@ class GravityPipeline(
     }
     /** What the sleeping tiles were last computed for: any change wakes everything. */
     private var sleepScene: List<Any> = emptyList()
+    /** The naval battle's ships and shells (NavalGpu), made on first use. */
+    private var naval: NavalGpu? = null
 
     init {
         check(
@@ -717,6 +719,51 @@ class GravityPipeline(
         return spawned
     }
 
+    /** The block index the next glued block gets. */
+    val nextBlockGroup get() = rigidBlocks.nextGroup
+
+    private fun navalGpu() = naval ?: NavalGpu(viewportWidth, viewportHeight, ::bind).also { naval = it }
+
+    /** Speeds every member of block [group] up by ([deltaX], [deltaY]) px/s: a ship's engine. */
+    fun pushBlock(activeBodies: Int, group: Int, deltaX: Float, deltaY: Float) {
+        navalGpu().push(bodies, collisionBodies, materials, activeBodies, group, deltaX, deltaY)
+        sleep.wake()
+    }
+
+    /**
+     * Fires shell [shell] (below NavalGpu.SHELLS): a ball of [diameterPixels]
+     * of solid loose bodies of [mass] each that the probe follows. Returns the
+     * bodies spawned, or 0 without room.
+     */
+    fun spawnShell(
+        firstBody: Int,
+        centerX: Float,
+        centerY: Float,
+        velocityX: Float,
+        velocityY: Float,
+        diameterPixels: Float,
+        mass: Float,
+        shell: Int,
+    ): Int {
+        val offsets = projectileOffsets(diameterPixels)
+        if (!fits(firstBody, offsets.size)) return 0
+        val spawned = uploadBodies(
+            firstBody, centerX, centerY, velocityX, velocityY, offsets, mass, group = null, tag = NavalGpu.shellTag(shell),
+        )
+        massExcess += spawned * (mass - 1f)
+        return spawned
+    }
+
+    /** Sets shell [shell] off: its bodies fly apart from its centre at up to [speed] px/s and become grains. */
+    fun detonateShell(activeBodies: Int, shell: Int, radiusPixels: Float, speed: Float) {
+        navalGpu().detonate(bodies, collisionBodies, materials, activeBodies, shell, radiusPixels, speed)
+        sleep.wake()
+    }
+
+    /** Where the shells and the blocks [ships] were a step ago (NavalGpu.probe); null on the first call. */
+    fun probeNaval(activeBodies: Int, ships: IntArray): NavalReading? =
+        navalGpu().probe(bodies, materials, activeBodies, rigidBlocks.groups, ships)
+
     private fun fits(firstBody: Int, count: Int) =
         firstBody in 0..config.particles.capacity &&
             count <= config.particles.capacity - firstBody
@@ -733,13 +780,16 @@ class GravityPipeline(
         group: Int?,
         /** Spin about the centre, rad/s: each body moves with v + spin × offset. */
         spin: Float = 0f,
+        /** Loose solid bodies named by this tag (a shell: NavalGpu.shellTag) instead of fluid or sand. */
+        tag: Float? = null,
     ): Int {
-        if (group != null) solidBodies = true
+        val solid = group != null || tag != null
+        if (solid) solidBodies = true
         val material = memAllocFloat(offsets.size * 4)
         try {
             val friction = if (group != null) config.projectiles.blockFriction else config.collisions.friction
             repeat(offsets.size) {
-                material.put(mass).put(friction).put(if (group != null) 1f else 0f).put(group?.toFloat() ?: 0f)
+                material.put(mass).put(friction).put(if (solid) 1f else 0f).put(group?.toFloat() ?: tag ?: 0f)
             }
             material.flip()
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, materials)
@@ -1554,6 +1604,7 @@ class GravityPipeline(
     }
 
     override fun close() {
+        naval?.close()
         sleep.close()
         neighborCache?.close()
         rigidBlocks.close()

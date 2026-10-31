@@ -912,7 +912,7 @@ internal class RigidBlocks(
      * of memory; glGetBufferSubData would queue the transfer behind every
      * command sent since and wait for all of them, frames of physics.
      */
-    private class Readback(bytes: Long) {
+    internal class Readback(bytes: Long) {
         val id = glGenBuffers()
         private val mapped: ByteBuffer?
         val persistent get() = mapped != null

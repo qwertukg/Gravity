@@ -884,7 +884,7 @@ data class StartConfig(
         fun parseScenario(value: String): MenuScenario? {
             val name = value.lowercase()
             if (name == "none") return null
-            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries + TestScenario.entries
+            val scenarios: List<MenuScenario> = Scenario.entries + BlockScenario.entries + TestScenario.entries + NavalScene
             return scenarios.firstOrNull { it.optionName == name }
                 ?: throw IllegalArgumentException(
                     "Unknown --scenario: $value; use none or " +

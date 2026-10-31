@@ -55,6 +55,23 @@ between bodies off.
 | `C` / `R` | Clear all bodies / restart the scenario |
 | `Esc` | Exit |
 
+## Naval battle
+
+`Naval battle` in the scenario menu (or `--scenario=naval-battle`): two
+warships on a pool of liquid shell each other until one is destroyed.
+
+| Player | Sail | Gun elevation | Fire |
+|---|---|---|---|
+| Left ship | `A` / `D` | `W` / `S` | `Space` |
+| Right ship | `←` / `→` | `↑` / `↓` | `Enter` |
+
+Hold fire longer for a faster, longer shot; release to fire a salvo from all
+guns. While aiming, the dashed line shows the first gun's shot. The battle
+takes these keys from the usual controls. After a battle, experience (damage
+done, a win bonus) evolves a ship into the next class for the next battle
+(`R`): patrol boat, corvette, frigate, destroyer, cruiser; each bigger, with
+more guns and a longer range. Progress lasts for the session.
+
 ## Options
 
 The main ones; the full list with limits is
@@ -80,7 +97,7 @@ The main ones; the full list with limits is
 
 Scenarios: `turbulent-cloud`, `galaxy`, `galaxy-collision`, `spinning-planet`,
 `planetary-impact`, `ringed-planet`, `binary-stars`, `galaxy-flyby`,
-`planetary-system`, `cosmic-web`; block scenes (`bullets`, `cannonball`,
+`planetary-system`, `cosmic-web`; `naval-battle`; block scenes (`bullets`, `cannonball`,
 `crush`, `stack`, `big-on-small`, `ram`, `pile`, `liquid`, `bounce`, `wall`,
 `masses`, `sliding`, `bodies`, `slow-body`, `thrown`, `drops`); and the
 test-scenario buttons (`wall-bullet`, `liquid-wall-bullet`, `bullet`,

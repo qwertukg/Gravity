@@ -18,6 +18,17 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_C
 import org.lwjgl.glfw.GLFW.GLFW_KEY_G
 import org.lwjgl.glfw.GLFW.GLFW_KEY_L
 import org.lwjgl.glfw.GLFW.GLFW_KEY_M
+import org.lwjgl.glfw.GLFW.GLFW_KEY_A
+import org.lwjgl.glfw.GLFW.GLFW_KEY_D
+import org.lwjgl.glfw.GLFW.GLFW_KEY_DOWN
+import org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER
+import org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER
+import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT
+import org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT
+import org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE
+import org.lwjgl.glfw.GLFW.GLFW_KEY_UP
+import org.lwjgl.glfw.GLFW.GLFW_KEY_W
+import org.lwjgl.glfw.GLFW.GLFW_RELEASE
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT
 import org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_RIGHT
 import org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE
@@ -107,6 +118,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var blockPreviewProgram: GlProgram? = null
     private var fpsOverlay: FpsOverlay? = null
     private var scenarioMenu: ScenarioMenu? = null
+    private var navalHud: NavalHud? = null
+    /** The naval battle while its scenario runs (NavalScene). */
+    private var battle: NavalBattle? = null
+    /** Each naval player's ship class and experience, over the battles of the session. */
+    private val navalCareers = listOf(NavalCareer(), NavalCareer())
     private var scenario: MenuScenario? = config.start.scenario
     private var requestedScenario: MenuScenario? = null
     /** Blocks of the current block scenario, glued after its loose bodies. */
@@ -204,6 +220,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             config.projectiles,
         )
         scenarioMenu = ScenarioMenu(viewportWidth, viewportHeight, config.presentation)
+        navalHud = NavalHud(viewportWidth, viewportHeight, config.presentation)
         timer = if (profiler == null) {
             GpuTimer(config.diagnostics.timerRingSlots)
         } else {
@@ -212,6 +229,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
 
         var active = sessionConfig.particles.initialBodies
         active += spawnScenarioBlocks(simulation, active)
+        active += startBattle(simulation, active, clearing = false)
         initializeSimulation(simulation, active)
         activateFullscreenWindow()
         render(
@@ -263,6 +281,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                 pipeline = simulation
                 active = if (clearing) 0 else sessionConfig.particles.initialBodies
                 if (!clearing) active += spawnScenarioBlocks(simulation, active)
+                active += startBattle(simulation, active, clearing)
                 projectileBodyCount =
                     simulation.projectileBodyCount(projectileDiameterPixels)
                 timer = if (profiler == null) {
@@ -376,15 +395,18 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             profiler?.beginFrame(totalFrames, collect = collectProfile)
             timer?.begin()
             if (simulationSpeed.shouldAdvance(paused) && active > 0) {
+                battle?.let { active = it.beforeStep(simulation, active) }
                 simulation.step(active)
             }
+            battle?.afterStep(simulation, active)
             val trajectory = if (draggingProjectile) {
                 projectileGesture(
                     targetX = cursorX.toFloat(),
                     targetY = viewportHeight - cursorY.toFloat(),
                 )
             } else {
-                null
+                // The battle's gun shows its shot like the LMB aim.
+                battle?.aim()?.let { ProjectileGesture(it.x, it.y, it.velocityX, it.velocityY, it.diameterPixels) }
             }
             if (trajectory == null) {
                 trajectoryUpdates.reset()
@@ -524,6 +546,8 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         window = glfwCreateWindow(mode.width(), mode.height(), "Gravity", monitor, 0L)
         check(window != 0L) { "Fullscreen OpenGL window creation failed" }
         glfwSetKeyCallback(window) { target, key, _, action, _ ->
+            // The battle takes its keys from the arrows, S and the rest.
+            if (battle?.let { navalKey(it, key, action) } == true) return@glfwSetKeyCallback
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(target, true)
             if (key == GLFW_KEY_P && action == GLFW_PRESS) paused = !paused
             if (key == GLFW_KEY_R && action == GLFW_PRESS) resetRequested = true
@@ -661,6 +685,52 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
     }
 
+    /** Hands [key] to the battle's players if it is one of theirs; returns whether it was. */
+    private fun navalKey(battle: NavalBattle, key: Int, action: Int): Boolean {
+        val controls = when (key) {
+            GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_SPACE -> battle.wasd
+            GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> battle.arrows
+            else -> return false
+        }
+        // Repeats change nothing: a key is held from its press to its release.
+        if (action != GLFW_PRESS && action != GLFW_RELEASE) return true
+        val held = action == GLFW_PRESS
+        when (key) {
+            GLFW_KEY_A, GLFW_KEY_LEFT -> controls.left = held
+            GLFW_KEY_D, GLFW_KEY_RIGHT -> controls.right = held
+            GLFW_KEY_W, GLFW_KEY_UP -> controls.up = held
+            GLFW_KEY_S, GLFW_KEY_DOWN -> controls.down = held
+            else -> controls.fire = held
+        }
+        return true
+    }
+
+    /**
+     * Starts the naval battle if its scenario is on (and the screen was not
+     * cleared): glues its ships after [firstBody]; returns their bodies.
+     */
+    private fun startBattle(simulation: GravityPipeline, firstBody: Int, clearing: Boolean): Int {
+        battle = null
+        if (scenario != NavalScene || clearing) return 0
+        val next = NavalBattle(
+            scenarioSpace(),
+            config.collisions.timeStep,
+            config.projectiles.blockDensity,
+            // As applyField: authored for a 1440 px tall screen.
+            fieldAcceleration = config.gravity.uniformFieldAcceleration * viewportHeight / 1440f,
+            careers = navalCareers,
+        )
+        battle = next
+        return next.spawnShips(simulation, firstBody)
+    }
+
+    private fun scenarioSpace() = ScenarioSpace(
+        widthPixels = viewportWidth.toFloat(),
+        heightPixels = viewportHeight.toFloat(),
+        gravitationalConstant = config.gravity.gravitationalConstant,
+        contactDiameterPixels = config.collisions.contactDiameterPixels,
+    )
+
     private fun activateFullscreenWindow(): Boolean {
         glfwFocusWindow(window)
         val foreground = WindowsForegroundActivator.activate(window)
@@ -741,12 +811,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
      */
     private fun createSimulation(): GravityPipeline {
         val current = scenario
-        val space = ScenarioSpace(
-            widthPixels = viewportWidth.toFloat(),
-            heightPixels = viewportHeight.toFloat(),
-            gravitationalConstant = config.gravity.gravitationalConstant,
-            contactDiameterPixels = config.collisions.contactDiameterPixels,
-        )
+        val space = scenarioSpace()
         val seed = config.particles.seed ?: java.security.SecureRandom().nextLong()
         val state: FloatArray?
         when (current) {
@@ -964,6 +1029,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             blockBodies = block?.let(::blockBodyCount),
             blockShape = blockMask?.name ?: "rectangle",
         )
+        battle?.let { navalHud!!.render(it) }
         scenarioMenu!!.render(scenario, cursorX, cursorY)
     }
 
@@ -1041,6 +1107,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         if (vao != 0) glDeleteVertexArrays(vao)
         fpsOverlay?.close()
         scenarioMenu?.close()
+        navalHud?.close()
         projectilePreviewProgram?.close()
         blockPreviewProgram?.close()
         trajectoryProgram?.close()

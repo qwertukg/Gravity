@@ -2,7 +2,7 @@ package dev.gravity
 
 /**
  * Column of scenario buttons in the top-right corner, in window pixels: the
- * test scenarios, under a heading per group (TestGroup).
+ * test scenarios, under a heading per group (TestGroup), then the game.
  */
 class ScenarioMenu(
     viewportWidth: Int,
@@ -22,9 +22,9 @@ class ScenarioMenu(
     /** A group's heading: text alone, not a button. */
     private class Heading(val title: String, val left: Float, val top: Float)
 
-    private val groups = TestGroup.entries.map { group -> group to TestScenario.entries.filter { it.group == group } }
-        .filter { it.second.isNotEmpty() }
-    private val buttonWidth = (TestScenario.entries.map { it.title } + groups.map { it.first.title })
+    private val groups = TestGroup.entries.map { group -> group.title to TestScenario.entries.filter { it.group == group } }
+        .filter { it.second.isNotEmpty() } + (GAME_TITLE to listOf(NavalScene))
+    private val buttonWidth = groups.flatMap { (title, scenarios) -> scenarios.map { it.title } + title }
         .maxOf { UiLayer.panelWidth(it) }
     private val buttonHeight = UiLayer.panelHeight("", config.overlayLineHeightPixels)
     private val headings = ArrayList<Heading>()
@@ -34,9 +34,9 @@ class ScenarioMenu(
         val left = viewportWidth - config.overlayMarginPixels - buttonWidth
         var top = config.overlayMarginPixels
         for ((index, entry) in groups.withIndex()) {
-            val (group, scenarios) = entry
+            val (title, scenarios) = entry
             if (index > 0) top += SECTION_GAP_PIXELS
-            headings += Heading(group.title, left, top)
+            headings += Heading(title, left, top)
             top += buttonHeight + GAP_PIXELS
             for (scenario in scenarios) {
                 buttons += Button(scenario, left, top, left + buttonWidth, top + buttonHeight)
@@ -82,6 +82,7 @@ class ScenarioMenu(
         const val GAP_PIXELS = 3f
         const val SECTION_GAP_PIXELS = 12f
         const val MAXIMUM_QUADS = 8192
+        const val GAME_TITLE = "Game"
         val HOVER_COLOR = UiLayer.rgba(60, 60, 60, 210)
         val ACTIVE_COLOR = UiLayer.rgba(0, 75, 0, 220)
     }

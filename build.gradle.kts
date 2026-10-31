@@ -62,6 +62,7 @@ tasks.test {
     exclude("**/BlockScenarioRunTest.class")
     exclude("**/BlockFractureTest.class")
     exclude("**/MaskBlockIntegrationTest.class")
+    exclude("**/NavalBattleIntegrationTest.class")
 }
 
 tasks.register<Test>("gpuTest") {
@@ -83,6 +84,7 @@ tasks.register<Test>("gpuTest") {
     include("**/BlockScenarioRunTest.class")
     include("**/BlockFractureTest.class")
     include("**/MaskBlockIntegrationTest.class")
+    include("**/NavalBattleIntegrationTest.class")
     outputs.upToDateWhen { false }
     testLogging.showStandardStreams = true
 }

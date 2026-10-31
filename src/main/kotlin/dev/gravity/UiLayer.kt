@@ -83,18 +83,18 @@ internal class UiLayer(
         quads++
     }
 
-    /** Text whose panel has its top-left corner at ([left], [top]). */
-    fun text(text: String, left: Float, top: Float) {
+    /** Text whose panel has its top-left corner at ([left], [top]), [scale] times the font size. */
+    fun text(text: String, left: Float, top: Float, scale: Float = 1f) {
         val start = vertexData.position()
         val textQuads = stb_easy_font_print(0f, 0f, text, textColor, vertexData.slice())
             .coerceAtMost(maximumQuads - quads)
         // Glyphs are emitted from the origin; move them inside the padding.
         for (vertex in 0 until textQuads * 4) {
             val offset = start + vertex * VERTEX_BYTES
-            vertexData.putFloat(offset, left + PADDING_PIXELS + vertexData.getFloat(offset))
+            vertexData.putFloat(offset, left + scale * (PADDING_PIXELS + vertexData.getFloat(offset)))
             vertexData.putFloat(
                 offset + 4,
-                top + PADDING_PIXELS + TEXT_OFFSET_PIXELS + vertexData.getFloat(offset + 4),
+                top + scale * (PADDING_PIXELS + TEXT_OFFSET_PIXELS + vertexData.getFloat(offset + 4)),
             )
         }
         vertexData.position(start + textQuads * BYTES_PER_QUAD)

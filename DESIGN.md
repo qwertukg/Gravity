@@ -211,3 +211,25 @@ no longer hold together.
 - Since the copy is a step old, a piece names its parent's slots and the GPU
   assigns the current bodies and motion when it is glued; a member broken in
   between leaves the piece at once.
+
+## Naval battle
+
+A game on the same physics, with nothing animated (`NavalBattle`):
+
+- **Ships** are breakable blocks in the outline of their class (`ShipClass`,
+  polygons of a side view) floating on a liquid pool. An engine adds the same
+  velocity to every member; the rigid projection moves the block by it.
+- **Shells** are balls of solid loose bodies of mass `3` whose material names
+  the shell in `.w` (`-2 - shell`; to every other shader a loose grain), so
+  they follow spatial sorting. Every gun of a ship fires one per salvo, from a
+  pivot in the ship's rest frame; a gun aft never fires lower than its line
+  over the ship.
+- **Probe.** Each frame one pass sums every shell's bodies, and the ships'
+  block states are copied with the sums behind a fence; the CPU reads it a
+  frame later, with the next step queued.
+- **Detonation.** A shell whose velocity is off its free flight (launch
+  velocity plus the field) struck something, at once or by the liquid's drag.
+  Its bodies then get a radial velocity from their centre, the rim fastest,
+  and become ordinary grains: the blast is their impacts, which chip and crack
+  blocks and splash liquid.
+- A ship is destroyed when its block holds less than `5%` of its bodies.
