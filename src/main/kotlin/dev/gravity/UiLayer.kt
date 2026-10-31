@@ -28,6 +28,7 @@ import org.lwjgl.opengl.GL30.glDeleteVertexArrays
 import org.lwjgl.opengl.GL30.glGenVertexArrays
 import org.lwjgl.stb.STBEasyFont.stb_easy_font_print
 import org.lwjgl.stb.STBEasyFont.stb_easy_font_width
+import kotlin.math.hypot
 
 /**
  * Flat UI in window pixels (origin top-left): translucent panels and STB Easy
@@ -78,6 +79,18 @@ internal class UiLayer(
     fun panel(left: Float, top: Float, right: Float, bottom: Float, color: Int = PANEL_COLOR) {
         if (quads == maximumQuads) return
         for ((x, y) in listOf(left to top, right to top, right to bottom, left to bottom)) {
+            vertexData.putFloat(x).putFloat(y).putFloat(0f).putInt(color)
+        }
+        quads++
+    }
+
+    /** A line from ([x0], [y0]) to ([x1], [y1]), [width] px wide. */
+    fun segment(x0: Float, y0: Float, x1: Float, y1: Float, width: Float, color: Int) {
+        val length = hypot(x1 - x0, y1 - y0)
+        if (quads == maximumQuads || length == 0f) return
+        val normalX = -(y1 - y0) / length * 0.5f * width
+        val normalY = (x1 - x0) / length * 0.5f * width
+        for ((x, y) in listOf(x0 + normalX to y0 + normalY, x1 + normalX to y1 + normalY, x1 - normalX to y1 - normalY, x0 - normalX to y0 - normalY)) {
             vertexData.putFloat(x).putFloat(y).putFloat(0f).putInt(color)
         }
         quads++

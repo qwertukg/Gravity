@@ -173,10 +173,15 @@ slow contacts and the weight of a pile never break anything.
   chips weak spots and a harder one the whole face.
 - **Cracks.** The excess energy of each contact, `μ(v² − vc²)` with `μ` its
   share of the effective mass, pays for a crack at `20 × mass × vc²` per
-  member. Each pass the crack starts at the hardest-hit member and runs into
-  the block one member per step, wandering and occasionally branching, until
-  the energy is spent or it exits. Each step examines the `7 × 7` cells around
-  the tip in parallel, one lane per cell.
+  member. Impacts of one pass add up where they land, one hard hit or many
+  light ones alike: each tile (256 members) keeps what its impacts pay and its
+  hardest-hit member, tiles struck within `6` diameters of the most loaded
+  one join it as one nucleus, and every nucleus whose share of the pass's
+  energy pays for a member at least, the material's limit, starts a crack of
+  its own (at most `8`, the rest of the energy shared among them). A crack
+  runs into the block one member per step, wandering and occasionally
+  branching, until its energy is spent or it exits. Each step examines the
+  `7 × 7` cells around the tip in parallel, one lane per cell.
 - **Grains.** Broken members become loose bodies that keep the block's mass and
   friction (they sink in liquid like the block). A chip keeps the block's
   local motion and flies back along the impact at up to half its excess speed,
@@ -214,22 +219,65 @@ no longer hold together.
 
 ## Naval battle
 
-A game on the same physics, with nothing animated (`NavalBattle`):
+A game on the same physics; everything that moves is bodies (`NavalBattle`,
+`NavalGpu`, the `naval_*` shaders):
 
 - **Ships** are breakable blocks in the outline of their class (`ShipClass`,
-  polygons of a side view) floating on a liquid pool. An engine adds the same
-  velocity to every member; the rigid projection moves the block by it.
-- **Shells** are balls of solid loose bodies of mass `3` whose material names
+  polygons of a side view) floating on a liquid pool, of weaker material
+  (critical speed `140 px/s`). An engine adds the same velocity to every
+  member; the rigid projection moves the block by it.
+- **Guns.** Each barrel is a block of its own, five times as hard to chip. A
+  joint pass sets its rigid motion each step so that its pivot follows the
+  pivot on the deck and it turns towards the aim; the ship takes back the
+  momentum and angular momentum the joint gives, so the joint is internal.
+  Contacts stop a barrel turned into its ship or another barrel.
+- **Shells** are balls of solid loose bodies of mass `4` whose material names
   the shell in `.w` (`-2 - shell`; to every other shader a loose grain), so
-  they follow spatial sorting. Every gun of a ship fires one per salvo, from a
-  pivot in the ship's rest frame; a gun aft never fires lower than its line
-  over the ship.
-- **Probe.** Each frame one pass sums every shell's bodies, and the ships'
-  block states are copied with the sums behind a fence; the CPU reads it a
-  frame later, with the next step queued.
-- **Detonation.** A shell whose velocity is off its free flight (launch
-  velocity plus the field) struck something, at once or by the liquid's drag.
-  Its bodies then get a radial velocity from their centre, the rim fastest,
-  and become ordinary grains: the blast is their impacts, which chip and crack
-  blocks and splash liquid.
-- A ship is destroyed when its block holds less than `5%` of its bodies.
+  they follow spatial sorting. A salvo fires one from every gun's muzzle; the
+  ship takes the recoil. Each gun (one to three, forward) aims only within its
+  own arc (`ShipClass.firingArc`): elevations where neither its barrel nor its
+  shell, past the barrels ahead, comes within `2.5 px` of the ship, and whose
+  shell tops out below the ceiling (a burst there would rain its fragments
+  back onto the ship). A gun whose line of fire crosses its own ship anyway,
+  the hull bent by hits, holds fire (a firing cut-out).
+- **Probe.** Each frame one pass sums every shell's bodies, and the states of
+  ships and barrels are copied with the sums behind a fence; the CPU reads it
+  a frame later, with the next step queued.
+- **Detonation.** In flight only the field acts on a shell. It goes off when
+  its velocity is far off its free flight (a hard hit or the bulk of the
+  water), when it is slowed next to a ship's outline, or under the surface;
+  spray does not set it off. Its bodies fly apart from their centre, the rim
+  fastest, glowing as they cool into grains. The air slows a glowing
+  fragment as its square speed (`0.002 / px`), so shrapnel stops within a
+  few hundred px instead of crossing the sea.
+- **Missile** (`NavalMissile`), aft, flies on nothing but jets of gas
+  (`naval_thrust.comp`): each lights parked gas bodies at its nozzle and
+  throws them out at the exhaust speed, the missile taking their momentum
+  back at the nozzle. Thrown up out of its cell, it fires its booster
+  upright; near the top of its climb it takes the enemy's bearing once,
+  roughly (anywhere within `120 px` short of or beyond the ship), and the
+  nose jets swing it over; the sustainer then holds the cruise speed against
+  the drag. The air acts on its body through its centre: drag as the square
+  speed, and lift across its path as the angle of its nose off the path, so
+  the nose jets raise the nose just enough to hold it up and bend its path:
+  level flight, then a dive onto its aim point. Its proximity fuse sets it
+  off `26 px` short of a ship; its case bursts in a belt of fragments across
+  its axis, carrying `0.7` of the energy of its ship's shell. Spread thinner
+  and striking at a slant, they break about half what a shell does over
+  about twice the patch (`NavalBattleIntegrationTest`).
+- **Fire.** A pool of light bodies waits parked along the ceiling; a blast
+  lights a few hundred in a disc and throws them out. Hot gas: the pass
+  cancels the field and lifts it while hot, and the air drags it, so the
+  fireball bursts, slows, rises and cools from white through yellow and red
+  to smoke; burnt out, it is parked again. A body's tag holds the step it was
+  lit, its mass its cooling pace.
+- **Foam** (after Ihmsen et al. 2012) is kept per fluid body in `.w`: made by
+  isolation (few neighbours: spray, crests) and trapped air (neighbours
+  rushing together across their line), decaying over `1.5 s`. Under the
+  surface it shows faintly, as bubbles.
+- **Picture** (`NavalRenderer`): each body in the colour of what it is, over a
+  sky: water darker with depth and white with foam, ships grey with their
+  faces lighter than their core (the block's distance field) and tinted under
+  water, glowing fire and fragments.
+- A ship is lost when a piece of `15%` of it breaks away or less than half of
+  it is left; a barrel with less than `40%` left is lost.

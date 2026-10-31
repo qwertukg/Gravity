@@ -24,6 +24,8 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_DOWN
 import org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER
 import org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER
 import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT
+import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT
+import org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_SHIFT
 import org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT
 import org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE
 import org.lwjgl.glfw.GLFW.GLFW_KEY_UP
@@ -119,6 +121,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     private var fpsOverlay: FpsOverlay? = null
     private var scenarioMenu: ScenarioMenu? = null
     private var navalHud: NavalHud? = null
+    private var navalRenderer: NavalRenderer? = null
     /** The naval battle while its scenario runs (NavalScene). */
     private var battle: NavalBattle? = null
     /** Each naval player's ship class and experience, over the battles of the session. */
@@ -221,6 +224,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         )
         scenarioMenu = ScenarioMenu(viewportWidth, viewportHeight, config.presentation)
         navalHud = NavalHud(viewportWidth, viewportHeight, config.presentation)
+        navalRenderer = NavalRenderer(viewportWidth, viewportHeight, config.collisions.contactDiameterPixels)
         timer = if (profiler == null) {
             GpuTimer(config.diagnostics.timerRingSlots)
         } else {
@@ -405,8 +409,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                     targetY = viewportHeight - cursorY.toFloat(),
                 )
             } else {
-                // The battle's gun shows its shot like the LMB aim.
-                battle?.aim()?.let { ProjectileGesture(it.x, it.y, it.velocityX, it.velocityY, it.diameterPixels) }
+                null
             }
             if (trajectory == null) {
                 trajectoryUpdates.reset()
@@ -688,8 +691,9 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
     /** Hands [key] to the battle's players if it is one of theirs; returns whether it was. */
     private fun navalKey(battle: NavalBattle, key: Int, action: Int): Boolean {
         val controls = when (key) {
-            GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_SPACE -> battle.wasd
-            GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER -> battle.arrows
+            GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_SPACE, GLFW_KEY_LEFT_SHIFT -> battle.wasd
+            GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER,
+            GLFW_KEY_RIGHT_SHIFT -> battle.arrows
             else -> return false
         }
         // Repeats change nothing: a key is held from its press to its release.
@@ -700,6 +704,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             GLFW_KEY_D, GLFW_KEY_RIGHT -> controls.right = held
             GLFW_KEY_W, GLFW_KEY_UP -> controls.up = held
             GLFW_KEY_S, GLFW_KEY_DOWN -> controls.down = held
+            GLFW_KEY_LEFT_SHIFT, GLFW_KEY_RIGHT_SHIFT -> controls.missile = held
             else -> controls.fire = held
         }
         return true
@@ -721,7 +726,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
             careers = navalCareers,
         )
         battle = next
-        return next.spawnShips(simulation, firstBody)
+        return next.spawn(simulation, firstBody)
     }
 
     private fun scenarioSpace() = ScenarioSpace(
@@ -854,10 +859,11 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
                     squareTestPixels = null,
                     discTestRadiusPixels = null,
                 ),
-                projectiles = if ((current as? BlockScene)?.unbreakable == true) {
-                    config.projectiles.copy(blockStrength = Float.POSITIVE_INFINITY)
-                } else {
-                    config.projectiles
+                projectiles = when {
+                    (current as? BlockScene)?.unbreakable == true ->
+                        config.projectiles.copy(blockStrength = Float.POSITIVE_INFINITY)
+                    else -> (current as? BlockScene)?.blockStrength?.let { config.projectiles.copy(blockStrength = it) }
+                        ?: config.projectiles
                 },
             )
         }
@@ -957,7 +963,9 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         futureProjectileSpeed: Double?,
         block: BlockGesture?,
     ) {
-        particleRenderer!!.render(pipeline!!, activeBodies)
+        val battle = battle
+        if (battle == null) particleRenderer!!.render(pipeline!!, activeBodies)
+        else navalRenderer!!.render(pipeline!!, activeBodies, battle)
         glBindVertexArray(vao)
         if (trajectoryVisible) {
             glEnable(GL_BLEND)
@@ -1108,6 +1116,7 @@ class GravityApplication(private val config: GravityConfig) : AutoCloseable {
         fpsOverlay?.close()
         scenarioMenu?.close()
         navalHud?.close()
+        navalRenderer?.close()
         projectilePreviewProgram?.close()
         blockPreviewProgram?.close()
         trajectoryProgram?.close()

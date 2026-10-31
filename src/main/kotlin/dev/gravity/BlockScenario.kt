@@ -16,6 +16,8 @@ sealed interface BlockScene : MenuScenario {
     val liquid: Boolean
     /** Blocks never break here, whatever --block-strength says. */
     val unbreakable: Boolean get() = false
+    /** Critical impact speed of the blocks here (px/s) instead of --block-strength, if given. */
+    val blockStrength: Float? get() = null
 
     fun setup(space: ScenarioSpace, seed: Long): BlockSetup
 }

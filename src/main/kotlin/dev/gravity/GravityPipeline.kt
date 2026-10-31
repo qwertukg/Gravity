@@ -659,6 +659,8 @@ class GravityPipeline(
         velocityY: Float = 0f,
         spin: Float = 0f,
         mask: BlockMask? = null,
+        /** Scales the impact speed its members chip off at. */
+        strength: Float = 1f,
     ): Int {
         val diameter = config.collisions.contactDiameterPixels
         val width = maxX - minX
@@ -670,7 +672,7 @@ class GravityPipeline(
         val centerY = 0.5f * (minY + maxY)
         if (mask == null) {
             val lattice = RectangularBlock.offsets(diameter, width, height)
-            return glueBlock(firstBody, lattice, centerX, centerY, density, velocityX, velocityY, spin)
+            return glueBlock(firstBody, lattice, centerX, centerY, density, velocityX, velocityY, spin, strength)
         }
         val lattice = mask.offsets(diameter, width, height)
         val patches = BlockPieces.of(lattice, diameter)
@@ -686,7 +688,7 @@ class GravityPipeline(
             val armY = patch.sumOf { it.y.toDouble() }.toFloat() / patch.size - meanY
             spawned += glueBlock(
                 firstBody + spawned, patch, centerX, centerY, density,
-                velocityX - spin * armY, velocityY + spin * armX, spin,
+                velocityX - spin * armY, velocityY + spin * armX, spin, strength,
             )
         }
         return spawned
@@ -705,6 +707,7 @@ class GravityPipeline(
         velocityX: Float,
         velocityY: Float,
         spin: Float,
+        strength: Float = 1f,
     ): Int {
         if (lattice.isEmpty() || !fits(firstBody, lattice.size)) return 0
         // The rigid fit needs offsets about the centre of mass.
@@ -714,7 +717,7 @@ class GravityPipeline(
         val shape = GlueShape.of(offsets, config.collisions.contactDiameterPixels)
         if (!rigidBlocks.canAdd(offsets.size, shape)) return 0
         val spawned = uploadBodies(firstBody, centerX + meanX, centerY + meanY, velocityX, velocityY, offsets, density, group = rigidBlocks.nextGroup, spin = spin)
-        rigidBlocks.add(firstBody, offsets, centerX + meanX, centerY + meanY, shape)
+        rigidBlocks.add(firstBody, offsets, centerX + meanX, centerY + meanY, shape, strength)
         massExcess += spawned * (density - 1f)
         return spawned
     }
@@ -754,15 +757,101 @@ class GravityPipeline(
         return spawned
     }
 
-    /** Sets shell [shell] off: its bodies fly apart from its centre at up to [speed] px/s and become grains. */
-    fun detonateShell(activeBodies: Int, shell: Int, radiusPixels: Float, speed: Float) {
-        navalGpu().detonate(bodies, collisionBodies, materials, activeBodies, shell, radiusPixels, speed)
+    /**
+     * Parks [count] fire bodies of [mass] from [firstBody] along the ceiling
+     * (naval_fire.comp), for blasts to light. Returns the bodies spawned, or 0
+     * without room.
+     */
+    fun spawnFire(firstBody: Int, count: Int, mass: Float): Int {
+        if (!fits(firstBody, count)) return 0
+        val diameter = config.collisions.contactDiameterPixels
+        val perRow = (viewportWidth / diameter).toInt()
+        val offsets = List(count) { slot ->
+            PixelOffset((slot % perRow + 0.5f) * diameter, viewportHeight - (slot / perRow + 0.5f) * diameter)
+        }
+        val spawned = uploadBodies(firstBody, 0f, 0f, 0f, 0f, offsets, mass, group = null, tag = NavalGpu.PARKED_TAG)
+        massExcess += spawned * (mass - 1f)
+        return spawned
+    }
+
+    /**
+     * Sets shell [shell] off at step [step]: its bodies fly apart from its
+     * centre at up to [speed] px/s as hot fragments, and up to [fireBodies]
+     * parked fire bodies are lit around it (NavalGpu.detonate).
+     */
+    fun detonateShell(
+        activeBodies: Int, shell: Int, radiusPixels: Float, speed: Float,
+        fireBodies: Int, fireRadiusPixels: Float, fireSpeed: Float, fireMass: Float, step: Long,
+    ) {
+        navalGpu().detonate(
+            bodies, collisionBodies, materials, rigidBlocks.groups, activeBodies, shell, -1, radiusPixels, speed,
+            fireBodies, fireRadiusPixels, fireSpeed, fireMass, step,
+        )
         sleep.wake()
     }
 
-    /** Where the shells and the blocks [ships] were a step ago (NavalGpu.probe); null on the first call. */
-    fun probeNaval(activeBodies: Int, ships: IntArray): NavalReading? =
-        navalGpu().probe(bodies, materials, activeBodies, rigidBlocks.groups, ships)
+    /**
+     * Blows up block [group] at step [step] (a missile): its bodies fly apart
+     * from its centre at up to [speed] px/s as hot fragments, up to
+     * [fireBodies] parked fire bodies are lit around it, and its glue is undone.
+     */
+    fun blastBlock(
+        activeBodies: Int, group: Int, radiusPixels: Float, speed: Float,
+        fireBodies: Int, fireRadiusPixels: Float, fireSpeed: Float, fireMass: Float, step: Long,
+    ) {
+        navalGpu().detonate(
+            bodies, collisionBodies, materials, rigidBlocks.groups, activeBodies, 0, group, radiusPixels, speed,
+            fireBodies, fireRadiusPixels, fireSpeed, fireMass, step,
+        )
+        rigidBlocks.dissolve(group)
+        invalidateContacts()
+        sleep.wake()
+    }
+
+    /** Fires missile [jets] at step [step] (NavalGpu.thrust). */
+    fun fireJets(activeBodies: Int, jets: List<MissileJet>, gasMass: Float, spread: Float, step: Long) {
+        navalGpu().thrust(bodies, collisionBodies, materials, rigidBlocks.groups, activeBodies, jets, gasMass, spread, step)
+        sleep.wake()
+    }
+
+    /** The fire of blasts before step [step] (NavalGpu.fire). */
+    internal fun burnFire(activeBodies: Int, step: Long, constants: NavalGpu.FireConstants) {
+        navalGpu().fire(bodies, collisionBodies, materials, activeBodies, step, constants)
+    }
+
+    /** Moves the barrels of [drives] by their joints, their ships taking the reaction (NavalGpu.drive). */
+    fun driveBarrels(
+        activeBodies: Int, drives: List<BarrelDrive>, jointSeconds: Float, maximumTurn: Float, shipDensity: Float, barrelDensity: Float,
+    ) {
+        navalGpu().drive(
+            bodies, collisionBodies, materials, rigidBlocks.groups, activeBodies, drives, jointSeconds, maximumTurn,
+            shipDensity, barrelDensity,
+        )
+        sleep.wake()
+    }
+
+    /** The liquid's foam after a step (NavalGpu.foam); only in liquid mode. */
+    internal fun foamLiquid(activeBodies: Int, constants: NavalGpu.FoamConstants) {
+        if (!liquid) return
+        navalGpu().foam(
+            bodies, materials, liquidSolver.lists, activeBodies, config.particles.capacity, bounded,
+            liquidSolver.kernel.radiusPixels, constants,
+        )
+    }
+
+    /** The largest piece (bodies) broken away from block [group] as a block of its own. */
+    fun largestPiece(group: Int) = rigidBlocks.largestPiece(group)
+
+    /** Where the shells and the blocks [blocks] were a step ago (NavalGpu.probe); null on the first call. */
+    fun probeNaval(activeBodies: Int, blocks: IntArray): NavalReading? =
+        navalGpu().probe(bodies, materials, activeBodies, rigidBlocks.groups, blocks)
+
+    /** Binds bodies, materials and blocks for naval_particles.vert. */
+    fun bindForNavalRender() {
+        bind(0, bodies)
+        bind(1, materials)
+        bind(2, rigidBlocks.groups)
+    }
 
     private fun fits(firstBody: Int, count: Int) =
         firstBody in 0..config.particles.capacity &&

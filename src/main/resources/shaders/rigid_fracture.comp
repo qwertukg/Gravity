@@ -32,6 +32,9 @@ layout(std430, binding = 9) buffer Shifts { vec4 shifts[]; };
 // Members broken off this pass, for rigid_carve.comp: its indirect dispatch,
 // then the list.
 layout(std430, binding = 10) buffer Carves { uint carveDispatch[3]; uint carveCount; Carve carves[]; };
+// Per tile, what the pass's impacts there pay for a crack and the member
+// struck hardest (rigid_apply.comp); read and cleared here.
+layout(std430, binding = 11) buffer FractureTiles { uvec2 fractureTiles[]; };
 uniform vec2 uViewport;
 uniform float uDiameterPixels;
 // Varies per pass, so cracks of successive impacts take their own paths.
@@ -45,8 +48,18 @@ uniform int uMovedBase;
 // step, as long as the impact's energy pays for it. It keeps its heading,
 // wanders between neighbours like a crack through a grain of flaws, and now
 // and then branches, each branch taking half of what is left.
+//
+// Impacts of one pass add up where they land, one hard hit or many light ones
+// alike: the tiles struck are gathered into nuclei, those within SEED_MERGE
+// diameters of the most loaded one joining it, and each nucleus whose share
+// of the pass's energy pays for a member at least, the material's limit,
+// starts a crack of its own: at most CRACK_SEEDS, the rest of the energy
+// going to them in proportion.
 const int CRACK_STEPS = 2048;
-const int CRACK_TIPS = 8;
+const int CRACK_TIPS = 16;
+const int CRACK_SEEDS = 8;
+const uint SEED_CANDIDATES = 64u;
+const float SEED_MERGE = 6.0;
 const float CRACK_WANDER = 0.35;
 const float CRACK_TURN = 0.25;
 const float BRANCH_CHANCE = 0.06;
@@ -71,6 +84,16 @@ shared int crackStep;
 shared int crackSlots[64];
 shared float crackScores[64];
 shared int crackCells[64];
+// The tiles struck this pass: their nucleus slot and crack budget (members).
+shared uint candidateCount;
+shared int candidateSlots[SEED_CANDIDATES];
+shared float candidateBudgets[SEED_CANDIDATES];
+
+// Lane 0's crack tips still to walk: where, which way and how many members.
+vec2 tipPoints[CRACK_TIPS];
+vec2 tipHeadings[CRACK_TIPS];
+float tipBudgets[CRACK_TIPS];
+int tips = 0;
 
 RigidGroup rigid;
 uint group;
@@ -110,31 +133,78 @@ void markBroken(int slot) {
     broken[uint(rigid.tiles.x) * 256u + atomicAdd(brokenCounts[group], 1u)] = uint(slot);
 }
 
-// Marks the members along a crack from slot [nucleus], heading [direction]
-// in the rest frame, for [budget] members, if [start]; the arguments are lane
-// 0's. The crack walks one member a step, and each step every cell of the
-// 7 x 7 around its tip is looked at by a lane of its own: the best candidate
-// is the first of the highest score in row order, as a single lane looking
-// at them in turn would find it.
-void crack(bool start, int nucleus, vec2 direction, float budget) {
+// Lane 0: the cracks of the pass, from the nuclei of the tiles struck, for
+// [budget] members in all; pushes their tips, the most loaded walked first.
+void seedCracks(float budget) {
+    int count = int(min(candidateCount, SEED_CANDIDATES));
+    int seedSlots[CRACK_SEEDS];
+    float seedLoads[CRACK_SEEDS];
+    int seeds = 0;
+    float total = 0.0;
+    while (seeds < CRACK_SEEDS) {
+        int best = -1;
+        for (int k = 0; k < count; k++) {
+            if (candidateBudgets[k] > 0.0 && (best < 0 || candidateBudgets[k] > candidateBudgets[best])) best = k;
+        }
+        if (best < 0) break;
+        int slot = candidateSlots[best];
+        vec2 point = rest[slot];
+        float load = 0.0;
+        for (int k = 0; k < count; k++) {
+            if (candidateBudgets[k] > 0.0 && distance(rest[candidateSlots[k]], point) <= SEED_MERGE * uDiameterPixels) {
+                load += candidateBudgets[k];
+                candidateBudgets[k] = 0.0;
+            }
+        }
+        if (members[slot] < 0) continue;
+        seedSlots[seeds] = slot;
+        seedLoads[seeds] = load;
+        total += load;
+        seeds++;
+    }
+    if (seeds == 0) return;
+    // Shares too small to break a member go to the most loaded nucleus.
+    float shares[CRACK_SEEDS];
+    float spare = 0.0;
+    for (int k = 0; k < seeds; k++) {
+        shares[k] = budget * seedLoads[k] / total;
+        if (k > 0 && shares[k] < 1.0) {
+            spare += shares[k];
+            shares[k] = 0.0;
+        }
+    }
+    shares[0] += spare;
+    // Pushed weakest first: the tips are walked from the last.
+    for (int k = seeds - 1; k >= 0; k--) {
+        float share = shares[k];
+        if (share < 1.0) continue;
+        int nucleus = seedSlots[k];
+        vec2 direction = fractureSlots[nucleus].zw;
+        direction = dot(direction, direction) > 0.0 ? normalize(direction) : vec2(1.0, 0.0);
+        if (fractureSlots[nucleus].y == 0.0) {
+            markBroken(nucleus);
+            share -= 1.0;
+        }
+        tipPoints[tips] = rest[nucleus];
+        tipHeadings[tips] = direction;
+        tipBudgets[tips] = min(share, rigid.scalars.z);
+        tips++;
+    }
+}
+
+// Marks the members along the cracks from lane 0's tips. A crack walks one
+// member a step, and each step every cell of the 7 x 7 around its tip is
+// looked at by a lane of its own: the best candidate is the first of the
+// highest score in row order, as a single lane looking at them in turn would
+// find it.
+void crack() {
     uint lane = gl_LocalInvocationID.x;
     float diameter = uDiameterPixels;
-    // Lane 0 keeps the tips and walks the crack.
-    vec2 tipPoints[CRACK_TIPS];
-    vec2 tipHeadings[CRACK_TIPS];
-    float tipBudgets[CRACK_TIPS];
-    int tips = 0;
     int steps = 0;
     vec2 point = vec2(0.0);
     vec2 heading = vec2(0.0);
     float left = 0.0;
     bool walking = false;
-    if (lane == 0u && start) {
-        tipPoints[0] = rest[nucleus];
-        tipHeadings[0] = direction;
-        tipBudgets[0] = budget;
-        tips = 1;
-    }
     while (true) {
         if (lane == 0u) {
             // The next step: on along this tip, or from the next tip.
@@ -296,29 +366,35 @@ void main() {
     if (lane == 0u && rigid.scalars.w != 0.0) groups[group].scalars.w = 0.0;
     rigid.scalars.w = 0.0;
     if (state.x == 0u && state.z == 0u) return;
-    // Lane 0's crack, if the impacts of the pass pay for one.
-    bool cracking = false;
-    int nucleus = int(state.y & NUCLEUS_SLOT_MASK);
-    vec2 direction = vec2(0.0);
-    float crackBudget = 0.0;
     if (lane == 0u) {
         sharedSplit = 0u;
+        candidateCount = 0u;
+    }
+    barrier();
+    // The tiles struck this pass, each with its nucleus and what it pays.
+    if (state.x != 0u) {
+        for (uint tile = lane; tile < uint(rigid.tiles.y); tile += 256u) {
+            uint index = uint(rigid.tiles.x) + tile;
+            uvec2 record = fractureTiles[index];
+            if (record.x == 0u) continue;
+            fractureTiles[index] = uvec2(0u);
+            uint entry = atomicAdd(candidateCount, 1u);
+            if (entry < SEED_CANDIDATES) {
+                candidateSlots[entry] = int(record.y & NUCLEUS_SLOT_MASK);
+                candidateBudgets[entry] = float(record.x) / FRACTURE_BUDGET_SCALE;
+            }
+        }
+    }
+    barrier();
+    // Lane 0's cracks, if the impacts of the pass pay for any.
+    if (lane == 0u) {
         fractureGroups[group].xyz = uvec3(0u);
         float budget = float(state.x) / FRACTURE_BUDGET_SCALE - float(state.z);
-        cracking = rigid.scalars.z > 0.0 && state.y != 0u && budget >= 1.0 && members[nucleus] >= 0;
-        if (cracking) {
-            direction = fractureSlots[nucleus].zw;
-            direction = dot(direction, direction) > 0.0 ? normalize(direction) : vec2(1.0, 0.0);
-            if (fractureSlots[nucleus].y == 0.0) {
-                markBroken(nucleus);
-                budget -= 1.0;
-            }
-            crackBudget = min(budget, rigid.scalars.z);
-        }
+        if (rigid.scalars.z > 0.0 && budget >= 1.0) seedCracks(budget);
     }
     memoryBarrierBuffer();
     barrier();
-    crack(cracking, nucleus, direction, crackBudget);
+    crack();
 
     uint first = uint(rigid.tiles.x) * 256u;
     uint listed = brokenCounts[group];

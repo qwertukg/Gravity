@@ -50,7 +50,7 @@ internal class LiquidSolver(
      * Per-body grid cell, neighbour list and its reference position, then two
      * rebuild flags (liquid_kernel.glsl).
      */
-    private val lists = buffer((LIST_PLANES.toLong() * capacity + 2) * Int.SIZE_BYTES)
+    val lists = buffer((LIST_PLANES.toLong() * capacity + 2) * Int.SIZE_BYTES)
     private val lambdas = buffer(capacity.toLong() * Float.SIZE_BYTES)
     // Ping-pong copies of the body positions alone, which is all the passes
     // read of a neighbour.

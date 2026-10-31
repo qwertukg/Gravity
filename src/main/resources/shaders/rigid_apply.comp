@@ -28,6 +28,10 @@ uniform float uFractureSpeed;
 // The indirect dispatches of rigid_fracture.comp and rigid_shift.comp: a pass
 // that struck no block runs neither.
 layout(std430, binding = 9) buffer FractureDispatch { uint fractureDispatch[3]; uint shiftDispatch[3]; };
+// Per tile, what its members' impacts pay for a crack and its nucleus: a
+// crack starts wherever impacts of one moment add up past the material's
+// limit, from one hard hit or many light ones (rigid_fracture.comp).
+layout(std430, binding = 10) buffer FractureTiles { uvec2 fractureTiles[]; };
 uniform int uGroupCount;
 uniform int uTileCount;
 // Share of the speed beyond its strength a chipped member flies off with,
@@ -91,7 +95,7 @@ void main() {
         }
         fractureSlots[member] = fracture;
         // What the impact pays beyond that runs on as a crack from the member
-        // struck hardest.
+        // struck hardest around.
         uint budget = uint(min(record.z, MAXIMUM_RECORD_BUDGET) * FRACTURE_BUDGET_SCALE + 0.5);
         if (budget > 0u) {
             atomicAdd(tileBudget, budget);
@@ -104,6 +108,7 @@ void main() {
     if (tileBudget > 0u) {
         atomicAdd(fractureGroups[group].x, tileBudget);
         atomicMax(fractureGroups[group].y, tileNucleus);
+        fractureTiles[gl_WorkGroupID.x] = uvec2(tileBudget, tileNucleus);
     }
     if (tileChipped > 0u) atomicAdd(fractureGroups[group].z, tileChipped);
 #endif

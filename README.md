@@ -60,17 +60,30 @@ between bodies off.
 `Naval battle` in the scenario menu (or `--scenario=naval-battle`): two
 warships on a pool of liquid shell each other until one is destroyed.
 
-| Player | Sail | Gun elevation | Fire |
-|---|---|---|---|
-| Left ship | `A` / `D` | `W` / `S` | `Space` |
-| Right ship | `←` / `→` | `↑` / `↓` | `Enter` |
+| Player | Sail | Gun elevation | Fire | Missile |
+|---|---|---|---|---|
+| Left ship | `A` / `D` | `W` / `S` | `Space` | `Shift` |
+| Right ship | `←` / `→` | `↑` / `↓` | `Enter` | `Right Shift` |
 
-Hold fire longer for a faster, longer shot; release to fire a salvo from all
-guns. While aiming, the dashed line shows the first gun's shot. The battle
-takes these keys from the usual controls. After a battle, experience (damage
-done, a win bonus) evolves a ship into the next class for the next battle
-(`R`): patrol boat, corvette, frigate, destroyer, cruiser; each bigger, with
-more guns and a longer range. Progress lasts for the session.
+Fire shoots a salvo from every gun at once (one to three, forward), in arcs;
+aim with the elevation. Each gun keeps to its own arc, where it can neither
+hit its own ship nor send a shell into the ceiling, as near the elevation
+asked as it allows. Each player's dashed line, in their colour, always shows
+where their first gun's shell would fly. When the enemy sails past, the guns
+swing round to it.
+
+The missile, aft, is thrown up out of its cell, climbs on its booster, turns
+over at the top towards roughly where the enemy is then, and flies on its
+sustainer, all on jets of gas; it may come down short of the ship or beyond
+it. Its proximity fuse sets it off over the target: about twice the area of a
+shell's hit, half the damage. It reloads in `10 s`. A ship is lost
+when it breaks apart or less than half of it is left. The battle takes these
+keys from the usual controls.
+
+After a battle, experience (damage done, a win bonus) evolves a ship into
+the next class for the next battle (`R`): patrol boat, corvette, frigate,
+destroyer, cruiser; each bigger, with more guns and a longer range. Progress
+lasts for the session.
 
 ## Options
 

@@ -59,9 +59,10 @@ internal class TestVideo(
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
     }
 
-    fun capture(pipeline: GravityPipeline, activeBodies: Int) {
+    /** Records a frame; [draw], if given, draws it into the framebuffer it gets instead of the ParticleRenderer. */
+    fun capture(pipeline: GravityPipeline, activeBodies: Int, draw: ((Int) -> Unit)? = null) {
         glViewport(0, 0, width, height)
-        renderer.render(pipeline, activeBodies, framebuffer)
+        if (draw == null) renderer.render(pipeline, activeBodies, framebuffer) else draw(framebuffer)
         glPixelStorei(GL_PACK_ALIGNMENT, 1)
         glReadPixels(0, 0, width, height, GL_BGR, GL_UNSIGNED_BYTE, pixels)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -85,6 +86,13 @@ internal class TestVideo(
             writer.dispose()
         }
         return output.toByteArray()
+    }
+
+    /** Writes the frame recorded last as a PNG. */
+    fun still(file: File) {
+        file.parentFile?.mkdirs()
+        ImageIO.write(image, "png", file)
+        println("Still: ${file.absolutePath}")
     }
 
     fun save(file: File, framesPerSecond: Int) {

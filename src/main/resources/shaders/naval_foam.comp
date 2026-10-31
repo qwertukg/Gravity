@@ -1,0 +1,51 @@
+#version 430 core
+
+// Naval battle, after every step: the foam of the liquid, kept per fluid body
+// in its material's .w (0..1), after Ihmsen et al. 2012, "Unified spray, foam
+// and bubbles for particle-based fluids". Two potentials make foam:
+// - isolation: a body with few neighbours is spray or the crest of a breaking
+//   wave;
+// - trapped air: neighbours rushing at each other other than along their
+//   line, as where a wave folds over or a splash falls back, sum_j |v_ij|
+//   (1 - v_ij . x_ij) W(r_ij) over unit v_ij and x_ij.
+// Foam then decays over uFoamTime unless made again.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 2) buffer Materials { vec4 materials[]; };
+#include "liquid_kernel.glsl"
+
+uniform int uCount;
+uniform float uDt;
+uniform float uFoamTime;
+// Neighbours of a body inside the liquid, and the isolation at which foam starts and is full.
+uniform float uBulkNeighbours;
+uniform vec2 uIsolation;
+// Trapped-air potential (px/s) at which foam starts and is full.
+uniform vec2 uTrappedAir;
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 material = materials[id];
+    if (material.z != 0.0) return;
+    uint count = lists[listOffset(PLANE_COUNT, id)];
+    float isolation = 1.0 - min(float(count), uBulkNeighbours) / uBulkNeighbours;
+    float foam = smoothstep(uIsolation.x, uIsolation.y, isolation);
+    if (count <= LIST_SLOTS) {
+        vec4 body = bodies[id];
+        float trappedAir = 0.0;
+        for (uint slot = 0u; slot < count; slot++) {
+            uint other = lists[listOffset(PLANE_ENTRIES + slot, id)] & ~SOLID_NEIGHBOUR;
+            vec4 neighbour = bodies[other];
+            vec2 delta = pixelDelta(body.xy, neighbour.xy);
+            float distance = length(delta);
+            if (distance >= uKernelRadius || distance <= 1e-4) continue;
+            vec2 relative = (body.zw - neighbour.zw) * uViewport;
+            float speed = length(relative);
+            if (speed <= 1e-3) continue;
+            trappedAir += speed * (1.0 - dot(relative / speed, delta / distance)) * (1.0 - distance / uKernelRadius);
+        }
+        foam = max(foam, smoothstep(uTrappedAir.x, uTrappedAir.y, trappedAir));
+    }
+    materials[id].w = max(material.w * exp(-uDt / uFoamTime), foam);
+}

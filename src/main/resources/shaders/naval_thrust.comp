@@ -1,0 +1,104 @@
+#version 430 core
+
+#include "naval_layout.glsl"
+#include "rigid_layout.glsl"
+
+// Naval battle: the jets of missiles, the way a rocket flies. A jet lights
+// parked gas bodies (naval_fire.comp) at its nozzle and throws them out at
+// the exhaust speed relative to the nozzle; the missile takes their momentum
+// back, at the nozzle, so a jet off its centre line also turns it. Pass 0
+// lights the gas; pass 1 pushes each missile by the gas its jets really got.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Bodies { vec4 bodies[]; };
+layout(std430, binding = 1) buffer CollisionBodies { vec4 collisionBodies[]; };
+layout(std430, binding = 2) buffer Materials { vec4 materials[]; };
+layout(std430, binding = 3) readonly buffer Rigid { RigidGroup groups[MAXIMUM_GROUPS]; };
+layout(std430, binding = 4) buffer Used { int used[]; };
+
+const int JETS = 8;
+uniform int uCount;
+uniform int uPass;
+uniform int uJets;
+uniform vec2 uViewport;
+// The missile block of each jet, its nozzle and exhaust direction in the
+// missile's rest frame as glued (with the shape's origin then), the gas
+// bodies it wants this step and their speed out of the nozzle (px/s).
+uniform int uGroup[JETS];
+uniform vec2 uNozzle[JETS];
+uniform vec2 uOrigin[JETS];
+uniform vec2 uExhaust[JETS];
+uniform int uWanted[JETS];
+uniform float uExhaustSpeed[JETS];
+// Spread of a jet (rad), the mean mass of a gas body, and the mass of a missile's body.
+uniform float uSpread;
+uniform float uGasMass;
+uniform float uDensity[JETS];
+uniform float uHotTag;
+
+vec2 turn(vec2 rotation, vec2 v) {
+    return vec2(rotation.x * v.x - rotation.y * v.y, rotation.y * v.x + rotation.x * v.y);
+}
+
+vec2 perpendicular(vec2 v) {
+    return vec2(-v.y, v.x);
+}
+
+// The nozzle of jet [jet] from its missile's centre, in the world.
+vec2 nozzleArm(int jet) {
+    RigidGroup missile = groups[uGroup[jet]];
+    return turn(missile.motion.zw, uNozzle[jet] + missile.shape.xy - uOrigin[jet]);
+}
+
+void lightGas(uint id, vec4 material) {
+    for (int jet = 0; jet < uJets; jet++) {
+        int index = atomicAdd(used[jet], 1);
+        if (index >= uWanted[jet]) continue;
+        RigidGroup missile = groups[uGroup[jet]];
+        vec2 arm = nozzleArm(jet);
+        vec2 exhaust = turn(missile.motion.zw, uExhaust[jet]);
+        float angle = (navalRandom(id, uint(index) * 4u) - 0.5) * 2.0 * uSpread;
+        vec2 direction = turn(vec2(cos(angle), sin(angle)), exhaust);
+        float speed = uExhaustSpeed[jet] * (0.85 + 0.3 * navalRandom(id, uint(index) * 4u + 1u));
+        vec2 nozzleVelocity = missile.motion.xy + missile.scalars.x * perpendicular(arm);
+        // Lit a little apart along the jet, so the gas of one step does not start in one point.
+        vec2 position = missile.frame.zw + arm + direction * navalRandom(id, uint(index) * 4u + 2u) * 1.5;
+        vec4 body = vec4(position / uViewport, (nozzleVelocity + direction * speed) / uViewport);
+        bodies[id] = body;
+        collisionBodies[id] = body;
+        float mass = uGasMass * (0.5 + navalRandom(id, uint(index) * 4u + 3u));
+        materials[id] = vec4(mass, material.yz, uHotTag);
+        return;
+    }
+}
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(uCount)) return;
+    vec4 material = materials[id];
+    if (material.z == 0.0) return;
+    if (uPass == 0) {
+        if (material.w == PARKED_TAG) lightGas(id, material);
+        return;
+    }
+    if (material.w < 0.0) return;
+    int group = int(material.w);
+    vec2 velocity = bodies[id].zw * uViewport;
+    bool pushed = false;
+    for (int jet = 0; jet < uJets; jet++) {
+        if (uGroup[jet] != group) continue;
+        RigidGroup missile = groups[group];
+        float gas = float(min(used[jet], uWanted[jet]));
+        if (gas == 0.0) continue;
+        // The gas's momentum, relative to the nozzle, taken back by the missile.
+        vec2 impulse = -gas * uGasMass * uExhaustSpeed[jet] * turn(missile.motion.zw, uExhaust[jet]);
+        float mass = missile.scalars.z * uDensity[jet];
+        float inertia = missile.scalars.y * uDensity[jet] + mass * 1e-3;
+        float torque = cross2(nozzleArm(jet), impulse);
+        vec2 offset = bodies[id].xy * uViewport - missile.frame.zw;
+        velocity += impulse / mass + torque / inertia * perpendicular(offset);
+        pushed = true;
+    }
+    if (!pushed) return;
+    bodies[id].zw = velocity / uViewport;
+    collisionBodies[id].zw = velocity / uViewport;
+}
